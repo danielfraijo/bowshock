@@ -83,7 +83,7 @@ static void atmosphere(double alt_km, double M, double g) {
   double q = 0.5 * rho * V * V;
   double Rn = 0.01;
   double rec = 0.5;
-  double qstag = 1.83e-4 * sqrt(rho / Rn) * pow(V, 3) * rec / 1e4; /* W/cm^2 */
+  double qstag = 1.83e-8 * sqrt(rho / Rn) * pow(V, 3) * rec; /* W/cm^2, Tauber TP-2914 */
   printf("atm  h=%.1f km  M=%.2f\n", alt_km, M);
   printf("  T=%.2f K  p=%.3f Pa  rho=%.5e kg/m3  q=%.1f Pa  V=%.1f m/s\n", T, p, rho, q, V);
   printf("  Sutton-Graves q_s (Rn=1 cm) = %.3f W/cm^2\n", qstag);
@@ -129,7 +129,7 @@ static void heat(double M, double alt_km, double Rn, double g) {
   double a = sqrt(g * 287.05 * T);
   double V = M * a;
   double rec = 0.5;
-  double qstag = 1.83e-4 * sqrt(rho / Rn) * pow(V, 3) * rec / 1e4;
+  double qstag = 1.83e-8 * sqrt(rho / Rn) * pow(V, 3) * rec;
   double qrad = 0.0;
   if (V > 2500.0) {
     qrad = 4.736e8 * pow(Rn, 1.072) * pow(rho, 1.22) * pow(V / 10000.0, 8.5);

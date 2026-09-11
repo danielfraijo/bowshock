@@ -23,6 +23,15 @@ Then open **[http://localhost:8080](http://localhost:8080)** in your browser.
 
 That is the same lab as the live preview: 3D viewer, External / Internal toolkit, live analysis, and CAD export.
 
+**Already cloned?** Pull the latest:
+
+```bash
+cd bowshock
+git pull
+npm install
+npm run dev
+```
+
 | Command | What it does |
 |---|---|
 | `npm run dev` | Lab + analysis UI at http://localhost:8080 |
@@ -36,7 +45,7 @@ Stop the server with `Ctrl+C`.
 ## How to use the lab
 
 1. **Toolkit** — **External** (waveriders / lifting bodies) or **Internal** (inlets, ramjets, scramjets, Busemann, integrated).
-2. Pick a **family** on the left. The mesh rebuilds with the nose at the origin (RGB triad).
+2. Pick a **family** on the left. The mesh rebuilds with the nose at the origin (white / grey axis triad). The lab view is black, white, and grey so the surface, seams, and shock sheet stay readable.
 3. **Geom** — length, span, height, Mach, shock/cone, lid (top or bottom), camber, elevons, fins, grid density.
 4. **Flight / Aero / Heat / Stab / Traj** (External) or **Cycle / Shocks / Heat** (Internal) — engineering analysis, not Navier–Stokes.
 5. **Checks** — closed-form kernel tests (Rankine–Hugoniot, isentropic A/A*, Prandtl–Meyer, θ-β-M, Taylor–Maccoll, US76, Kantrowitz). All should read PASS.
@@ -116,14 +125,15 @@ gcc -O2 -std=c11 public/bowshock_aero.c -lm -o bowshock_aero
 
 CBAERO-class **engineering** methods. Fast enough to iterate on a laptop. Not a Navier–Stokes substitute.
 
-- **Shocks:** θ-β-M, Rankine–Hugoniot oblique + normal, Taylor–Maccoll RK4
+- **Shocks:** θ-β-M, Rankine–Hugoniot oblique + normal, Taylor–Maccoll RK4 (Sims NASA SP-3004)
 - **Expansion:** Prandtl–Meyer
-- **Panel aero:** tangent-wedge windward + PM leeward + Newtonian blend + Love base + van Driest / Schlichting \(C_f\)
-- **Heating:** Sutton–Graves stagnation, Tauber running-length, Tauber–Sutton radiative
+- **Panel aero:** attached tangent-wedge (2-D families) or tangent-cone (axisymmetric families); Modified Newtonian (Lees) if the shock detaches; Prandtl–Meyer leeward; Love base \(C_p = -1/M^2\); van Driest II \(C_f\) (Hopkins & Inouye 1971)
+- **Heating:** Sutton–Graves stagnation (NASA TR R-802, \(k = 1.83\times 10^{-8}\) W/cm²), Tauber running-length (NASA TP-2914), Tauber–Sutton radiative (JSR 1991)
 - **Stability:** finite-difference \(C_{L\alpha}\), \(C_{m\alpha}\), \(C_{n\beta}\), \(C_{l\beta}\), static margin
 - **Trajectory:** RK4 3DOF point-mass on the panel polar
 - **Inlets / engines:** multi-ramp θ-β-M, Fanno isolator, Rayleigh heat addition, isentropic nozzle, Kantrowitz start, Heiser–Pratt 1-D cycle
 - **Atmosphere:** 1976 US Standard Atmosphere
+- **Checks tab:** Anderson / NACA 1135 / Sims / US76 / Kantrowitz identities — same solvers the vehicle uses
 
 ---
 

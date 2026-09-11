@@ -14,7 +14,7 @@ export const Slider = React.forwardRef<
     <SliderPrimitive.Track className="relative h-1 w-full grow overflow-hidden rounded-full bg-border">
       <SliderPrimitive.Range className="absolute h-full bg-accent" />
     </SliderPrimitive.Track>
-    <SliderPrimitive.Thumb className="block size-4 rounded-full bg-accent shadow-[0_0_0_4px_rgba(11,13,15,1),0_0_0_5px_rgba(197,208,216,0.45)] focus-visible:outline-none" />
+    <SliderPrimitive.Thumb className="block size-4 rounded-full bg-accent shadow-[0_0_0_4px_var(--color-bg),0_0_0_5px_color-mix(in_oklab,var(--color-fg)_40%,transparent)] focus-visible:outline-none" />
   </SliderPrimitive.Root>
 ));
 Slider.displayName = "Slider";

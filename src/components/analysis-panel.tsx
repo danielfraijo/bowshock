@@ -43,7 +43,12 @@ export function AeroBlock({ study }: { study: StudyResult }) {
           note="Lees. Used on the windward blend."
         />
         <Formula name="Prandtl–Meyer (leeward)" expr="ν(M) = √((γ+1)/(γ−1)) tan⁻¹√[…] − tan⁻¹√(M²−1)" />
-        <Formula name="Skin friction" expr="Cf = 0.455 / (log₁₀ Re)²   (Schlichting / van Driest)" />
+        <Formula
+          name="Mixed panel"
+          expr="attached: tangent-wedge / cone Cp    detached: Cp_max sin²θ    leeward: PM"
+          note="CBAERO-class. Base Love Cp = −1/M² (NACA TN 3819 high-M)."
+        />
+        <Formula name="Skin friction" expr="Cf = Cfi / Fc     van Driest II, Cfi = 0.455/(log₁₀ Re)²" note="Hopkins–Inouye. Compressibility via Taw, Tw." />
       </div>
     </div>
   );
@@ -59,11 +64,11 @@ export function HeatBlock({ study }: { study: StudyResult }) {
       <Stat k="Mean windward" v={`${fmt(a.qMeanWind, 3)} W/cm²`} />
       <Stat k="Rn used" v="LE radius or 0.15% L" />
       <p className="mt-3 text-xs leading-relaxed text-subtle">
-        Sutton–Graves stagnation, Tauber laminar/turbulent along running length, Tauber–Sutton radiative
-        (Earth, engineering). Recovery from wall T. Not a CFD heat flux — color the 3D view by Heat.
+        Sutton–Graves stagnation (TR R-802), Tauber laminar/turbulent along running length (TP-2914),
+        Tauber–Sutton radiative (JSR 1991, Earth). Recovery uses r=√Pr laminar / Pr⅓ turbulent. Not a CFD heat flux — color the view by Heat.
       </p>
       <div className="mt-3 space-y-2">
-        <Formula name="Sutton–Graves" expr="q_s = 1.83×10⁻⁴ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" />
+        <Formula name="Sutton–Graves" expr="q_s = 1.83×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-802; Tauber TP-2914 units." />
         <Formula name="Tauber–Sutton radiative" expr="q_r = 4.736×10⁸ Rn^1.072 ρ^1.22 (V/10⁴)^8.5    (V ≳ 2.5 km/s)" />
       </div>
     </div>
@@ -85,15 +90,15 @@ export function StabBlock({ study }: { study: StudyResult }) {
       <div className="mt-4 h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={s.polar} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(255,255,255,0.06)" />
-            <XAxis dataKey="a" tick={{ fill: "#8b939c", fontSize: 10 }} />
-            <YAxis tick={{ fill: "#8b939c", fontSize: 10 }} />
+            <CartesianGrid stroke="rgba(255,255,255,0.08)" />
+            <XAxis dataKey="a" tick={{ fill: "#9a9a9a", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#9a9a9a", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#12161a", border: "1px solid #262c32", fontSize: 11 }}
+              contentStyle={{ background: "#111111", border: "1px solid #2c2c2c", fontSize: 11, color: "#f4f4f4" }}
               labelFormatter={(v) => `α ${v}°`}
             />
-            <Line type="monotone" dataKey="cl" stroke="#c5d0d8" dot={false} strokeWidth={1.5} name="CL" />
-            <Line type="monotone" dataKey="cm" stroke="#c07a6a" dot={false} strokeWidth={1.5} name="Cm" />
+            <Line type="monotone" dataKey="cl" stroke="#f2f2f2" dot={false} strokeWidth={1.5} name="CL" />
+            <Line type="monotone" dataKey="cm" stroke="#8a8a8a" dot={false} strokeWidth={1.5} name="Cm" />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -233,14 +238,14 @@ export function TrajBlock({ study }: { study: StudyResult }) {
       <div className="mt-4 h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(255,255,255,0.06)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#8b939c", fontSize: 10 }} />
-            <YAxis tick={{ fill: "#8b939c", fontSize: 10 }} />
+            <CartesianGrid stroke="rgba(255,255,255,0.08)" />
+            <XAxis dataKey="xKm" tick={{ fill: "#9a9a9a", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#9a9a9a", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#12161a", border: "1px solid #262c32", fontSize: 11 }}
+              contentStyle={{ background: "#111111", border: "1px solid #2c2c2c", fontSize: 11, color: "#f4f4f4" }}
               labelFormatter={(v) => `${Number(v).toFixed(0)} km`}
             />
-            <Line type="monotone" dataKey="hKm" stroke="#c5d0d8" dot={false} strokeWidth={1.5} name="h km" />
+            <Line type="monotone" dataKey="hKm" stroke="#f2f2f2" dot={false} strokeWidth={1.5} name="h km" />
           </LineChart>
         </ResponsiveContainer>
       </div>

@@ -16,7 +16,7 @@ export const Route = createRootRoute({
         content:
           "Inverse-design waveriders. Export watertight STL, STEP, IGES, and Plot3D for SolidWorks, FreeCAD, and Pointwise.",
       },
-      { name: "theme-color", content: "#0b0d0f" },
+      { name: "theme-color", content: "#080808" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },

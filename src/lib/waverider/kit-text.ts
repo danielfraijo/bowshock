@@ -112,12 +112,14 @@ Zero third-party dependencies (Python 3.9+). C is optional verification.
 
 Panel aero (CBAERO-class, not a Navier–Stokes substitute)
 --------------------------------------------------------
-Mixed method: tangent-wedge windward (θ-β-M), Prandtl–Meyer leeward,
-Modified Newtonian blend, Love base pressure, van-Driest/Schlichting Cf.
-Heating: Sutton–Graves stagnation + Tauber running-length + Tauber–Sutton
-radiative. Stability: finite-difference CLα, Cmα, Cnβ, Clβ, static margin
-about CG x/L. Mass: closed-mesh tetrahedron integrals. Trajectory: RK4 3DOF
-point-mass using the panel polar. Ramjet/scram: Heiser–Pratt 1-D.
+Mixed method: attached tangent-wedge (θ-β-M) or tangent-cone (Taylor–Maccoll /
+Sims) on the windward face; Modified Newtonian (Lees) if the shock detaches;
+Prandtl–Meyer leeward; Love base Cp = −1/M²; van Driest II Cf (Hopkins–Inouye).
+Heating: Sutton–Graves stagnation (TR R-802, q in W/cm² with k=1.83e-8) +
+Tauber running-length (TP-2914) + Tauber–Sutton radiative (JSR 1991).
+Stability: finite-difference CLα, Cmα, Cnβ, Clβ, static margin about CG x/L.
+Mass: closed-mesh tetrahedron integrals. Trajectory: RK4 3DOF point-mass using
+the panel polar. Ramjet/scram: Heiser–Pratt 1-D.
 Use analysis.json as the quantitative dump.
 
 These are engineering methods for configuration screening. Always follow

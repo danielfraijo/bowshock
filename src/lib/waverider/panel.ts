@@ -4,12 +4,17 @@ import {
   DEG,
   betaFromThetaM,
   clamp,
+  coneSurfaceCp,
+  invPrandtlMeyer,
   newtonianCpMax,
   obliqueShock,
   prandtlMeyer,
-  skinCf,
+  suttonGraves,
+  tauberLaminar,
   tauberSutton,
+  tauberTurbulent,
   vacuumCp,
+  vanDriestII,
   vcross,
   vlen,
   vsub,
@@ -45,6 +50,8 @@ export interface PanelAero {
   notes: string[];
 }
 
+const CONE_FAMILIES = new Set(["cone", "osculating", "elliptic", "viscopt", "star"]);
+
 function get(mesh: TriMesh, i: number): Vec3 {
   return [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]];
 }
@@ -72,7 +79,7 @@ function rotateForce(F: Vec3, alpha: number, beta: number) {
   return { lift, drag, side: y1 };
 }
 
-function tangentCp(M: number, theta: number, gamma: number, cpMax: number): number {
+function tangentWedgeCp(M: number, theta: number, gamma: number, cpMax: number): number {
   if (theta <= 1e-5) return 0;
   const beta = betaFromThetaM(M, theta, gamma);
   if (!Number.isFinite(beta)) return cpMax * Math.sin(theta) ** 2;
@@ -81,25 +88,35 @@ function tangentCp(M: number, theta: number, gamma: number, cpMax: number): numb
   return (sh.p2p1 - 1) / q;
 }
 
+function windwardCp(
+  M: number,
+  theta: number,
+  gamma: number,
+  cpMax: number,
+  method: AeroMethod,
+  useCone: boolean,
+): { cp: number; attached: boolean } {
+  const sin2 = Math.sin(theta) ** 2;
+  if (method === "newtonian") return { cp: cpMax * sin2, attached: true };
+  const beta = betaFromThetaM(M, theta, gamma);
+  const attached = Number.isFinite(beta);
+  if (!attached) return { cp: cpMax * sin2, attached: false };
+  if (method === "tangent" || method === "mixed") {
+    const exact = useCone ? coneSurfaceCp(M, theta, gamma) : tangentWedgeCp(M, theta, gamma, cpMax);
+    return { cp: exact, attached: true };
+  }
+  return { cp: cpMax * sin2, attached: attached };
+}
+
 function leewardCp(M: number, theta: number, gamma: number): number {
   const nu = prandtlMeyer(M, gamma);
   const nu2 = nu + theta;
   const nuMax = prandtlMeyer(20, gamma);
   if (nu2 >= nuMax * 0.98) return vacuumCp(M, gamma);
-  const iso = 1;
-  const p1 = iso;
-  const Ttratio = 1 + 0.5 * (gamma - 1) * M * M;
-  const pt = p1 * Ttratio ** (gamma / (gamma - 1));
-  const M2 = Math.max(M, 1.01);
-  const k = Math.sqrt((gamma + 1) / (gamma - 1));
-  let Mm = M2;
-  for (let i = 0; i < 18; i++) {
-    const n = prandtlMeyer(Mm, gamma) - nu2;
-    const d = (prandtlMeyer(Mm + 1e-4, gamma) - prandtlMeyer(Mm, gamma)) / 1e-4;
-    Mm = clamp(Mm - n / (d || 1), 1.01, 25);
-  }
-  const t2 = 1 + 0.5 * (gamma - 1) * Mm * Mm;
-  const p2 = pt / t2 ** (gamma / (gamma - 1));
+  const Mm = invPrandtlMeyer(nu2, gamma);
+  const iso2 = 1 + 0.5 * (gamma - 1) * Mm * Mm;
+  const iso1 = 1 + 0.5 * (gamma - 1) * M * M;
+  const p2 = iso2 ** (-gamma / (gamma - 1)) / iso1 ** (-gamma / (gamma - 1));
   const q = 0.5 * gamma * M * M;
   return clamp((p2 - 1) / q, vacuumCp(M, gamma), 0.2);
 }
@@ -121,7 +138,6 @@ export function panelAero(
   const beta = betaDeg * DEG;
   const vhat = flowDir(alpha, beta);
   const cpMax = newtonianCpMax(M, g);
-  const cpVac = vacuumCp(M, g);
   const nt = mesh.indices.length / 3;
   const cp = new Float32Array(nt);
   const heat = new Float32Array(nt);
@@ -138,11 +154,13 @@ export function panelAero(
   let qWindSum = 0;
   let aWind = 0;
   let FxBase = 0;
+  let nDetached = 0;
   const Rn = Math.max(params.leRadius, 0.0015 * params.length);
   const Tw = Math.max(200, params.twK);
   const h0 = atm.T * (1 + 0.5 * (g - 1) * M * M) * 1004.7;
   const hw = Tw * 1004.7;
-  const recov = clamp(1 - hw / Math.max(h0, 1), 0.05, 0.95);
+  const recovStag = clamp(1 - hw / Math.max(h0, 1), 0.05, 0.95);
+  const useCone = CONE_FAMILIES.has(params.family);
 
   for (let t = 0; t < nt; t++) {
     const a = get(mesh, mesh.indices[t * 3]);
@@ -166,14 +184,12 @@ export function panelAero(
       cpi = -1 / (M * M);
     } else if (ndv >= 0) {
       const theta = Math.asin(clamp(ndv, 0, 1));
-      cpi = method === "newtonian" ? 0.15 * cpVac : leewardCp(M, theta, g);
+      cpi = method === "newtonian" ? 0 : leewardCp(M, theta, g);
     } else {
       const theta = Math.asin(sinth);
-      if (method === "newtonian") cpi = cpMax * sinth * sinth;
-      else {
-        const tw = tangentCp(M, theta, g, cpMax);
-        cpi = method === "tangent" ? tw : 0.65 * tw + 0.35 * cpMax * sinth * sinth;
-      }
+      const w = windwardCp(M, theta, g, cpMax, method, useCone);
+      cpi = w.cp;
+      if (!w.attached) nDetached++;
     }
     cp[t] = cpi;
     const dFx = -cpi * area * n[0];
@@ -192,18 +208,21 @@ export function panelAero(
 
     if (ndv < -0.02 && surf !== SURFACE_ID.base) {
       const x = Math.max(cx, Rn);
-      const qLam = 1.83e-4 * Math.sqrt(atm.rho / x) * atm.V ** 3 * recov * Math.pow(sinth, 1.15);
-      const qTurb = 3.7e-5 * atm.rho ** 0.8 * atm.V ** 3.37 * x ** -0.2 * recov * Math.pow(sinth, 1.6);
       const ReX = atm.ReL * x;
+      const rRec = ReX > 5e5 ? 0.89 : 0.84;
+      const hrec = atm.T * 1004.7 * (1 + rRec * 0.5 * (g - 1) * M * M);
+      const recov = clamp(1 - hw / Math.max(hrec, 1), 0.05, 0.95);
+      const qLam = tauberLaminar(atm.rho, atm.V, x, recov, sinth);
+      const qTurb = tauberTurbulent(atm.rho, atm.V, x, recov, sinth);
       const qW = ReX > 5e5 ? Math.max(qLam, qTurb) : qLam;
-      heat[t] = qW / 1e4;
+      heat[t] = qW;
       qWindSum += heat[t] * area;
       aWind += area;
       if (heat[t] > qMax) qMax = heat[t];
     }
   }
 
-  qStag = (1.83e-4 * Math.sqrt(atm.rho / Rn) * atm.V ** 3 * recov) / 1e4;
+  qStag = suttonGraves(atm.rho, atm.V, Rn, recovStag);
   const qRad = tauberSutton(atm.rho, atm.V, Rn);
   if (qStag > qMax) qMax = qStag;
 
@@ -211,7 +230,7 @@ export function panelAero(
   const S = Math.max(sRef, 1e-8);
   const L = Math.max(lRef, 1e-8);
   const wind = rotateForce([Fx * q, Fy * q, Fz * q], alpha, beta);
-  const Cf = skinCf(atm.ReL * L);
+  const Cf = vanDriestII(atm.ReL * L, M, atm.T, Tw, g);
   const swet = aWind > 0 ? aWind * 1.35 : S * 2.4;
   const Dfric = Cf * q * swet;
   const lift = wind.lift;
@@ -230,7 +249,18 @@ export function panelAero(
   const ca = (Fx * q) / (q * S);
   const cnA = (Fz * q) / (q * S);
 
-  if (method === "mixed") notes.push("Mixed: tangent-wedge windward, Prandtl–Meyer leeward, Newtonian blend, Love base, van-Driest Cf.");
+  if (method === "mixed") {
+    notes.push(
+      useCone
+        ? "Mixed: tangent-cone (Taylor–Maccoll) windward if attached, Modified Newtonian if detached; Prandtl–Meyer leeward; Love base; van Driest II Cf."
+        : "Mixed: tangent-wedge (θ-β-M) windward if attached, Modified Newtonian if detached; Prandtl–Meyer leeward; Love base; van Driest II Cf.",
+    );
+  } else if (method === "tangent") {
+    notes.push(useCone ? "Tangent-cone (Sims / Taylor–Maccoll) on windward panels." : "Tangent-wedge (exact oblique shock) on windward panels.");
+  } else {
+    notes.push("Modified Newtonian (Lees) windward, shadow Cp = 0 leeward.");
+  }
+  if (nDetached > 12) notes.push(`${nDetached} windward panels have a detached shock — Newtonian used there.`);
   if (params.lockFlight) notes.push("Flight Mach locked to design Mach.");
 
   return {

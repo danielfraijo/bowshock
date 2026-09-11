@@ -103,7 +103,7 @@ function geomKey(p: DesignParams) {
 export function Designer() {
   const [params, setParams] = useState<DesignParams>(DEFAULT_PARAMS);
   const [hydrated, setHydrated] = useState(false);
-  const [opts, setOpts] = useState<ViewerOpts>({ wireframe: true, shock: true, grid: true, origin: true, color: "surface" });
+  const [opts, setOpts] = useState<ViewerOpts>({ wireframe: false, shock: true, grid: true, origin: true, color: "surface" });
   const [busy, setBusy] = useState<string | null>(null);
   const [python, setPython] = useState<string>("");
   const [cSrc, setCSrc] = useState<string>("");
@@ -297,7 +297,7 @@ export function Designer() {
         <section className="relative order-1 flex min-h-[280px] flex-col lg:order-none lg:min-h-0">
           <div className="relative h-[46vh] min-h-[280px] flex-1 lg:h-auto lg:min-h-[420px]">
             <WaveriderViewer built={built} study={study} opts={opts} />
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-[linear-gradient(to_bottom,rgba(11,13,15,0.55),transparent)]" />
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-bg/70 to-transparent" />
             <div className="absolute top-3 left-3 rounded-md bg-bg/70 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur-sm">
               <span className="font-medium text-fg">{fam.label}</span>
               <span className="mx-1.5 text-subtle">/</span>
@@ -328,19 +328,26 @@ export function Designer() {
                 </button>
               ))}
             </div>
-            <div className="absolute bottom-3 left-3 flex gap-1">
-              {(["surface", "cp", "heat"] as ColorMode[]).map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setOpts((o) => ({ ...o, color: c }))}
-                  className={`h-9 rounded-sm px-2.5 text-[11px] font-medium uppercase ${
-                    opts.color === c ? "bg-accent text-accent-fg" : "bg-bg/70 text-muted backdrop-blur-sm"
-                  }`}
-                >
-                  {c === "cp" ? "Cp" : c}
-                </button>
-              ))}
+            <div className="absolute bottom-3 left-3 flex flex-col gap-1.5">
+              <div className="flex gap-1">
+                {(["surface", "cp", "heat"] as ColorMode[]).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setOpts((o) => ({ ...o, color: c }))}
+                    className={`h-9 rounded-sm px-2.5 text-[11px] font-medium uppercase ${
+                      opts.color === c ? "bg-accent text-accent-fg" : "bg-bg/70 text-muted backdrop-blur-sm"
+                    }`}
+                  >
+                    {c === "cp" ? "Cp" : c}
+                  </button>
+                ))}
+              </div>
+              {opts.color !== "surface" ? (
+                <div className="flex h-2 w-40 overflow-hidden rounded-sm bg-bg" title={opts.color === "cp" ? "Cp" : "heat"}>
+                  <span className="flex-1 bg-gradient-to-r from-bg to-fg" />
+                </div>
+              ) : null}
             </div>
             <div className="absolute right-3 bottom-3 font-mono text-[10px] tracking-wider text-subtle">
               {hydrated ? `${fmt(study.elapsedMs, 0)} ms · ` : null}L/D {fmt(study.aero.ld, 2)}
@@ -714,7 +721,7 @@ export function Designer() {
 
       <footer className="hidden items-center justify-between border-t border-border px-6 py-2 text-[11px] text-subtle sm:flex">
         <span className="inline-flex items-center gap-1.5">
-          {q.watertight ? <Check className="size-3 text-ok" /> : <Octagon className="size-3 text-warn" />}
+          {q.watertight ? <Check className="size-3 text-fg" /> : <Octagon className="size-3 text-muted" />}
           {q.watertight ? "Closed manifold solid" : "Open mesh — raise resolution"}
           <span className="mx-2 text-border">·</span>
           CL {fmt(study.aero.cl, 3)} · L/D {fmt(study.aero.ld, 2)} · q̇s {fmt(study.aero.qStag, 2)} W/cm²

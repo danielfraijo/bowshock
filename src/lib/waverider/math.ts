@@ -182,7 +182,7 @@ export function solveConeShock(M: number, cone: number, gamma = 1.4): number {
       continue;
     }
     best = mid;
-    if (tm.cone > cone) lo = mid;
+    if (tm.cone < cone) lo = mid;
     else hi = mid;
   }
   return best;
@@ -277,8 +277,96 @@ export function sutherlandMu(T: number): number {
 export function skinCf(Re: number): number {
   if (!(Re > 100)) return 0.01;
   const log = Math.log10(Math.max(Re, 1e3));
-  return 0.455 / (log * log) / 1.2;
+  return 0.455 / (log * log);
 }
+
+/**
+ * van Driest II compressible turbulent flat-plate Cf (Hopkins & Inouye 1971;
+ * White 2006). Incompressible Cf from Prandtl–Schlichting, then
+ * Cf = Cfi / Fc with Fθ = μe/μw.
+ */
+export function vanDriestII(Re: number, M: number, Te: number, Tw: number, gamma = 1.4): number {
+  const Cfi = skinCf(Re);
+  if (!(M > 0.35) || !(Te > 0) || !(Tw > 0)) return Cfi;
+  const r = 0.89;
+  const TawTe = 1 + r * 0.5 * (gamma - 1) * M * M;
+  const TwTe = clamp(Tw / Te, 0.2, 8);
+  const a2 = (r * 0.5 * (gamma - 1) * M * M) / TwTe;
+  const b = TawTe / TwTe - 1;
+  const den = Math.sqrt(Math.max(1e-16, 4 * a2 + b * b));
+  const A = clamp((2 * a2 - b) / den, -1, 1);
+  const B = clamp(b / den, -1, 1);
+  const span = Math.asin(A) + Math.asin(B);
+  const Fc = Math.abs(span) < 1e-8 ? TwTe : (TawTe - 1) / (span * span);
+  const muW = sutherlandMu(Tw);
+  const muE = sutherlandMu(Te);
+  const Rei = Math.max(1e3, Re * (muE / Math.max(muW, 1e-12)));
+  const CfiStar = skinCf(Rei);
+  return CfiStar / Math.max(Fc, 0.35);
+}
+
+/** Sutton–Graves / Tauber TP-2914 Earth stagnation, W/cm². ρ kg/m³, Rn m, V m/s. */
+export function suttonGraves(rho: number, V: number, Rn: number, recov = 1): number {
+  return 1.83e-8 * Math.sqrt(rho / Math.max(Rn, 1e-8)) * V ** 3 * recov;
+}
+
+/** Tauber laminar running-length heating, W/cm² (NASA TP-2914). */
+export function tauberLaminar(rho: number, V: number, x: number, recov: number, sinth: number): number {
+  return 1.83e-8 * Math.sqrt(rho / Math.max(x, 1e-8)) * V ** 3 * recov * Math.pow(Math.max(sinth, 0), 1.15);
+}
+
+/** Tauber turbulent running-length heating, W/cm² (TP-2914 / CBAERO fit). */
+export function tauberTurbulent(rho: number, V: number, x: number, recov: number, sinth: number): number {
+  return 3.7e-9 * rho ** 0.8 * V ** 3.37 * Math.max(x, 1e-8) ** -0.2 * recov * Math.pow(Math.max(sinth, 0), 1.6);
+}
+
+const _coneBeta = new Map<string, number>();
+const _coneCp = new Map<string, number>();
+
+function coneKey(M: number, cone: number, gamma: number) {
+  return `${M.toFixed(2)}:${(cone * RAD).toFixed(1)}:${gamma}`;
+}
+
+/** Cached Taylor–Maccoll shock angle for a cone. */
+export function solveConeShockCached(M: number, cone: number, gamma = 1.4): number {
+  const k = coneKey(M, cone, gamma);
+  const hit = _coneBeta.get(k);
+  if (hit !== undefined) return hit;
+  const b = solveConeShock(M, cone, gamma);
+  _coneBeta.set(k, b);
+  return b;
+}
+
+/**
+ * Inviscid cone surface Cp from Taylor–Maccoll (Sims NASA SP-3004 method).
+ * Used as the tangent-cone pressure on axisymmetric generating flows.
+ */
+export function coneSurfaceCp(M: number, cone: number, gamma = 1.4): number {
+  if (cone <= 1e-5) return 0;
+  const k = coneKey(M, cone, gamma);
+  const hit = _coneCp.get(k);
+  if (hit !== undefined) return hit;
+  const beta = solveConeShockCached(M, cone, gamma);
+  const tm = taylorMaccoll(M, beta, gamma);
+  const q = 0.5 * gamma * M * M;
+  if (!tm) {
+    const cp = newtonianCpMax(M, gamma) * Math.sin(cone) ** 2;
+    _coneCp.set(k, cp);
+    return cp;
+  }
+  const sh = obliqueShock(M, beta, gamma);
+  const v2 = tm.vr[0] ** 2 + tm.vt[0] ** 2;
+  const T2T0 = Math.max(1e-6, 1 - v2);
+  const p2 = sh.p2p1;
+  const p02 = p2 * T2T0 ** (-gamma / (gamma - 1));
+  const { vr } = interpTable(tm, tm.cone);
+  const TcT0 = Math.max(1e-6, 1 - vr * vr);
+  const pc = p02 * TcT0 ** (gamma / (gamma - 1));
+  const cp = (pc - 1) / q;
+  _coneCp.set(k, cp);
+  return cp;
+}
+
 
 /** Rankine–Hugoniot normal shock. */
 export function normalShock(M: number, gamma = 1.4) {
