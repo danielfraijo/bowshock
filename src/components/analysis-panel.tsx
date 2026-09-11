@@ -102,7 +102,102 @@ export function StabBlock({ study }: { study: StudyResult }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <p className="mt-2 text-xs text-subtle">Finite-difference ±1.5°. Elevon on Geom tab for trim. CG at Flight x/L.</p>
+      <p className="mt-2 text-xs text-subtle">Finite-difference ±1.5°. Elevon on Geom tab for trim. CG at Flight x/L. Rotary derivatives live on the 6DOF tab.</p>
+    </div>
+  );
+}
+
+export function SixDofBlock({ study }: { study: StudyResult }) {
+  const six = study.six;
+  const d = six.derivs;
+  const atm = study.atm;
+  const data = six.samples.filter((_, i) => i % 2 === 0);
+  if (six.skipped) {
+    return <p className="text-xs leading-relaxed text-muted">{six.notes[0]}</p>;
+  }
+  return (
+    <div>
+      <p className="mb-3 text-xs leading-relaxed text-muted">
+        Flight at M {fmt(study.flightMach, 2)}, {fmt(atm.h / 1000, 1)} km, {fmt(atm.V, 0)} m/s, q∞{" "}
+        {fmt(atm.q / 1000, 2)} kPa. Linear 6DOF from mixed-panel derivatives; RK4 from a +2° α pulse.
+      </p>
+      <p className="mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Static /rad</p>
+      <Stat k="CLα" v={fmt(d.cla, 3)} />
+      <Stat k="Cmα" v={fmt(d.cma, 3)} ok={d.cma < 0} />
+      <Stat k="CDα" v={fmt(d.cda, 3)} />
+      <Stat k="Cnβ" v={fmt(d.cnb, 3)} ok={d.cnb > 0} />
+      <Stat k="Clβ" v={fmt(d.clb, 3)} />
+      <Stat k="CYβ" v={fmt(d.cyb, 3)} />
+      <Stat k="Static margin" v={`${fmt(d.staticMarginPct, 1)} % L`} ok={d.staticMargin > 0} />
+      <Stat k="Trim α" v={`${fmt(d.trimAlpha, 2)}°`} />
+      <p className="mt-3 mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Rotary (per rate hat)</p>
+      <Stat k="Cmq" v={fmt(d.cmq, 3)} ok={d.cmq < 0} />
+      <Stat k="CLq" v={fmt(d.clq, 3)} />
+      <Stat k="Clp" v={fmt(d.clp, 3)} ok={d.clp < 0} />
+      <Stat k="Cnr" v={fmt(d.cnr, 3)} ok={d.cnr < 0} />
+      <Stat k="Clr" v={fmt(d.clr, 3)} />
+      <Stat k="Cnp" v={fmt(d.cnp, 3)} />
+      <p className="mt-3 mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Rigid-body modes (Etkin)</p>
+      {six.modes.map((m) => (
+        <div key={m.name} className="border-b border-border/80 py-2 last:border-0">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-xs text-fg">{m.name}</span>
+            <span className={`font-mono text-[11px] ${m.stable ? "text-ok" : "text-warn"}`}>{m.stable ? "stable" : "unstable"}</span>
+          </div>
+          <p className="mt-0.5 font-mono text-[10px] text-subtle">
+            ωn {fmt(m.wn, 3)} rad/s · ζ {fmt(m.zeta, 3)}
+            {m.period > 0 && Number.isFinite(m.period) ? ` · T ${fmt(m.period, 2)} s` : ""}
+            {m.tHalf > 0 && Number.isFinite(m.tHalf)
+              ? ` · t½ ${fmt(m.tHalf, 2)} s`
+              : m.tHalf < 0 && Number.isFinite(m.tHalf)
+                ? ` · t2× ${fmt(-m.tHalf, 2)} s`
+                : ""}
+          </p>
+          <p className="mt-1 text-[10px] leading-snug text-muted">{m.note}</p>
+        </div>
+      ))}
+      <p className="mt-3 mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">
+        RK4 6DOF · {six.iterations} steps · dt {six.dt}s · α₀+2°
+      </p>
+      <div className="h-40">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke="rgba(255,255,255,0.08)" />
+            <XAxis dataKey="t" tick={{ fill: "#9a9a9a", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#9a9a9a", fontSize: 10 }} />
+            <Tooltip
+              contentStyle={{ background: "#111111", border: "1px solid #2c2c2c", fontSize: 11, color: "#f4f4f4" }}
+              labelFormatter={(v) => `${Number(v).toFixed(2)} s`}
+            />
+            <Line type="monotone" dataKey="alphaDeg" stroke="#f2f2f2" dot={false} strokeWidth={1.5} name="α°" />
+            <Line type="monotone" dataKey="qDeg" stroke="#8a8a8a" dot={false} strokeWidth={1.5} name="q °/s" />
+            <Line type="monotone" dataKey="betaDeg" stroke="#5a5a5a" dot={false} strokeWidth={1.2} name="β°" />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="mt-3 space-y-2">
+        <Formula
+          name="Short period"
+          expr="ω²_sp = Zα Mq / V − Mα     ζ = −(Zα/V + Mq) / (2 ω)"
+          note="Etkin, Dynamics of Atmospheric Flight, ch. 6. Zα = −qS CLα / m."
+        />
+        <Formula
+          name="Rotary incidence"
+          expr="V_panel = V∞ î − ω × r_cg     q̂ = q L / 2V"
+          note="Local velocity perturbation on every facet. Same mixed Cp as the static polar."
+        />
+        <Formula
+          name="RK4"
+          expr="k₁=f(y), k₂=f(y+h k₁/2), k₃=f(y+h k₂/2), k₄=f(y+h k₃)    y ← y + h(k₁+2k₂+2k₃+k₄)/6"
+          note="Classic 4th-order. 400 steps × 0.02 s from a 2° α pulse about trim."
+        />
+        <Formula
+          name="Euler pitch"
+          expr="Iyy q̇ = q∞ S L (Cmα α + Cmq q̂)"
+          note="Linear aero, Mirtich Iyy. C++ kernel (bowshock.cpp) integrates the same ODEs offline."
+        />
+      </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-subtle">{six.notes.join(" ")}</p>
     </div>
   );
 }

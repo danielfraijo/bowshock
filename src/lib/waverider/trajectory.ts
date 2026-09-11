@@ -1,4 +1,4 @@
-import { DEG, clamp, tauberSutton } from "./math";
+import { DEG, clamp, suttonGraves, tauberSutton } from "./math";
 import { atmosphere } from "./atmosphere";
 import type { DesignParams } from "./types";
 
@@ -96,7 +96,8 @@ export function integrateGlide(
   for (let k = 0; k < 220; k++) {
     const d1 = deriv(v, gam, h);
     if (k % 4 === 0 || k === 0) {
-      const qConv = (1.83e-4 * Math.sqrt(d1.atm.rho / Math.max(Rn, 0.004)) * v ** 3 * 0.5) / 1e4;
+      const recov = 0.5;
+      const qConv = suttonGraves(d1.atm.rho, v, Math.max(Rn, 0.004), recov);
       const qRad = tauberSutton(d1.atm.rho, v, Rn);
       samples.push({
         t: k * dt,

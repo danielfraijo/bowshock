@@ -6,6 +6,7 @@ import { ramjetCycle, type PropResult } from "./propulsion";
 import { massProperties, type MassProps } from "./mass";
 import { integrateGlide, type TrajResult } from "./trajectory";
 import { runValidation, validationSummary, type Check } from "./validate";
+import { solveSixDof, type SixDofResult } from "./sixdof";
 
 export interface LitBand {
   ld: [number, number];
@@ -79,6 +80,7 @@ export interface StudyResult {
   atm: Atmosphere;
   aero: PanelAero;
   stab: ReturnType<typeof finiteStab>;
+  six: SixDofResult;
   prop: PropResult | null;
   mass: MassProps;
   traj: TrajResult;
@@ -105,9 +107,24 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
   const lRef = p.length;
   const full = domain === "external" || p.family === "integrated";
   const aero = panelAero(built.mesh, p, atm, p.alphaDeg, p.betaDeg, sRef, lRef);
-  const stab = finiteStab(built.mesh, p, atm, sRef, lRef, full);
-  const prop = ramjetCycle(p, atm);
   const mass = massProperties(built.mesh, p.rhoKgM3 || 160, p.massKg || 0);
+  const six = solveSixDof(built.mesh, p, atm, mass, sRef, lRef, full);
+  const stab = {
+    cla: six.derivs.cla,
+    cma: six.derivs.cma,
+    cnb: six.derivs.cnb,
+    cyb: six.derivs.cyb,
+    clb: six.derivs.clb,
+    staticMargin: six.derivs.staticMargin,
+    staticMarginPct: six.derivs.staticMarginPct,
+    trimAlpha: six.derivs.trimAlpha,
+    trimCm: six.derivs.trimCm,
+    longitudinallyStable: six.derivs.longitudinallyStable,
+    directionallyStable: six.derivs.directionallyStable,
+    polar: six.polar,
+    atAlpha: six.atAlpha,
+  };
+  const prop = ramjetCycle(p, atm);
   mass.ballistic = aero.cd > 1e-8 ? mass.mass / (aero.cd * sRef) : 0;
   const Rn = Math.max(p.leRadius, 0.0015 * p.length);
   const traj = full
@@ -146,6 +163,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
     atm,
     aero,
     stab,
+    six,
     prop,
     mass,
     traj,
@@ -160,7 +178,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
 }
 
 export function studyJson(built: BuiltVehicle, study: StudyResult): string {
-  const { atm, aero, stab, prop, mass, traj, bench, literature, checks, elapsedMs, flightMach, domain } = study;
+  const { atm, aero, stab, six, prop, mass, traj, bench, literature, checks, elapsedMs, flightMach, domain } = study;
   return JSON.stringify(
     {
       name: built.params.name,
@@ -191,9 +209,25 @@ export function studyJson(built: BuiltVehicle, study: StudyResult): string {
         cma: stab.cma,
         cnb: stab.cnb,
         clb: stab.clb,
+        cmq: six.derivs.cmq,
+        clp: six.derivs.clp,
+        cnr: six.derivs.cnr,
         staticMarginPct: stab.staticMarginPct,
         trimAlpha: stab.trimAlpha,
         longitudinallyStable: stab.longitudinallyStable,
+        modes: six.modes.map((m) => ({
+          name: m.name,
+          wn: m.wn,
+          zeta: m.zeta,
+          period: m.period,
+          stable: m.stable,
+        })),
+        sixDof: {
+          method: six.method,
+          iterations: six.iterations,
+          dt: six.dt,
+          skipped: six.skipped,
+        },
       },
       mass: { kg: mass.mass, cg: mass.cg, Iyy: mass.Iyy, ballistic: mass.ballistic },
       trajectory: {

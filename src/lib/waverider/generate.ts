@@ -12,7 +12,7 @@ import {
   solveConeShock,
   thetaFromBetaM,
 } from "./math";
-import { MeshBuilder, analyzeMesh, gridPoint, makeGrid, orientOutward, stitchGrid } from "./mesh";
+import { MeshBuilder, analyzeMesh, gridPoint, makeGrid, orientOutward, stitchGrid, zipperSharpEdges } from "./mesh";
 
 function halfSpanList(ny: number, s: number, half: boolean): number[] {
   const n = Math.max(half ? 4 : 5, half ? Math.ceil(ny / 2) : ny);
@@ -48,11 +48,16 @@ function xLeading(
     const pow = planform === "delta" ? 1 : clamp(p, 0.6, 2.4);
     x = L * yn ** pow;
   }
-  return Math.min(x, L * 0.985);
+  return Math.min(Math.max(x, 0), L);
+}
+
+function xTrailing(y: number, L: number, teTan: number, xl: number) {
+  const xt = L - Math.abs(y) * teTan;
+  return xt > xl ? xt : xl;
 }
 
 function superZ(y: number, s: number, h: number, n: number) {
-  const yn = Math.min(clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1), 0.96);
+  const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1);
   return -h * (1 - yn ** n) ** (1 / n);
 }
 
@@ -77,6 +82,7 @@ function closeVehicle(
     for (let j = 0; j < nj; j++) teU.push(b.vertP(gridPoint(upper, upper.ni - 1, j)));
     for (let j = 0; j < nj; j++) teL.push(b.vertP(gridPoint(lower, lower.ni - 1, j)));
     for (let j = 0; j < nj - 1; j++) {
+      if (teU[j] === teL[j] && teU[j + 1] === teL[j + 1]) continue;
       b.quad(teU[j], teL[j], teL[j + 1], teU[j + 1], "base");
     }
   }
@@ -88,6 +94,7 @@ function closeVehicle(
       const u1 = b.vertP(gridPoint(upper, i + 1, j));
       const l0 = b.vertP(gridPoint(lower, i, j));
       const l1 = b.vertP(gridPoint(lower, i + 1, j));
+      if (u0 === l0 && u1 === l1) continue;
       if (j === 0) b.quad(u0, l0, l1, u1, "leading");
       else b.quad(u0, u1, l1, l0, "leading");
     }
@@ -100,6 +107,7 @@ function closeVehicle(
     for (let i = 0; i < lower.ni; i++) sl.push(b.vertP(gridPoint(lower, i, 0)));
     const n = Math.min(su.length, sl.length);
     for (let i = 0; i < n - 1; i++) {
+      if (su[i] === sl[i] && su[i + 1] === sl[i + 1]) continue;
       b.quad(su[i], su[i + 1], sl[i + 1], sl[i], "symmetry");
     }
   }
@@ -110,6 +118,7 @@ function closeVehicle(
     for (let j = 0; j < nj; j++) leU.push(b.vertP(gridPoint(upper, 0, j)));
     for (let j = 0; j < nj; j++) leL.push(b.vertP(gridPoint(lower, 0, j)));
     for (let j = 0; j < nj - 1; j++) {
+      if (leU[j] === leL[j] && leU[j + 1] === leL[j + 1]) continue;
       b.quad(leU[j], leU[j + 1], leL[j + 1], leL[j], "inlet");
     }
   }
@@ -231,33 +240,30 @@ function lofts(
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
   const cam = (params.camber || 0) * params.height;
   const teTan = Math.tan((params.teSweepDeg || 0) * DEG);
-  const upper = makeGrid("upper", nx, nj, (i, j) => {
+  const sample = (i: number, j: number, isLower: boolean): Vec3 => {
     const y = ys[j];
     const xl = xle(y);
-    const xt = Math.max(L - Math.abs(y) * teTan, xl + 0.08 * (L - xl));
-    const x = lerp(xl, xt, chordCluster(i, nx));
-    const xi = (x - xl) / Math.max(xt - xl, 1e-12);
-    const zLid = 4 * cam * xi * (1 - xi);
-    return [x, y, zLid + Math.abs(y) * dih];
-  });
-  const lower = makeGrid("lower", nx, nj, (i, j) => {
-    const y = ys[j];
-    const xl = xle(y);
-    const xt = Math.max(L - Math.abs(y) * teTan, xl + 0.08 * (L - xl));
-    const x = lerp(xl, xt, chordCluster(i, nx));
-    const frac = (x - xl) / Math.max(xt - xl, 1e-12);
-    const z = zBase(y) * frac ** zPow;
-    const xi = frac;
-    const zLid = 4 * cam * xi * (1 - xi);
-    return [x, y, z + zLid + Math.abs(y) * dih];
-  });
+    const xt = xTrailing(y, L, teTan, xl);
+    const chord = xt - xl;
+    const zOff = Math.abs(y) * dih;
+    if (chord <= 1e-12 * L) return [xl, y, zOff];
+    const frac = chordCluster(i, nx);
+    const x = lerp(xl, xt, frac);
+    const zLid = 4 * cam * frac * (1 - frac);
+    const z = isLower ? zBase(y) * frac ** zPow : 0;
+    return [x, y, z + zLid + zOff];
+  };
+  const upper = makeGrid("upper", nx, nj, (i, j) => sample(i, j, false));
+  const lower = makeGrid("lower", nx, nj, (i, j) => sample(i, j, true));
   const shock = [
     makeGrid("shock", nx, nj, (i, j) => {
       const y = ys[j];
       const xl = xle(y);
-      const xt = Math.max(L - Math.abs(y) * teTan, xl + 0.08 * (L - xl));
-      const x = lerp(xl, xt, i / Math.max(nx - 1, 1));
-      const frac = (x - xl) / Math.max(xt - xl, 1e-12);
+      const xt = xTrailing(y, L, teTan, xl);
+      const chord = xt - xl;
+      if (chord <= 1e-12 * L) return [xl, y, Math.abs(y) * dih];
+      const frac = i / Math.max(nx - 1, 1);
+      const x = lerp(xl, xt, frac);
       const z = zBase(y) * shockScale * frac ** zPow;
       return [x, y, z + Math.abs(y) * dih];
     }),
@@ -270,7 +276,7 @@ function buildCaret(params: DesignParams) {
   const h = params.length * Math.tan(theta);
   const s = params.span / 2;
   const k = Math.tan(theta) / Math.max(Math.tan(beta), 1e-6);
-  return lofts(params, (y) => -h * (1 - Math.min(clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1), 0.96)), "delta", 1, 0, 1 / Math.max(k, 0.2));
+  return lofts(params, (y) => -h * (1 - clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1)), "delta", 1, 0, 1 / Math.max(k, 0.2));
 }
 
 function buildOsculating(params: DesignParams) {
@@ -311,7 +317,7 @@ function buildWedgeCone(params: DesignParams) {
     (y) => {
       const ay = Math.abs(y);
       if (ay <= yw) return -h;
-      const t = Math.min((ay - yw) / Math.max(s - yw, 1e-12), 0.96);
+      const t = clamp((ay - yw) / Math.max(s - yw, 1e-12), 0, 1);
       return -h * (1 - t ** n) ** (1 / n);
     },
     params.planform,
@@ -343,7 +349,7 @@ function buildInward(params: DesignParams) {
   return lofts(
     params,
     (y) => {
-      const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 0.97);
+      const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1);
       if (yn <= wall) return -h;
       const t = (yn - wall) / Math.max(1 - wall, 1e-9);
       return -h * (1 - t * t);
@@ -362,7 +368,7 @@ function buildElliptic(params: DesignParams) {
   return lofts(
     params,
     (y) => {
-      const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 0.999);
+      const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1);
       return -h * Math.sqrt(Math.max(0, 1 - yn * yn));
     },
     params.planform === "rect" ? "delta" : params.planform,
@@ -379,7 +385,7 @@ function buildBusemann(params: DesignParams) {
   return lofts(
     params,
     (y) => {
-      const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 0.97);
+      const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1);
       const circ = Math.sqrt(Math.max(0, 1 - yn * yn));
       return -h * (0.28 + 0.72 * circ);
     },
@@ -536,29 +542,27 @@ function applyElevon(upper: SurfaceGrid, lower: SurfaceGrid, deg: number, L: num
   apply(lower);
 }
 
-function addVerticalFins(b: MeshBuilder, params: DesignParams, zSign: number) {
+function applyFins(lid: SurfaceGrid, params: DesignParams, zSign: number) {
   const h = (params.finHeight || 0) * Math.max(params.height, 0.05);
   if (h < 1e-4) return;
   const L = params.length;
   const yOff = params.span * 0.36;
   const yFins = params.halfModel ? [yOff] : [-yOff, yOff];
   const x0 = L * 0.68;
-  const x1 = L;
-  const z0 = zSign * 0.004 * Math.max(params.height, 0.08);
-  const z1 = z0 + zSign * h;
-  const t = Math.max(0.01, params.span * 0.012);
-  for (const y0 of yFins) {
-    const le0 = b.vert(x0, y0, z0);
-    const le1 = b.vert(x0, y0, z1);
-    const teL0 = b.vert(x1, y0 - t / 2, z0);
-    const teL1 = b.vert(x1, y0 - t / 2, z1);
-    const teR0 = b.vert(x1, y0 + t / 2, z0);
-    const teR1 = b.vert(x1, y0 + t / 2, z1);
-    b.quad(le0, teR0, teR1, le1, "leading");
-    b.quad(le0, le1, teL1, teL0, "leading");
-    b.quad(teL0, teL1, teR1, teR0, "base");
-    b.tri(le1, teR1, teL1, "cowl");
-    b.tri(le0, teL0, teR0, "upper");
+  const halfT = Math.max(params.span * 0.018, 0.01);
+  for (let i = 0; i < lid.ni; i++) {
+    for (let j = 0; j < lid.nj; j++) {
+      const o = (i * lid.nj + j) * 3;
+      const x = lid.xyz[o];
+      const y = lid.xyz[o + 1];
+      if (x < x0) continue;
+      let dy = Infinity;
+      for (const yc of yFins) dy = Math.min(dy, Math.abs(y - yc));
+      if (dy >= halfT) continue;
+      const along = (x - x0) / Math.max(L - x0, 1e-9);
+      const across = 1 - (dy / halfT) ** 2;
+      lid.xyz[o + 2] += zSign * h * along * across;
+    }
   }
 }
 
@@ -725,11 +729,13 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     }
     applyBlunt(built.upper, built.lower, params.leRadius, params.length);
     applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
-    const b = new MeshBuilder(params.length);
     const duct = params.flowThrough && (params.family === "ramjet" || params.family === "scramjet");
-    closeVehicle(b, built.upper, built.lower, params.halfModel, duct);
+    if (!duct) zipperSharpEdges(built.upper, built.lower, params.length);
     const zSign = params.lid === "bottom" ? -1 : 1;
-    addVerticalFins(b, params, zSign);
+    applyFins(built.upper, params, zSign);
+    if (!duct) zipperSharpEdges(built.upper, built.lower, params.length);
+    const b = new MeshBuilder(params.length);
+    closeVehicle(b, built.upper, built.lower, params.halfModel, duct);
     mesh = b.finish();
     skipped = b.skipped;
     grids = [built.upper, built.lower];

@@ -2,6 +2,13 @@ import type { MeshQuality, SurfaceGrid, SurfaceKind, TriMesh, Vec3 } from "./typ
 import { SURFACE_ID } from "./types";
 import { vcross, vdot, vlen, vsub } from "./math";
 
+function dist2(pos: number[], a: number, b: number) {
+  const ax = pos[a * 3] - pos[b * 3];
+  const ay = pos[a * 3 + 1] - pos[b * 3 + 1];
+  const az = pos[a * 3 + 2] - pos[b * 3 + 2];
+  return ax * ax + ay * ay + az * az;
+}
+
 export class MeshBuilder {
   private keyToIndex = new Map<string, number>();
   private pos: number[] = [];
@@ -9,9 +16,13 @@ export class MeshBuilder {
   private surf: number[] = [];
   skipped = 0;
   private q: number;
+  private areaMin: number;
 
   constructor(length = 1) {
-    this.q = 1e10 / Math.max(length, 1e-6);
+    const L = Math.max(length, 1e-6);
+    // ~10 nm relative weld — coincident LE/TE zipper verts merge; distinct grid pts do not.
+    this.q = 1e8 / L;
+    this.areaMin = 1e-18 * L * L;
   }
 
   vert(x: number, y: number, z: number): number {
@@ -52,7 +63,7 @@ export class MeshBuilder {
     const ny = abz * acx - abx * acz;
     const nz = abx * acy - aby * acx;
     const mag = Math.hypot(nx, ny, nz);
-    if (mag < 1e-16) {
+    if (mag < this.areaMin) {
       this.skipped++;
       return;
     }
@@ -60,9 +71,21 @@ export class MeshBuilder {
     this.surf.push(SURFACE_ID[surface]);
   }
 
+  /** Split on the shorter diagonal so sliver quads do not fan into hanging spikes. */
   quad(a: number, b: number, c: number, d: number, surface: SurfaceKind) {
-    this.tri(a, b, c, surface);
-    this.tri(a, c, d, surface);
+    if (a === b && b === c && c === d) {
+      this.skipped++;
+      return;
+    }
+    const ac = dist2(this.pos, a, c);
+    const bd = dist2(this.pos, b, d);
+    if (ac <= bd) {
+      this.tri(a, b, c, surface);
+      this.tri(a, c, d, surface);
+    } else {
+      this.tri(a, b, d, surface);
+      this.tri(b, c, d, surface);
+    }
   }
 
   fan(loop: number[], surface: SurfaceKind, reverse = false) {
@@ -136,6 +159,13 @@ export function gridPoint(g: SurfaceGrid, i: number, j: number): Vec3 {
   return [g.xyz[o], g.xyz[o + 1], g.xyz[o + 2]];
 }
 
+export function setGridPoint(g: SurfaceGrid, i: number, j: number, p: Vec3) {
+  const o = (i * g.nj + j) * 3;
+  g.xyz[o] = p[0];
+  g.xyz[o + 1] = p[1];
+  g.xyz[o + 2] = p[2];
+}
+
 export function makeGrid(name: string, ni: number, nj: number, sample: (i: number, j: number) => Vec3): SurfaceGrid {
   const xyz = new Float64Array(ni * nj * 3);
   for (let i = 0; i < ni; i++) {
@@ -159,6 +189,48 @@ export function stitchGrid(b: MeshBuilder, g: SurfaceGrid, surface: SurfaceKind,
       const d = b.vertP(gridPoint(g, i, j + 1));
       if (flip) b.quad(a, d, c2, c1, surface);
       else b.quad(a, c1, c2, d, surface);
+    }
+  }
+}
+
+/**
+ * Snap already-sharp seams to bitwise-identical vertices and collapse
+ * zero-chord stations (delta tips) to a point. Does not flatten blunt
+ * noses or open inlets — those have a real LE gap.
+ */
+export function zipperSharpEdges(upper: SurfaceGrid, lower: SurfaceGrid, length: number) {
+  const L = Math.max(length, 1e-6);
+  const eps = 1e-7 * L;
+  const ni = Math.min(upper.ni, lower.ni);
+  const nj = Math.min(upper.nj, lower.nj);
+  const dist = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const mid = (a: Vec3, b: Vec3): Vec3 => [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5];
+  for (let j = 0; j < nj; j++) {
+    const uLE = gridPoint(upper, 0, j);
+    const lLE = gridPoint(lower, 0, j);
+    if (dist(uLE, lLE) <= eps) {
+      const m = mid(uLE, lLE);
+      setGridPoint(upper, 0, j, m);
+      setGridPoint(lower, 0, j, m);
+    }
+    const uTE = gridPoint(upper, ni - 1, j);
+    const chord = dist(gridPoint(upper, 0, j), uTE);
+    if (chord <= 10 * eps) {
+      const p = gridPoint(upper, 0, j);
+      for (let i = 0; i < ni; i++) {
+        setGridPoint(upper, i, j, p);
+        setGridPoint(lower, i, j, p);
+      }
+      continue;
+    }
+    for (let i = 0; i < ni; i++) {
+      const u = gridPoint(upper, i, j);
+      const l = gridPoint(lower, i, j);
+      if (dist(u, l) <= eps) {
+        const m = mid(u, l);
+        setGridPoint(upper, i, j, m);
+        setGridPoint(lower, i, j, m);
+      }
     }
   }
 }

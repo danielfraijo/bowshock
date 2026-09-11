@@ -121,6 +121,12 @@ function leewardCp(M: number, theta: number, gamma: number): number {
   return clamp((p2 - 1) / q, vacuumCp(M, gamma), 0.2);
 }
 
+export interface RateState {
+  p: number;
+  q: number;
+  r: number;
+}
+
 export function panelAero(
   mesh: TriMesh,
   params: DesignParams,
@@ -129,6 +135,7 @@ export function panelAero(
   betaDeg: number,
   sRef: number,
   lRef: number,
+  rates?: RateState,
 ): PanelAero {
   const notes: string[] = [];
   const M = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
@@ -176,7 +183,22 @@ export function panelAero(
     const cx = (a[0] + b[0] + c[0]) / 3;
     const cy = (a[1] + b[1] + c[1]) / 3;
     const cz = (a[2] + b[2] + c[2]) / 3;
-    const ndv = n[0] * vhat[0] + n[1] * vhat[1] + n[2] * vhat[2];
+    const rx = cx - cg[0];
+    const ry = cy - cg[1];
+    const rz = cz - cg[2];
+    let vhx = vhat[0];
+    let vhy = vhat[1];
+    let vhz = vhat[2];
+    if (rates && atm.V > 1) {
+      const vx = atm.V * vhat[0] - (rates.q * rz - rates.r * ry);
+      const vy = atm.V * vhat[1] - (rates.r * rx - rates.p * rz);
+      const vz = atm.V * vhat[2] - (rates.p * ry - rates.q * rx);
+      const vm = Math.hypot(vx, vy, vz) || 1;
+      vhx = vx / vm;
+      vhy = vy / vm;
+      vhz = vz / vm;
+    }
+    const ndv = n[0] * vhx + n[1] * vhy + n[2] * vhz;
     const sinth = clamp(-ndv, 0, 1);
     const surf = mesh.surfaces[t] ?? 0;
     let cpi: number;
@@ -199,9 +221,6 @@ export function panelAero(
     Fy += dFy;
     Fz += dFz;
     if (surf === SURFACE_ID.base || surf === SURFACE_ID.nozzle) FxBase += dFx;
-    const rx = cx - cg[0];
-    const ry = cy - cg[1];
-    const rz = cz - cg[2];
     Mx += ry * dFz - rz * dFy;
     My += rz * dFx - rx * dFz;
     Mz += rx * dFy - ry * dFx;

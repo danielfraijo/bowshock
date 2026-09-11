@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { WaveriderViewer, type ViewerOpts } from "@/components/viewer";
 import { NumberField, Seg, Stat } from "@/components/fields";
-import { AeroBlock, ChecksBlock, CycleBlock, HeatBlock, MassBlock, ShocksBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
+import { AeroBlock, ChecksBlock, CycleBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
 import { buildVehicle } from "@/lib/waverider/generate";
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import { fmt } from "@/lib/waverider/math";
@@ -38,7 +38,7 @@ import {
 } from "@/lib/waverider/types";
 import { downloadBlob } from "@/lib/utils";
 
-type Tab = "geom" | "flight" | "aero" | "heat" | "stab" | "traj" | "cycle" | "shocks" | "checks" | "cad";
+type Tab = "geom" | "flight" | "aero" | "heat" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "cad";
 
 function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
   if (domain === "internal") {
@@ -47,6 +47,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
       { id: "cycle", label: "Cycle" },
       { id: "shocks", label: "Shocks" },
       { id: "heat", label: "Heat" },
+      { id: "sixdof", label: "6DOF" },
       { id: "checks", label: "Checks" },
       { id: "cad", label: "CAD" },
     ];
@@ -57,6 +58,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
     { id: "aero", label: "Aero" },
     { id: "heat", label: "Heat" },
     { id: "stab", label: "Stab" },
+    { id: "sixdof", label: "6DOF" },
     { id: "traj", label: "Traj" },
     { id: "checks", label: "Checks" },
     { id: "cad", label: "CAD" },
@@ -107,6 +109,7 @@ export function Designer() {
   const [busy, setBusy] = useState<string | null>(null);
   const [python, setPython] = useState<string>("");
   const [cSrc, setCSrc] = useState<string>("");
+  const [cppSrc, setCppSrc] = useState<string>("");
   const [presetOpen, setPresetOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("geom");
 
@@ -122,6 +125,10 @@ export function Designer() {
       .then((r) => r.text())
       .then(setCSrc)
       .catch(() => setCSrc(""));
+    fetch("/bowshock.cpp")
+      .then((r) => r.text())
+      .then(setCppSrc)
+      .catch(() => setCppSrc(""));
   }, []);
 
   useEffect(() => {
@@ -201,8 +208,9 @@ export function Designer() {
         downloadBlob(files.runner, `run_case.py`);
         if (python) downloadBlob(new Blob([python], { type: "text/x-python" }), "waverider_cad.py");
         if (cSrc) downloadBlob(new Blob([cSrc], { type: "text/x-csrc" }), "bowshock_aero.c");
+        if (cppSrc) downloadBlob(new Blob([cppSrc], { type: "text/x-c++src" }), "bowshock.cpp");
       } else if (kind === "kit") {
-        const zip = await cfdZip(built, python, cSrc, studyJson(built, study));
+        const zip = await cfdZip(built, python, cSrc, studyJson(built, study), cppSrc);
         downloadBlob(zip, `${n}_cfd_kit.zip`);
       }
     } finally {
@@ -615,6 +623,7 @@ export function Designer() {
             {tab === "aero" ? <AeroBlock study={study} /> : null}
             {tab === "heat" ? <HeatBlock study={study} /> : null}
             {tab === "stab" ? <StabBlock study={study} /> : null}
+            {tab === "sixdof" ? <SixDofBlock study={study} /> : null}
 
             {tab === "cycle" ? (
               <div className="space-y-4">
@@ -698,7 +707,7 @@ export function Designer() {
                     OBJ
                   </Button>
                   <Button variant="secondary" size="sm" onClick={() => save("python")}>
-                    <FileCode2 /> Python+C
+                    <FileCode2 /> Python+C++
                   </Button>
                   <Button variant="secondary" size="sm" onClick={() => save("analysis")}>
                     Analysis JSON
@@ -708,8 +717,9 @@ export function Designer() {
                   {busy === "kit" ? "Packing…" : "Download full CFD kit (.zip)"}
                 </Button>
                 <p className="mt-3 text-[11px] leading-relaxed text-subtle">
-                  Frame: X streamwise, Y span, Z up. The vehicle tip is at the origin. Kit includes analysis.json
-                  with the kernel checks (Anderson / NACA 1135 / US76).
+                  Frame: X streamwise, Y span, Z up. The vehicle tip is at the origin. Kit includes analysis.json,
+                  waverider_cad.py, bowshock_aero.c, and bowshock.cpp (g++ 6DOF kernel). Closed families should
+                  read watertight.
                 </p>
               </div>
             ) : null}

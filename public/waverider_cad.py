@@ -163,7 +163,8 @@ def resolve_shock(d: Design) -> Tuple[float, float, bool]:
 
 class Mesh:
     def __init__(self, length: float = 1.0) -> None:
-        self._q = 1e10 / max(length, 1e-6)
+        self._q = 1e8 / max(length, 1e-6)
+        self._area_min = 1e-18 * max(length, 1e-6) ** 2
         self._key = {}
         self.pos: List[Vec3] = []
         self.idx: List[Tuple[int, int, int]] = []
@@ -186,15 +187,25 @@ class Mesh:
             return
         pa, pb, pc = self.pos[a], self.pos[b], self.pos[c]
         n = vcross(vsub(pb, pa), vsub(pc, pa))
-        if vlen(n) < 1e-16:
+        if vlen(n) < self._area_min:
             self.skipped += 1
             return
         self.idx.append((a, b, c))
         self.surf.append(surface)
 
     def quad(self, a: int, b: int, c: int, d: int, surface: int = 0) -> None:
-        self.tri(a, b, c, surface)
-        self.tri(a, c, d, surface)
+        if a == b == c == d:
+            self.skipped += 1
+            return
+        pa, pb, pc, pd = self.pos[a], self.pos[b], self.pos[c], self.pos[d]
+        ac = (pa[0] - pc[0]) ** 2 + (pa[1] - pc[1]) ** 2 + (pa[2] - pc[2]) ** 2
+        bd = (pb[0] - pd[0]) ** 2 + (pb[1] - pd[1]) ** 2 + (pb[2] - pd[2]) ** 2
+        if ac <= bd:
+            self.tri(a, b, c, surface)
+            self.tri(a, c, d, surface)
+        else:
+            self.tri(a, b, d, surface)
+            self.tri(b, c, d, surface)
 
     def fan(self, loop: Sequence[int], surface: int = 2, reverse: bool = False) -> None:
         pts = list(reversed(loop)) if reverse else list(loop)
@@ -253,20 +264,25 @@ def x_leading(y: float, L: float, s: float, planform: str, p: float, spatular: f
     if planform == "spatular":
         nose = clamp(spatular, 0.04, 0.45)
         blunt = 1.0 - math.sqrt(max(0.0, 1.0 - yn * yn))
-        return min(L * lerp(nose * blunt, yn, 0.35), L * 0.985)
+        return min(max(L * lerp(nose * blunt, yn, 0.35), 0.0), L)
     if planform == "double":
         kink = 0.42
         if yn < kink:
             x = L * 0.1 * (yn / kink)
         else:
             x = L * (0.1 + 0.9 * ((yn - kink) / (1.0 - kink)) ** 1.05)
-        return min(x, L * 0.985)
+        return min(max(x, 0.0), L)
     pow_ = 1.0 if planform == "delta" else clamp(p, 0.6, 2.4)
-    return min(L * (yn ** pow_), L * 0.985)
+    return min(max(L * (yn ** pow_), 0.0), L)
+
+
+def x_trailing(y: float, L: float, te_tan: float, xl: float) -> float:
+    xt = L - abs(y) * te_tan
+    return xt if xt > xl else xl
 
 
 def super_z(y: float, s: float, h: float, n: float) -> float:
-    yn = min(clamp(abs(y) / max(s, 1e-12), 0.0, 1.0), 0.96)
+    yn = clamp(abs(y) / max(s, 1e-12), 0.0, 1.0)
     return -h * (1.0 - yn ** n) ** (1.0 / n)
 
 
@@ -290,6 +306,8 @@ def close_vehicle(mesh: Mesh, upper: Grid, lower: Grid, half: bool, flow_through
         te_u = [mesh.vert(*upper.at(upper.ni - 1, j)) for j in range(upper.nj)]
         te_l = [mesh.vert(*lower.at(lower.ni - 1, j)) for j in range(lower.nj)]
         for j in range(upper.nj - 1):
+            if te_u[j] == te_l[j] and te_u[j + 1] == te_l[j + 1]:
+                continue
             mesh.quad(te_u[j], te_l[j], te_l[j + 1], te_u[j + 1], 2)
     js = [upper.nj - 1] if half else [0, upper.nj - 1]
     for j in js:
@@ -298,6 +316,8 @@ def close_vehicle(mesh: Mesh, upper: Grid, lower: Grid, half: bool, flow_through
             u1 = mesh.vert(*upper.at(i + 1, j))
             l0 = mesh.vert(*lower.at(i, j))
             l1 = mesh.vert(*lower.at(i + 1, j))
+            if u0 == l0 and u1 == l1:
+                continue
             if j == 0:
                 mesh.quad(u0, l0, l1, u1, 3)
             else:
@@ -307,12 +327,77 @@ def close_vehicle(mesh: Mesh, upper: Grid, lower: Grid, half: bool, flow_through
         sl = [mesh.vert(*lower.at(i, 0)) for i in range(lower.ni)]
         n = min(len(su), len(sl))
         for i in range(n - 1):
+            if su[i] == sl[i] and su[i + 1] == sl[i + 1]:
+                continue
             mesh.quad(su[i], su[i + 1], sl[i + 1], sl[i], 4)
     if not flow_through:
         le_u = [mesh.vert(*upper.at(0, j)) for j in range(upper.nj)]
         le_l = [mesh.vert(*lower.at(0, j)) for j in range(lower.nj)]
         for j in range(upper.nj - 1):
+            if le_u[j] == le_l[j] and le_u[j + 1] == le_l[j + 1]:
+                continue
             mesh.quad(le_u[j], le_u[j + 1], le_l[j + 1], le_l[j], 5)
+
+
+def _set(g: Grid, i: int, j: int, p: Vec3) -> None:
+    g.xyz[i * g.nj + j] = p
+
+
+def zipper_sharp_edges(upper: Grid, lower: Grid, length: float) -> None:
+    L = max(length, 1e-6)
+    eps = 1e-7 * L
+    ni = min(upper.ni, lower.ni)
+    nj = min(upper.nj, lower.nj)
+
+    def dist(a: Vec3, b: Vec3) -> float:
+        return math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+    def mid(a: Vec3, b: Vec3) -> Vec3:
+        return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5)
+
+    for j in range(nj):
+        u_le, l_le = upper.at(0, j), lower.at(0, j)
+        if dist(u_le, l_le) <= eps:
+            m = mid(u_le, l_le)
+            _set(upper, 0, j, m)
+            _set(lower, 0, j, m)
+        u_te = upper.at(ni - 1, j)
+        if dist(upper.at(0, j), u_te) <= 10 * eps:
+            p = upper.at(0, j)
+            for i in range(ni):
+                _set(upper, i, j, p)
+                _set(lower, i, j, p)
+            continue
+        for i in range(ni):
+            u, l = upper.at(i, j), lower.at(i, j)
+            if dist(u, l) <= eps:
+                m = mid(u, l)
+                _set(upper, i, j, m)
+                _set(lower, i, j, m)
+
+
+def apply_fins(lid: Grid, d: Design, z_sign: float) -> None:
+    h = (d.fin_height or 0.0) * max(d.height, 0.05)
+    if h < 1e-4:
+        return
+    L = d.length
+    y_off = d.span * 0.36
+    y_fins = [y_off] if d.half_model else [-y_off, y_off]
+    x0 = L * 0.68
+    half_t = max(d.span * 0.018, 0.01)
+    xyz = []
+    for i in range(lid.ni):
+        for j in range(lid.nj):
+            p = lid.at(i, j)
+            x, y, z = p
+            if x >= x0:
+                dy = min(abs(y - yc) for yc in y_fins)
+                if dy < half_t:
+                    along = (x - x0) / max(L - x0, 1e-9)
+                    across = 1.0 - (dy / half_t) ** 2
+                    z += z_sign * h * along * across
+            xyz.append((x, y, z))
+    lid.xyz = xyz
 
 
 def analyze(mesh: Mesh) -> dict:
@@ -358,35 +443,32 @@ def _loft(d: Design, z_base, planform: str, power: float, spat: float, z_exp: fl
         return x_leading(y, L, s, planform, power, spat)
 
     def xt(y: float, xl: float) -> float:
-        return max(L - abs(y) * te_tan, xl + 0.08 * (L - xl))
+        return x_trailing(y, L, te_tan, xl)
 
-    def up(i, j):
+    def sample(i, j, is_lower: bool):
         y = ys[j]
         xl = xle(y)
         xe = xt(y, xl)
-        x = lerp(xl, xe, cluster(i, nx))
-        xi = (x - xl) / max(xe - xl, 1e-12)
-        z_lid = 4.0 * cam * xi * (1.0 - xi)
-        return (x, y, z_lid + abs(y) * dih)
-
-    def lo(i, j):
-        y = ys[j]
-        xl = xle(y)
-        xe = xt(y, xl)
-        x = lerp(xl, xe, cluster(i, nx))
-        frac = (x - xl) / max(xe - xl, 1e-12)
-        z = z_base(y) * (frac ** z_pow)
+        chord = xe - xl
+        z_off = abs(y) * dih
+        if chord <= 1e-12 * L:
+            return (xl, y, z_off)
+        frac = cluster(i, nx)
+        x = lerp(xl, xe, frac)
         z_lid = 4.0 * cam * frac * (1.0 - frac)
-        return (x, y, z + z_lid + abs(y) * dih)
+        z = z_base(y) * (frac ** z_pow) if is_lower else 0.0
+        return (x, y, z + z_lid + z_off)
 
-    return make_grid("upper", nx, nj, up), make_grid("lower", nx, nj, lo)
+    return make_grid("upper", nx, nj, lambda i, j: sample(i, j, False)), make_grid(
+        "lower", nx, nj, lambda i, j: sample(i, j, True)
+    )
 
 
 def build_caret(d: Design) -> Tuple[Grid, Grid]:
     theta, _b, _ = resolve_shock(d)
     h = d.length * math.tan(theta)
     s = d.span / 2.0
-    return _loft(d, lambda y: -h * (1.0 - min(clamp(abs(y) / max(s, 1e-12), 0.0, 1.0), 0.96)), "delta", 1.0, 0.0)
+    return _loft(d, lambda y: -h * (1.0 - clamp(abs(y) / max(s, 1e-12), 0.0, 1.0)), "delta", 1.0, 0.0)
 
 
 def build_osculating(d: Design) -> Tuple[Grid, Grid]:
@@ -409,7 +491,7 @@ def build_wedgecone(d: Design) -> Tuple[Grid, Grid]:
         ay = abs(y)
         if ay <= yw:
             return -h
-        t = min((ay - yw) / max(s - yw, 1e-12), 0.96)
+        t = clamp((ay - yw) / max(s - yw, 1e-12), 0.0, 1.0)
         return -h * (1.0 - t ** n) ** (1.0 / n)
 
     return _loft(d, z_base, d.planform, d.planform_power, 0.2)
@@ -427,7 +509,7 @@ def build_inward(d: Design) -> Tuple[Grid, Grid]:
     wall = clamp(d.wedge_frac, 0.35, 0.88)
 
     def z_base(y: float) -> float:
-        yn = clamp(abs(y) / max(s, 1e-12), 0.0, 0.97)
+        yn = clamp(abs(y) / max(s, 1e-12), 0.0, 1.0)
         if yn <= wall:
             return -h
         t = (yn - wall) / max(1.0 - wall, 1e-9)
@@ -453,7 +535,7 @@ def build_busemann(d: Design) -> Tuple[Grid, Grid]:
     s, h = d.span / 2.0, d.height
 
     def z_base(y: float) -> float:
-        yn = clamp(abs(y) / max(s, 1e-12), 0.0, 0.97)
+        yn = clamp(abs(y) / max(s, 1e-12), 0.0, 1.0)
         circ = math.sqrt(max(0.0, 1.0 - yn * yn))
         return -h * (0.28 + 0.72 * circ)
 
@@ -713,6 +795,11 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
                 g.xyz = xyz
         mesh = Mesh(d.length)
         duct = bool(d.flow_through) and d.family in ("ramjet", "scramjet")
+        if not duct:
+            zipper_sharp_edges(upper, lower, d.length)
+        apply_fins(upper, d, -1.0 if d.lid == "bottom" else 1.0)
+        if not duct:
+            zipper_sharp_edges(upper, lower, d.length)
         close_vehicle(mesh, upper, lower, d.half_model, duct)
         grids = [upper, lower]
     snap_nose(mesh, grids)

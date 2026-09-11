@@ -59,7 +59,13 @@ export function fileBlobs(built: BuiltVehicle) {
   };
 }
 
-export async function cfdZip(built: BuiltVehicle, pythonSource: string, cSource = "", analysis = ""): Promise<Blob> {
+export async function cfdZip(
+  built: BuiltVehicle,
+  pythonSource: string,
+  cSource = "",
+  analysis = "",
+  cppSource = "",
+): Promise<Blob> {
   const f = fileBlobs(built);
   const n = f.name;
   const enc = new TextEncoder();
@@ -78,6 +84,7 @@ export async function cfdZip(built: BuiltVehicle, pythonSource: string, cSource 
     { name: `${n}/waverider_cad.py`, data: enc.encode(pythonSource) },
   ];
   if (cSource) files.push({ name: `${n}/bowshock_aero.c`, data: enc.encode(cSource) });
+  if (cppSource) files.push({ name: `${n}/bowshock.cpp`, data: enc.encode(cppSource) });
   if (analysis) files.push({ name: `${n}/analysis.json`, data: utf8(analysis) });
   return buildZip(files);
 }

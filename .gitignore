@@ -27,9 +27,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# C kernel binary
+# C / C++ kernel binaries
 bowshock_aero
 bowshock_aero.exe
+bowshock
+bowshock.exe
 *.o
 
 # env / OS / editor

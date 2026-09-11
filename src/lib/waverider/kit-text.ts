@@ -53,6 +53,13 @@ Manifold        ${q.manifold ? "YES" : "NO"}
 Triangles       ${q.triangles}
 Vertices        ${q.vertices}
 
+Sharp-edge zipper
+---------------
+Leading edge is a geometric seam (upper = lower). Delta / power-law tips
+collapse to a point (zero chord). Degenerate LE/TE/side caps are skipped.
+Fins morph the lid instead of extra solids. Closed families should knit in
+SolidWorks / FreeCAD / Pointwise without hanging faces.
+
 Coordinates
 -----------
 X  streamwise, tip of the vehicle at the origin, flow +X
