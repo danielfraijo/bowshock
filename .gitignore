@@ -1,0 +1,43 @@
+# dependencies / build
+node_modules/
+.tanstack/
+.vercel/
+dist/
+.output/
+.nitro/
+.cache/
+*.tsbuildinfo
+
+# sandbox-only (Grok preview host)
+artifacts/
+screenshots/
+startup.sh
+AGENTS.md
+AGENTS.project.md
+.node_modules.lock
+
+# grok internals — keep the auth-off flag so `npm run dev` works locally
+.grok/*
+!.grok/app-env.json
+
+# Grok PWA install chrome (preview host only)
+public/__grok/
+
+__pycache__/
+*.pyc
+*.pyo
+
+# C kernel binary
+bowshock_aero
+bowshock_aero.exe
+*.o
+
+# env / OS / editor
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
