@@ -84,20 +84,30 @@ Part workbench > Import ${p.name}.step  (or File > Import)
 
 Pointwise
 ---------
-Unstructured:
-  File > Import > STL (binary). The solid is watertight; assemble a domain
-  from the single body. T-Rex from the surfaces. Use the symmetry face if
-  you exported a half-model (Y = 0).
+Do NOT import STEP as an XYZ point list — that is the cyan cloud.
+
+Unstructured (recommended):
+  File > Import > STL (binary)  ${p.name}.stl
+  Watertight triangles. Assemble a domain, T-Rex from the walls.
 
 Structured:
-  File > Import > Plot3D  (${p.name}.xyz)
-  Blocks are the surface grids (upper, lower, base) with coincident points
-  on the leading edge and trailing edge. Combine connectors, then extrude
-  a hyperbolic volume or build an H/O block around the body.
+  File > Import > Plot3D
+    3-D, Formatted ASCII, IBLANK off
+    File: ${p.name}.x     (extension .x — not .xyz)
+  Blocks are the surface patches (upper/cowl, lower, inlet, nozzle, sides)
+  with coincident points on shared edges.
 
-IGES:
-  File > Import > IGES. Untrimmed NURBS (type 128) of each surface.
-  Knit in the database if you want a single quilt.
+IGES NURBS (most reliable CAD surfaces in Pointwise):
+  ${p.name}.igs  — type-128 B-splines.
+
+NURBS STEP (CAD):
+  ${p.name}_nurbs.step  — degree-3 B-splines, ~16×14 poles, one face per patch.
+  Prefer this in SolidWorks / FreeCAD. Pointwise's STEP reader is hit-or-miss;
+  prefer STL or IGES there.
+
+Glyph:
+  File > Glyph > Execute  ${p.name}.glf
+  Imports STL then IGES then Plot3D automatically.
 
 Python (batch / parametric)
 ---------------------------

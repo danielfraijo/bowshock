@@ -64,3 +64,11 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Jet colormap — analysis field legend only (Heat / Cp). Lab chrome stays B&W. */
+.jet-ramp {
+  background: linear-gradient(to top, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
+}
+.jet-ramp-h {
+  background: linear-gradient(to right, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
+}

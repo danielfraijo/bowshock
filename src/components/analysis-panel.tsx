@@ -1,5 +1,5 @@
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { fmt } from "@/lib/waverider/math";
+import { detraKempRiddell, fmt } from "@/lib/waverider/math";
 import type { StudyResult } from "@/lib/waverider/study";
 import { Formula, Stat } from "@/components/fields";
 
@@ -56,19 +56,28 @@ export function AeroBlock({ study }: { study: StudyResult }) {
 
 export function HeatBlock({ study }: { study: StudyResult }) {
   const a = study.aero;
+  const atm = study.atm;
+  const Rn = Math.max(0.0015 * Math.max(a.lRef, 1), 0.004);
+  const qDkr = detraKempRiddell(atm.rho, atm.V, Rn);
   return (
     <div>
       <Stat k="Stag. heat" v={`${fmt(a.qStag, 3)} W/cm²`} />
+      <Stat k="DKR stag." v={`${fmt(qDkr, 3)} W/cm²`} />
       <Stat k="Radiative" v={`${fmt(a.qRad, 3)} W/cm²`} />
       <Stat k="Peak panel" v={`${fmt(a.qMax, 3)} W/cm²`} />
       <Stat k="Mean windward" v={`${fmt(a.qMeanWind, 3)} W/cm²`} />
+      <Stat k="Tw eq (peak)" v={`${fmt(a.twMax, 0)} K`} />
       <Stat k="Rn used" v="LE radius or 0.15% L" />
       <p className="mt-3 text-xs leading-relaxed text-subtle">
-        Sutton–Graves stagnation (TR R-802), Tauber laminar/turbulent along running length (TP-2914),
-        Tauber–Sutton radiative (JSR 1991, Earth). Recovery uses r=√Pr laminar / Pr⅓ turbulent. Not a CFD heat flux — color the view by Heat.
+        Sutton–Graves stagnation (TR R-802) is the Earth engineering form of Fay–Riddell. Tauber
+        laminar/turbulent along running length (TP-2914), Tauber–Sutton radiative (JSR 1991). Detra–Kemp–Riddell
+        is a second stagnation check. Wall temperature is radiation equilibrium σ ε T⁴ = q, ε=0.8. Color the
+        view by Heat — rainbow is q in W/cm².
       </p>
       <div className="mt-3 space-y-2">
         <Formula name="Sutton–Graves" expr="q_s = 1.83×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-802; Tauber TP-2914 units." />
+        <Formula name="Detra–Kemp–Riddell" expr="q = 5.21×10⁴ √(ρ/Rn) (V/10⁴)^3.15    W/m²" note="DKR stagnation; reported as Tw_eq from the SG flux." />
+        <Formula name="Radiation equilibrium" expr="σ ε Tw⁴ = q_conv    ε = 0.8" />
         <Formula name="Tauber–Sutton radiative" expr="q_r = 4.736×10⁸ Rn^1.072 ρ^1.22 (V/10⁴)^8.5    (V ≳ 2.5 km/s)" />
       </div>
     </div>
@@ -326,6 +335,7 @@ export function TrajBlock({ study }: { study: StudyResult }) {
       <Stat k="Range" v={`${fmt(t.rangeKm, 1)} km`} />
       <Stat k="Time" v={`${fmt(t.timeS, 0)} s`} />
       <Stat k="Max q" v={`${fmt(t.maxQ / 1000, 2)} kPa`} />
+      <Stat k="Max-q alt" v={`${fmt(t.maxQAltKm, 1)} km`} />
       <Stat k="Peak heat" v={`${fmt(t.maxHeat, 2)} W/cm²`} />
       <Stat k="Heat load" v={`${fmt(t.heatLoad, 1)} J/cm²`} />
       <Stat k="Final V" v={`${fmt(t.finalV, 0)} m/s`} />

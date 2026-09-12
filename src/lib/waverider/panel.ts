@@ -13,6 +13,7 @@ import {
   tauberLaminar,
   tauberSutton,
   tauberTurbulent,
+  twEquilibrium,
   vacuumCp,
   vanDriestII,
   vcross,
@@ -37,10 +38,12 @@ export interface PanelAero {
   cpMax: number;
   cp: Float32Array;
   heat: Float32Array;
+  twEq: Float32Array;
   qStag: number;
   qMax: number;
   qMeanWind: number;
   qRad: number;
+  twMax: number;
   lRef: number;
   sRef: number;
   cg: Vec3;
@@ -148,6 +151,7 @@ export function panelAero(
   const nt = mesh.indices.length / 3;
   const cp = new Float32Array(nt);
   const heat = new Float32Array(nt);
+  const twEq = new Float32Array(nt);
   const cgX = clamp(params.cgFrac, 0.2, 0.85) * params.length;
   const cg: Vec3 = [cgX, 0, 0];
   let Fx = 0;
@@ -235,6 +239,7 @@ export function panelAero(
       const qTurb = tauberTurbulent(atm.rho, atm.V, x, recov, sinth);
       const qW = ReX > 5e5 ? Math.max(qLam, qTurb) : qLam;
       heat[t] = qW;
+      twEq[t] = twEquilibrium(qW);
       qWindSum += heat[t] * area;
       aWind += area;
       if (heat[t] > qMax) qMax = heat[t];
@@ -244,6 +249,7 @@ export function panelAero(
   qStag = suttonGraves(atm.rho, atm.V, Rn, recovStag);
   const qRad = tauberSutton(atm.rho, atm.V, Rn);
   if (qStag > qMax) qMax = qStag;
+  const twMax = twEquilibrium(qMax);
 
   const q = atm.q || 1;
   const S = Math.max(sRef, 1e-8);
@@ -298,10 +304,12 @@ export function panelAero(
     cpMax,
     cp,
     heat,
+    twEq,
     qStag,
     qMax,
     qMeanWind: aWind > 0 ? qWindSum / aWind : 0,
     qRad,
+    twMax,
     lRef: L,
     sRef: S,
     cg,

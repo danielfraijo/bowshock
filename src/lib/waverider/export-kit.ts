@@ -1,8 +1,8 @@
 import type { BuiltVehicle } from "./types";
 import { meshToAsciiStl, meshToBinaryStl } from "./export-stl";
-import { gridsToNurbsStep, meshToFacetedStep } from "./export-step";
+import { gridsToNurbsStep, meshToFacetedStep, meshToTessellatedStep } from "./export-step";
 import { gridsToIges } from "./export-iges";
-import { gridsToPlot3d, meshToObj } from "./export-plot3d";
+import { gridsToPlot3d, meshToAsciiStlRegions, meshToObj, meshToVtk, pointwiseGlyph } from "./export-plot3d";
 import { scaleGrids, scaleMesh } from "./mesh";
 import { unitScale } from "./math";
 import { designJson, pythonRunner, readmeFor } from "./kit-text";
@@ -19,9 +19,9 @@ export function scaledClone(built: BuiltVehicle) {
   };
 }
 
-export function fileBlobs(built: BuiltVehicle) {
+export function fileBlobs(built: BuiltVehicle, analysis?: { cp?: Float32Array; heat?: Float32Array; twEq?: Float32Array }) {
   const { mesh, grids, name, unit } = scaledClone(built);
-  const hasNurbs = grids.some((g) => g.name === "upper") && grids.some((g) => g.name === "lower");
+  const hasNurbs = grids.some((g) => g.ni >= 2 && g.nj >= 2);
   let faceted: string | undefined;
   const facet = () => (faceted ??= meshToFacetedStep(mesh, name, unit));
   return {
@@ -32,11 +32,17 @@ export function fileBlobs(built: BuiltVehicle) {
     get stlAscii() {
       return new Blob([meshToAsciiStl(mesh, name)], { type: "model/stl" });
     },
+    get stlRegions() {
+      return new Blob([meshToAsciiStlRegions(mesh, name)], { type: "model/stl" });
+    },
     get stepFacet() {
       return new Blob([facet()], { type: "application/step" });
     },
     get stepNurbs() {
       return new Blob([hasNurbs ? gridsToNurbsStep(grids, name, unit) : facet()], { type: "application/step" });
+    },
+    get stepTess() {
+      return new Blob([meshToTessellatedStep(mesh, name, unit)], { type: "application/step" });
     },
     get iges() {
       return new Blob([gridsToIges(grids, name)], { type: "model/iges" });
@@ -46,6 +52,12 @@ export function fileBlobs(built: BuiltVehicle) {
     },
     get obj() {
       return new Blob([meshToObj(mesh)], { type: "model/obj" });
+    },
+    get vtk() {
+      return new Blob([meshToVtk(mesh, analysis?.cp, analysis?.heat, analysis?.twEq)], { type: "text/plain" });
+    },
+    get glyph() {
+      return new Blob([pointwiseGlyph(name)], { type: "text/plain" });
     },
     get json() {
       return new Blob([designJson(built.params)], { type: "application/json" });
@@ -65,19 +77,25 @@ export async function cfdZip(
   cSource = "",
   analysis = "",
   cppSource = "",
+  fields?: { cp?: Float32Array; heat?: Float32Array; twEq?: Float32Array },
 ): Promise<Blob> {
-  const f = fileBlobs(built);
+  const f = fileBlobs(built, fields);
   const n = f.name;
   const enc = new TextEncoder();
   const bin = new Uint8Array(await f.stlBin.arrayBuffer());
   const files = [
     { name: `${n}/${n}.stl`, data: bin },
     { name: `${n}/${n}_ascii.stl`, data: utf8(await f.stlAscii.text()) },
-    { name: `${n}/${n}_faceted.step`, data: utf8(await f.stepFacet.text()) },
+    { name: `${n}/${n}_regions.stl`, data: utf8(await f.stlRegions.text()) },
     { name: `${n}/${n}_nurbs.step`, data: utf8(await f.stepNurbs.text()) },
+    { name: `${n}/${n}_tess.step`, data: utf8(await f.stepTess.text()) },
+    { name: `${n}/${n}_faceted.step`, data: utf8(await f.stepFacet.text()) },
     { name: `${n}/${n}.igs`, data: utf8(await f.iges.text()) },
-    { name: `${n}/${n}.xyz`, data: utf8(await f.plot3d.text()) },
+    { name: `${n}/${n}.x`, data: utf8(await f.plot3d.text()) },
     { name: `${n}/${n}.obj`, data: utf8(await f.obj.text()) },
+    { name: `${n}/${n}.vtk`, data: utf8(await f.vtk.text()) },
+    { name: `${n}/${n}.glf`, data: utf8(await f.glyph.text()) },
+    { name: `${n}/POINTWISE.txt`, data: utf8(pointwiseHowto(n)) },
     { name: `${n}/design.json`, data: utf8(await f.json.text()) },
     { name: `${n}/README.txt`, data: utf8(await f.readme.text()) },
     { name: `${n}/run_case.py`, data: utf8(await f.runner.text()) },
@@ -87,4 +105,43 @@ export async function cfdZip(
   if (cppSource) files.push({ name: `${n}/bowshock.cpp`, data: enc.encode(cppSource) });
   if (analysis) files.push({ name: `${n}/analysis.json`, data: utf8(analysis) });
   return buildZip(files);
+}
+
+function pointwiseHowto(name: string): string {
+  return `POINTWISE — do not import STEP as a point cloud
+================================================
+The cyan point cloud is what you get if Plot3D is opened as XYZ scatter
+or if STEP control points are imported as a point list. Use these instead.
+
+1) RECOMMENDED (unstructured, always works)
+   File > Import > STL
+   Pick ${name}.stl  (binary, watertight triangles)
+   Assemble a domain from the database surfaces. T-Rex off the walls.
+
+2) STRUCTURED (database surface patches)
+   File > Import > Plot3D
+     Dimension: 3-D
+     Format:    Formatted (ASCII)
+     IBLANK:    off
+     File:      ${name}.x     << extension .x — NOT .xyz
+   Blocks are upper/cowl, lower/floor, inlet, nozzle, side walls.
+   Combine coincident connectors, then extrude.
+
+3) IGES NURBS (Pointwise's most reliable CAD surfaces)
+   File > Import > IGES  →  ${name}.igs
+   Type-128 B-splines, one face per patch.
+
+4) NURBS STEP (SolidWorks / FreeCAD first; Pointwise second)
+   File > Import > STEP  →  ${name}_nurbs.step
+   Degree-3 B-splines, ~16×14 poles. If your Pointwise build only
+   shows poles, use STL or IGES — that is a STEP reader limitation.
+
+5) Glyph
+   File > Glyph > Execute  →  ${name}.glf
+   Imports the STL, then IGES, then Plot3D automatically.
+
+Frame: X streamwise (nose / cowl lip at origin), Y span, Z up.
+Ramjet/scramjet flow-through: inlet at x=0 and nozzle at x=L are OPEN
+faces in the Plot3D blocks named inlet / nozzle. Set those as inflow/outflow.
+`;
 }

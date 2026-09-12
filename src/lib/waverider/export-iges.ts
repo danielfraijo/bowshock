@@ -1,5 +1,6 @@
 import type { SurfaceGrid, Vec3 } from "./types";
 import { gridPoint } from "./mesh";
+import { surfacePatches } from "./export-plot3d";
 
 function pad80(s: string) {
   return (s.length >= 80 ? s.slice(0, 80) : s + " ".repeat(80 - s.length));
@@ -74,7 +75,7 @@ export function gridsToIges(grids: SurfaceGrid[], name: string): string {
   ];
   globals.forEach((line, i) => s.push(pad80(line + " ".repeat(Math.max(0, 72 - line.length)) + "G" + String(i + 1).padStart(7))));
 
-  const surfaces = grids.filter((g) => g.ni >= 2 && g.nj >= 2).slice(0, 8);
+  const surfaces = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2).slice(0, 12);
   const dLines: string[] = [];
   const pLines: string[] = [];
   let pCursor = 1;

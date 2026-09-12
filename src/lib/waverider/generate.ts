@@ -124,6 +124,58 @@ function closeVehicle(
   }
 }
 
+function closeDuct(
+  b: MeshBuilder,
+  cowl: SurfaceGrid,
+  floor: SurfaceGrid,
+  half: boolean,
+  flowThrough: boolean,
+) {
+  stitchGrid(b, cowl, "cowl", false);
+  stitchGrid(b, floor, "lower", true);
+  const nj = Math.min(cowl.nj, floor.nj);
+  const ni = Math.min(cowl.ni, floor.ni);
+  const sideJs = half ? [nj - 1] : [0, nj - 1];
+  for (const j of sideJs) {
+    for (let i = 0; i < ni - 1; i++) {
+      const u0 = b.vertP(gridPoint(cowl, i, j));
+      const u1 = b.vertP(gridPoint(cowl, i + 1, j));
+      const l0 = b.vertP(gridPoint(floor, i, j));
+      const l1 = b.vertP(gridPoint(floor, i + 1, j));
+      if (u0 === l0 && u1 === l1) continue;
+      if (j === 0) b.quad(u0, l0, l1, u1, "leading");
+      else b.quad(u0, u1, l1, l0, "leading");
+    }
+  }
+  if (half) {
+    for (let i = 0; i < ni - 1; i++) {
+      const su0 = b.vertP(gridPoint(cowl, i, 0));
+      const su1 = b.vertP(gridPoint(cowl, i + 1, 0));
+      const sl0 = b.vertP(gridPoint(floor, i, 0));
+      const sl1 = b.vertP(gridPoint(floor, i + 1, 0));
+      if (su0 === sl0 && su1 === sl1) continue;
+      b.quad(su0, su1, sl1, sl0, "symmetry");
+    }
+  }
+  const capSpan = (i: number, kind: "inlet" | "nozzle") => {
+    const u: number[] = [];
+    const l: number[] = [];
+    for (let j = 0; j < nj; j++) {
+      u.push(b.vertP(gridPoint(cowl, i, j)));
+      l.push(b.vertP(gridPoint(floor, i, j)));
+    }
+    for (let j = 0; j < nj - 1; j++) {
+      if (u[j] === l[j] && u[j + 1] === l[j + 1]) continue;
+      if (kind === "inlet") b.quad(u[j], u[j + 1], l[j + 1], l[j], "inlet");
+      else b.quad(u[j], l[j], l[j + 1], u[j + 1], "nozzle");
+    }
+  };
+  if (!flowThrough) {
+    capSpan(0, "inlet");
+    capSpan(ni - 1, "nozzle");
+  }
+}
+
 function applyBlunt(upper: SurfaceGrid, lower: SurfaceGrid, radius: number, L: number) {
   if (radius <= 1e-8) return;
   const r = Math.min(radius, 0.08 * L);
@@ -429,65 +481,86 @@ function buildLiftbody(params: DesignParams) {
   return { upper, lower, shock: [] as SurfaceGrid[] };
 }
 
-function rampFloor(x: number, L: number, th: number, nRamps: number, xEnd: number) {
-  const n = clamp(Math.round(nRamps || 2), 1, 3);
-  if (x <= 0) return 0;
-  const dx = xEnd / n;
-  let z = 0;
-  let x0 = 0;
-  for (let k = 0; k < n; k++) {
-    const x1 = dx * (k + 1);
-    const slope = Math.tan((th * (k + 1)) / n);
-    if (x <= x1 + 1e-12) return z - (x - x0) * slope;
-    z -= (x1 - x0) * slope;
-    x0 = x1;
-  }
-  return z - (x - xEnd) * 0;
-}
-
+/**
+ * 2-D ramjet / scramjet OML (X-43 / Hyper-X class).
+ * Both surfaces run x = 0 → L so the capture plane (x=0) and nozzle (x=L)
+ * are real rectangular faces, not collapsed lips.
+ *
+ * Floor: n ramps (internal compression, floor rises) → isolator → SERN drop.
+ * Cowl: constant capture height then expanding nozzle.
+ * Shock-on-lip: last-ramp shock aimed at the cowl at x_ramp.
+ */
 function buildDuct(params: DesignParams, scram: boolean) {
   const L = params.length;
   const s = params.span / 2;
-  const hIn = Math.max(0.04, params.inletHeight);
-  const hMax = Math.max(hIn * 1.2, params.height);
+  const hIn = Math.max(0.05, params.inletHeight);
   const th = params.rampDeg * DEG;
   const nR = clamp(Math.round(params.nRamps || 2), 1, 3);
-  const xRamp = L * (0.1 + 0.07 * nR);
-  const x2 = L * clamp(params.cowlFrac, 0.28, 0.58);
-  const x3 = Math.min(L * (scram ? 0.88 : 0.92), x2 + L * clamp(params.combustorFrac, 0.1, 0.4));
+  const xRamp = L * clamp(params.cowlFrac, 0.22, 0.58);
+  const xComb = Math.min(L * (scram ? 0.82 : 0.86), xRamp + L * clamp(params.combustorFrac, 0.12, 0.38));
   const ER = Math.max(1.4, params.nozzleER);
-  const zIso = rampFloor(xRamp, L, th, nR, xRamp) - 1e-4;
-  const zCombEnd = scram ? zIso * 1.08 : zIso;
-  const zExit = zIso * ER;
-  const zBot = (x: number) => {
-    if (x <= xRamp) return rampFloor(x, L, th, nR, xRamp);
-    if (x <= x2) return zIso;
-    if (x <= x3) {
-      const u = (x - x2) / Math.max(x3 - x2, 1e-9);
-      return lerp(zIso, zCombEnd, u);
+  const throatT = clamp(scram ? 0.52 * hIn : 0.36 * hIn, 0.24 * hIn, 0.72 * hIn);
+  const rise = clamp(hIn - throatT, 0.08 * hIn, 0.78 * hIn);
+  const throat = hIn - rise;
+  const hExit = scram ? throat * Math.sqrt(ER) : throat * ER;
+  const expand = Math.max(0, hExit - throat);
+  const cowlUp = 0.35 * expand;
+  const floorDrop = 0.65 * expand;
+  const dxR = xRamp / nR;
+  const weights: number[] = [];
+  for (let k = 0; k < nR; k++) weights.push(Math.tan((th * (k + 1)) / nR));
+  const wsum = weights.reduce((a, b) => a + b, 0) || 1;
+  const zFloor = (x: number) => {
+    if (x <= 0) return 0;
+    if (x <= xRamp) {
+      let z = 0;
+      let x0 = 0;
+      for (let k = 0; k < nR; k++) {
+        const x1 = dxR * (k + 1);
+        const dz = rise * (weights[k] / wsum);
+        if (x <= x1 + 1e-12) return z + ((x - x0) / Math.max(x1 - x0, 1e-12)) * dz;
+        z += dz;
+        x0 = x1;
+      }
+      return rise;
     }
-    const u = (x - x3) / Math.max(L - x3, 1e-9);
-    return lerp(zCombEnd, Math.min(zExit, -hMax), u);
+    if (x <= xComb) return rise;
+    const u = (x - xComb) / Math.max(L - xComb, 1e-9);
+    return rise - floorDrop * u * u;
   };
-  const zTop = (x: number) => {
-    const cowl = 0.012 * hMax;
-    if (x < x2) return cowl + hIn * 0.15 * (1 - x / Math.max(x2, 1e-9));
-    if (x < x3) return cowl;
-    const u = (x - x3) / Math.max(L - x3, 1e-9);
-    return lerp(cowl, cowl + 0.25 * hIn * (ER - 1), u);
+  const zCowl = (x: number) => {
+    if (x <= xComb) return hIn;
+    const u = (x - xComb) / Math.max(L - xComb, 1e-9);
+    return hIn + cowlUp * u;
   };
   const ys = halfSpanList(params.ny, s, params.halfModel);
-  const nx = Math.max(10, params.nx);
+  const nx = Math.max(16, params.nx);
   const nj = ys.length;
-  const upper = makeGrid("upper", nx, nj, (i, j) => {
-    const x = (i / (nx - 1)) * L;
-    return [x, ys[j], zTop(x)];
-  });
-  const lower = makeGrid("lower", nx, nj, (i, j) => {
-    const x = (i / (nx - 1)) * L;
-    return [x, ys[j], zBot(x)];
-  });
-  return { upper, lower, shock: [] as SurfaceGrid[] };
+  const xs: number[] = [];
+  const n1 = Math.max(6, Math.round(nx * (xRamp / L)));
+  const n2 = Math.max(4, Math.round(nx * ((xComb - xRamp) / L)));
+  const n3 = Math.max(6, nx - n1 - n2);
+  for (let i = 0; i < n1; i++) xs.push((xRamp * i) / Math.max(n1 - 1, 1));
+  for (let i = 1; i <= n2; i++) xs.push(xRamp + ((xComb - xRamp) * i) / n2);
+  for (let i = 1; i <= n3; i++) xs.push(xComb + ((L - xComb) * i) / n3);
+  xs[0] = 0;
+  xs[xs.length - 1] = L;
+  const ni = xs.length;
+  const lower = makeGrid("lower", ni, nj, (i, j) => [xs[i], ys[j], zFloor(xs[i])]);
+  const upper = makeGrid("cowl", ni, nj, (i, j) => [xs[i], ys[j], zCowl(xs[i])]);
+  const inlet = makeGrid("inlet", 2, nj, (i, j) => (i === 0 ? gridPoint(lower, 0, j) : gridPoint(upper, 0, j)));
+  const nozzle = makeGrid("nozzle", 2, nj, (i, j) =>
+    i === 0 ? gridPoint(lower, ni - 1, j) : gridPoint(upper, ni - 1, j),
+  );
+  let beta = betaFromThetaM(params.mach, th, params.gamma);
+  if (!Number.isFinite(beta)) beta = th + 8 * DEG;
+  const sh = [
+    makeGrid("shock", Math.max(8, n1), nj, (i, j) => {
+      const x = xRamp * (i / Math.max(n1 - 1, 1));
+      return [x, ys[j], hIn - x * Math.tan(beta)];
+    }),
+  ];
+  return { upper, lower, shock: sh, extra: [inlet, nozzle] as SurfaceGrid[] };
 }
 
 function buildRamjet(params: DesignParams) {
@@ -727,27 +800,45 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     if (params.lid === "bottom") {
       flipGridsZ([built.upper, built.lower, ...built.shock]);
     }
-    applyBlunt(built.upper, built.lower, params.leRadius, params.length);
-    applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
-    const duct = params.flowThrough && (params.family === "ramjet" || params.family === "scramjet");
-    if (!duct) zipperSharpEdges(built.upper, built.lower, params.length);
+    const isDuct = params.family === "ramjet" || params.family === "scramjet";
+    if (!isDuct) {
+      applyBlunt(built.upper, built.lower, params.leRadius, params.length);
+      applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
+      zipperSharpEdges(built.upper, built.lower, params.length);
+    }
     const zSign = params.lid === "bottom" ? -1 : 1;
-    applyFins(built.upper, params, zSign);
-    if (!duct) zipperSharpEdges(built.upper, built.lower, params.length);
+    if (!isDuct) applyFins(built.upper, params, zSign);
+    if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     const b = new MeshBuilder(params.length);
-    closeVehicle(b, built.upper, built.lower, params.halfModel, duct);
+    if (isDuct) closeDuct(b, built.upper, built.lower, params.halfModel, params.flowThrough);
+    else closeVehicle(b, built.upper, built.lower, params.halfModel, false);
     mesh = b.finish();
     skipped = b.skipped;
     grids = [built.upper, built.lower];
+    const extra = (built as { extra?: SurfaceGrid[] }).extra;
+    if (extra) grids.push(...extra);
     shock = built.shock;
-    if (duct) notes.push("Flow-through duct — inlet and nozzle left open for internal CFD.");
+    if (isDuct) {
+      const u0 = gridPoint(built.upper, 0, 0);
+      const l0 = gridPoint(built.lower, 0, 0);
+      const uN = gridPoint(built.upper, built.upper.ni - 1, 0);
+      const lN = gridPoint(built.lower, built.lower.ni - 1, 0);
+      const hCap = Math.abs(u0[2] - l0[2]);
+      const hNoz = Math.abs(uN[2] - lN[2]);
+      notes.push(
+        params.flowThrough
+          ? `2-D ramjet/scramjet: rectangular INLET at x=0 (capture ${hCap.toFixed(3)} m) and NOZZLE at x=L (${hNoz.toFixed(3)} m) are OPEN for internal CFD. Floor ramps compress to the throat; cowl is constant then expands. Sidewalls are wetted walls.`
+          : `2-D ramjet/scramjet: inlet (x=0, h=${hCap.toFixed(3)} m) and nozzle (x=L, h=${hNoz.toFixed(3)} m) capped. Enable flow-through for an open duct.`,
+      );
+    }
   }
 
   snapNoseToOrigin(mesh, grids, shock);
   notes.push("Tip snapped to the origin: X stream, Y span, Z up.");
 
   const quality = analyzeMesh(mesh, skipped);
-  if (!quality.watertight) notes.push(`Mesh has ${quality.openEdges} open edges — raise streamwise/spanwise points.`);
+  const ductOpen = (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough;
+  if (!quality.watertight && !ductOpen) notes.push(`Mesh has ${quality.openEdges} open edges — raise streamwise/spanwise points.`);
   if (!shockSolve.attached) notes.push(...shockSolve.notes);
   if (params.lid === "bottom") notes.push("Lid on the belly — compression surface is the upper face.");
 

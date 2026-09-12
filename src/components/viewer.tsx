@@ -18,9 +18,12 @@ const SURFACE_GREY: Record<number, number> = {
 
 type Three = typeof ThreeNS;
 
-function greyRamp(c: ThreeNS.Color, t: number) {
-  const u = 0.1 + 0.9 * Math.max(0, Math.min(1, t));
-  c.setRGB(u, u, u);
+function jetRamp(c: ThreeNS.Color, t: number) {
+  const u = Math.max(0, Math.min(1, t));
+  const r = Math.max(0, Math.min(1, 1.5 * u - 0.2));
+  const g = Math.max(0, Math.min(1, u < 0.5 ? 2.2 * u : 2.2 * (1 - u)));
+  const b = Math.max(0, Math.min(1, 1.15 - 1.7 * u));
+  c.setRGB(r, g, b);
 }
 
 function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, color: ColorMode) {
@@ -28,23 +31,34 @@ function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, 
   const tris: number[] = [];
   const cols: number[] = [];
   const nt = mesh.indices.length / 3;
+  const nv = mesh.positions.length / 3;
   const c = new THREE.Color();
   const cp = study?.aero.cp;
   const heat = study?.aero.heat;
   const cpMax = Math.max(0.4, study?.aero.cpMax ?? 1.8);
   const qMax = Math.max(1e-6, study?.aero.qMax ?? 1);
+  const vertVal = new Float32Array(nv);
+  const vertN = new Float32Array(nv);
+  if ((color === "heat" && heat) || (color === "cp" && cp)) {
+    const src = color === "heat" ? heat! : cp!;
+    for (let t = 0; t < nt; t++) {
+      const v = src[t] ?? 0;
+      for (let k = 0; k < 3; k++) {
+        const i = mesh.indices[t * 3 + k];
+        vertVal[i] += v;
+        vertN[i] += 1;
+      }
+    }
+    for (let i = 0; i < nv; i++) if (vertN[i] > 0) vertVal[i] /= vertN[i];
+  }
   for (let t = 0; t < nt; t++) {
     const s = mesh.surfaces[t] ?? 0;
-    if (color === "cp" && cp) {
-      greyRamp(c, (cp[t] + 0.25) / (cpMax + 0.25));
-    } else if (color === "heat" && heat) {
-      greyRamp(c, heat[t] / qMax);
-    } else {
-      c.setHex(SURFACE_GREY[s] ?? 0x888888);
-    }
     for (let k = 0; k < 3; k++) {
       const i = mesh.indices[t * 3 + k];
       tris.push(mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]);
+      if (color === "heat" && heat) jetRamp(c, vertVal[i] / qMax);
+      else if (color === "cp" && cp) jetRamp(c, (vertVal[i] + 0.25) / (cpMax + 0.25));
+      else c.setHex(SURFACE_GREY[s] ?? 0x888888);
       cols.push(c.r, c.g, c.b);
     }
   }
@@ -350,5 +364,20 @@ export function WaveriderViewer({
     rebuildFn.current();
   }, [built, study, opts.color]);
 
-  return <div ref={wrapRef} className="absolute inset-0 touch-none" />;
+  return (
+    <div ref={wrapRef} className="absolute inset-0 touch-none">
+      {opts.color !== "surface" && study ? (
+        <div className="pointer-events-none absolute right-3 bottom-14 flex items-end gap-1.5">
+          <div className="flex h-28 flex-col justify-between py-0.5 text-right font-mono text-[9px] leading-none text-muted">
+            <span>
+              {opts.color === "heat" ? `${(study.aero.qMax || 0).toFixed(1)}` : `${(study.aero.cpMax || 0).toFixed(2)}`}
+            </span>
+            <span>{opts.color === "heat" ? "W/cm²" : "Cp"}</span>
+            <span>0</span>
+          </div>
+          <div className="jet-ramp h-28 w-2.5 rounded-sm" title={opts.color === "heat" ? "q W/cm²" : "Cp"} />
+        </div>
+      ) : null}
+    </div>
+  );
 }

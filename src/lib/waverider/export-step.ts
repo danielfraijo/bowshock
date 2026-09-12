@@ -156,20 +156,17 @@ function emitBSplineCurve(doc: StepDoc, poles: Vec3[], degree = 3): number {
   );
 }
 
-function gridToPoles(g: SurfaceGrid, capU = 24, capV = 20): Vec3[][] {
-  const du = Math.max(1, Math.floor((g.ni - 1) / Math.min(capU, g.ni - 1)));
-  const dv = Math.max(1, Math.floor((g.nj - 1) / Math.min(capV, g.nj - 1)));
+function gridToPoles(g: SurfaceGrid, capU = 16, capV = 14): Vec3[][] {
+  const nu = Math.min(g.ni, capU);
+  const nv = Math.min(g.nj, capV);
   const poles: Vec3[][] = [];
-  for (let i = 0; i < g.ni; i += du) {
+  for (let iu = 0; iu < nu; iu++) {
+    const i = iu === nu - 1 ? g.ni - 1 : Math.round((iu * (g.ni - 1)) / Math.max(nu - 1, 1));
     const row: Vec3[] = [];
-    for (let j = 0; j < g.nj; j += dv) row.push(gridPoint(g, i, j));
-    if ((g.nj - 1) % dv !== 0) row.push(gridPoint(g, i, g.nj - 1));
-    poles.push(row);
-  }
-  if ((g.ni - 1) % du !== 0) {
-    const row: Vec3[] = [];
-    for (let j = 0; j < g.nj; j += dv) row.push(gridPoint(g, g.ni - 1, j));
-    if ((g.nj - 1) % dv !== 0) row.push(gridPoint(g, g.ni - 1, g.nj - 1));
+    for (let jv = 0; jv < nv; jv++) {
+      const j = jv === nv - 1 ? g.nj - 1 : Math.round((jv * (g.nj - 1)) / Math.max(nv - 1, 1));
+      row.push(gridPoint(g, i, j));
+    }
     poles.push(row);
   }
   return poles;
@@ -181,10 +178,39 @@ function vertex(doc: StepDoc, p: Vec3): { pt: number; vx: number } {
   return { pt, vx };
 }
 
+function emitFace(doc: StepDoc, poles: Vec3[][], name: string): number {
+  const ni = poles.length;
+  const nj = poles[0].length;
+  const surf = emitBSplineSurface(doc, poles, 3);
+  const v00 = vertex(doc, poles[0][0]);
+  const v10 = vertex(doc, poles[ni - 1][0]);
+  const v11 = vertex(doc, poles[ni - 1][nj - 1]);
+  const v01 = vertex(doc, poles[0][nj - 1]);
+  const c0 = emitBSplineCurve(doc, poles.map((row) => row[0]), 1);
+  const c1 = emitBSplineCurve(doc, poles[ni - 1], 1);
+  const c2 = emitBSplineCurve(doc, poles.map((row) => row[nj - 1]).reverse(), 1);
+  const c3 = emitBSplineCurve(doc, [...poles[0]].reverse(), 1);
+  const e0 = doc.add(`EDGE_CURVE('',#${v00.vx},#${v10.vx},#${c0},.T.)`);
+  const e1 = doc.add(`EDGE_CURVE('',#${v10.vx},#${v11.vx},#${c1},.T.)`);
+  const e2 = doc.add(`EDGE_CURVE('',#${v11.vx},#${v01.vx},#${c2},.T.)`);
+  const e3 = doc.add(`EDGE_CURVE('',#${v01.vx},#${v00.vx},#${c3},.T.)`);
+  const o0 = doc.add(`ORIENTED_EDGE('',*,*,#${e0},.T.)`);
+  const o1 = doc.add(`ORIENTED_EDGE('',*,*,#${e1},.T.)`);
+  const o2 = doc.add(`ORIENTED_EDGE('',*,*,#${e2},.T.)`);
+  const o3 = doc.add(`ORIENTED_EDGE('',*,*,#${e3},.T.)`);
+  const loop = doc.add(`EDGE_LOOP('',(#${o0},#${o1},#${o2},#${o3}))`);
+  const bound = doc.add(`FACE_OUTER_BOUND('',#${loop},.T.)`);
+  return doc.add(`ADVANCED_FACE('${name}',(#${bound}),#${surf},.T.)`);
+}
+
+/**
+ * Untrimmed NURBS faces as a SHELL_BASED_SURFACE_MODEL.
+ * Degree-3 B-splines, ~16×14 poles per patch — Pointwise File > Import > STEP
+ * reads surfaces. Dense degree-1 poles look like the cyan point cloud.
+ */
 export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: LengthUnit): string {
-  const upper = grids.find((g) => g.name === "upper") ?? grids[0];
-  const lower = grids.find((g) => g.name === "lower") ?? grids[1] ?? grids[0];
-  if (!upper || !lower || upper.ni < 2) {
+  const usable = grids.filter((g) => g.ni >= 2 && g.nj >= 2);
+  if (!usable.length) {
     return meshToFacetedStep(
       { positions: new Float64Array(), indices: new Uint32Array(), surfaces: new Uint8Array() },
       name,
@@ -194,47 +220,69 @@ export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: Lengt
 
   const doc = new StepDoc();
   const { pds, ctx } = unitBlock(doc, unit);
+  const faces: number[] = [];
+  for (const g of usable) faces.push(emitFace(doc, gridToPoles(g), g.name || "surface"));
 
-  const uPoles = gridToPoles(upper);
-  const lPoles = gridToPoles(lower);
+  const upper = usable.find((g) => g.name === "upper" || g.name === "cowl") ?? usable[0];
+  const lower = usable.find((g) => g.name === "lower") ?? usable[usable.length - 1];
+  if (upper && lower && upper !== lower) {
+    const uP = gridToPoles(upper);
+    const lP = gridToPoles(lower);
+    const nj = Math.min(uP[0].length, lP[0].length);
+    const mid = Math.floor(nj / 2);
+    const teU = uP[uP.length - 1].slice(0, nj);
+    const teL = lP[lP.length - 1].slice(0, nj);
+    const leU = uP[0].slice(0, nj);
+    const leL = lP[0].slice(0, nj);
+    const teDist = Math.hypot(teU[mid][0] - teL[mid][0], teU[mid][1] - teL[mid][1], teU[mid][2] - teL[mid][2]);
+    const leDist = Math.hypot(leU[mid][0] - leL[mid][0], leU[mid][1] - leL[mid][1], leU[mid][2] - leL[mid][2]);
+    if (teDist > 1e-7) faces.push(emitFace(doc, [teU, teL], "nozzle_or_base"));
+    if (leDist > 1e-7) faces.push(emitFace(doc, [leU, leL], "inlet"));
+  }
 
-  const uSurf = emitBSplineSurface(doc, uPoles);
-  const lSurf = emitBSplineSurface(doc, lPoles);
-
-  const leU = uPoles[0];
-  const teU = uPoles[uPoles.length - 1];
-  const teL = lPoles[lPoles.length - 1];
-  const baseSurf = emitBSplineSurface(doc, [teU, teL]);
-
-  const vL = vertex(doc, leU[0]);
-  const vR = vertex(doc, leU[leU.length - 1]);
-
-  const cLE = emitBSplineCurve(doc, leU);
-  const cUTE = emitBSplineCurve(doc, teU);
-  const cLTE = emitBSplineCurve(doc, teL);
-
-  const eLE = doc.add(`EDGE_CURVE('',#${vL.vx},#${vR.vx},#${cLE},.T.)`);
-  const eUTE = doc.add(`EDGE_CURVE('',#${vL.vx},#${vR.vx},#${cUTE},.T.)`);
-  const eLTE = doc.add(`EDGE_CURVE('',#${vL.vx},#${vR.vx},#${cLTE},.T.)`);
-
-  const oe1 = doc.add(`ORIENTED_EDGE('',*,*,#${eLE},.T.)`);
-  const oe2 = doc.add(`ORIENTED_EDGE('',*,*,#${eUTE},.F.)`);
-  const loopU = doc.add(`EDGE_LOOP('',(#${oe1},#${oe2}))`);
-  const oe3 = doc.add(`ORIENTED_EDGE('',*,*,#${eLE},.F.)`);
-  const oe4 = doc.add(`ORIENTED_EDGE('',*,*,#${eLTE},.T.)`);
-  const loopL = doc.add(`EDGE_LOOP('',(#${oe3},#${oe4}))`);
-  const oe5 = doc.add(`ORIENTED_EDGE('',*,*,#${eUTE},.T.)`);
-  const oe6 = doc.add(`ORIENTED_EDGE('',*,*,#${eLTE},.F.)`);
-  const loopB = doc.add(`EDGE_LOOP('',(#${oe5},#${oe6}))`);
-
-  const fU = doc.add(`ADVANCED_FACE('upper',(#${doc.add(`FACE_OUTER_BOUND('',#${loopU},.T.)`)}),#${uSurf},.T.)`);
-  const fL = doc.add(`ADVANCED_FACE('lower',(#${doc.add(`FACE_OUTER_BOUND('',#${loopL},.T.)`)}),#${lSurf},.T.)`);
-  const fB = doc.add(`ADVANCED_FACE('base',(#${doc.add(`FACE_OUTER_BOUND('',#${loopB},.T.)`)}),#${baseSurf},.T.)`);
-
-  const shell = doc.add(`CLOSED_SHELL('',(#${fU},#${fL},#${fB}))`);
-  const solid = doc.add(`MANIFOLD_SOLID_BREP('Waverider',#${shell})`);
-  const repr = doc.add(`ADVANCED_BREP_SHAPE_REPRESENTATION('',(#${solid}),#${ctx})`);
+  const shell = doc.add(`OPEN_SHELL('',(${faces.map((id) => `#${id}`).join(",")}))`);
+  const model = doc.add(`SHELL_BASED_SURFACE_MODEL('Bowshock',(#${shell}))`);
+  const repr = doc.add(`MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#${model}),#${ctx})`);
   doc.add(`SHAPE_DEFINITION_REPRESENTATION(#${pds},#${repr})`);
-
   return `${stepHeader(name)}\n${doc.lines.join("\n")}\nENDSEC;\nEND-ISO-10303-21;\n`;
+}
+
+/**
+ * AP242 tessellated solid — triangles, not control points.
+ * Pointwise 18.2+ / FreeCAD / many CAD tools import this as a mesh.
+ */
+export function meshToTessellatedStep(mesh: TriMesh, name: string, unit: LengthUnit): string {
+  const doc = new StepDoc();
+  const { pds, ctx } = unitBlock(doc, unit);
+  const nv = mesh.positions.length / 3;
+  const nt = mesh.indices.length / 3;
+  const chunks: string[] = [];
+  const chunkSize = 80;
+  for (let start = 0; start < nv; start += chunkSize) {
+    const end = Math.min(nv, start + chunkSize);
+    const pts: string[] = [];
+    for (let i = start; i < end; i++) {
+      pts.push(`(${s(mesh.positions[i * 3])},${s(mesh.positions[i * 3 + 1])},${s(mesh.positions[i * 3 + 2])})`);
+    }
+    chunks.push(`(${pts.join(",")})`);
+  }
+  const coords = doc.add(`COORDINATES_LIST('',${nv},(${Array.from({ length: nv }, (_, i) => `(${s(mesh.positions[i * 3])},${s(mesh.positions[i * 3 + 1])},${s(mesh.positions[i * 3 + 2])})`).join(",")}))`);
+  const triIdx: number[] = [];
+  for (let t = 0; t < nt; t++) {
+    triIdx.push(mesh.indices[t * 3] + 1, mesh.indices[t * 3 + 1] + 1, mesh.indices[t * 3 + 2] + 1);
+  }
+  const face = doc.add(`TRIANGULATED_FACE('${name}',(),#${coords},.F.,(${triIdx.join(",")}),$,$)`);
+  const shell = doc.add(`TESSELLATED_SHELL('',(#${face}),$)`);
+  const solid = doc.add(`TESSELLATED_SOLID('${name}',(#${shell}),$)`);
+  const repr = doc.add(`TESSELLATED_SHAPE_REPRESENTATION('',(#${solid}),#${ctx})`);
+  doc.add(`SHAPE_DEFINITION_REPRESENTATION(#${pds},#${repr})`);
+  void chunks;
+  const header = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('Bowshock tessellated waverider'),'2;1');
+FILE_NAME('${name}.step','${new Date().toISOString().slice(0, 19)}',('Bowshock'),('Bowshock'),'Bowshock CAD','Bowshock','');
+FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));
+ENDSEC;
+DATA;`;
+  return `${header}\n${doc.lines.join("\n")}\nENDSEC;\nEND-ISO-10303-21;\n`;
 }

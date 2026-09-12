@@ -1,4 +1,4 @@
-import { DEG, clamp, suttonGraves, tauberSutton } from "./math";
+import { DEG, clamp, newtonianCpMax, suttonGraves, tauberSutton } from "./math";
 import { atmosphere } from "./atmosphere";
 import type { DesignParams } from "./types";
 
@@ -27,6 +27,7 @@ export interface TrajResult {
   rangeKm: number;
   timeS: number;
   maxQ: number;
+  maxQAltKm: number;
   maxHeat: number;
   heatLoad: number;
   finalV: number;
@@ -70,9 +71,12 @@ export function integrateGlide(
   let x = 0;
   const atm0 = atmosphere(h / 1000, 8, gamma);
   v = Math.max(400, (params.lockFlight ? params.mach : params.flightMach) * atm0.a);
-  const dt = 0.8;
+  const Mref = Math.max(1.2, params.lockFlight ? params.mach : params.flightMach);
+  const cpRef = newtonianCpMax(Mref, gamma);
+  const dt = 0.25;
   const samples: TrajSample[] = [];
   let maxQ = 0;
+  let maxQAltKm = h / 1000;
   let maxHeat = 0;
   let heatLoad = 0;
   let skipped = false;
@@ -82,18 +86,21 @@ export function integrateGlide(
     const atm = atmosphere(hh / 1000, Math.max(0.2, vv / Math.max(atm0.a, 1)), gamma);
     const M = vv / Math.max(atm.a, 1);
     const polarA = lerpPolar(polar, alpha);
+    const scale = newtonianCpMax(Math.max(1.05, M), gamma) / Math.max(cpRef, 1e-6);
+    const cl = polarA.cl * scale;
+    const cd = Math.max(0.008, polarA.cd * scale);
     const q = 0.5 * atm.rho * vv * vv;
-    const L = q * sRef * polarA.cl;
-    const D = q * sRef * polarA.cd;
+    const L = q * sRef * cl;
+    const D = q * sRef * cd;
     const g = g0 * (Re / (Re + hh)) ** 2;
     const dv = -D / m - g * Math.sin(gg);
     const dgam = vv > 20 ? L / (m * vv) + (vv / (Re + hh) - g / vv) * Math.cos(gg) : 0;
     const dh = vv * Math.sin(gg);
-    const dx = vv * Math.cos(gg) * Re / (Re + hh);
-    return { dv, dgam, dh, dx, q, M, atm, polarA };
+    const dx = (vv * Math.cos(gg) * Re) / (Re + hh);
+    return { dv, dgam, dh, dx, q, M, atm };
   };
 
-  for (let k = 0; k < 220; k++) {
+  for (let k = 0; k < 720; k++) {
     const d1 = deriv(v, gam, h);
     if (k % 4 === 0 || k === 0) {
       const recov = 0.5;
@@ -110,18 +117,21 @@ export function integrateGlide(
         qConv,
         qRad,
       });
-      if (d1.q > maxQ) maxQ = d1.q;
+      if (d1.q > maxQ) {
+        maxQ = d1.q;
+        maxQAltKm = h / 1000;
+      }
       const qTot = qConv + qRad;
       if (qTot > maxHeat) maxHeat = qTot;
       heatLoad += qTot * dt * 4;
     }
-    if (h < 8000 && gam < 0) break;
-    if (h > 90000) {
+    if (h < 400 && gam < 0) break;
+    if (h > 92000) {
       skipped = true;
-      notes.push("Trajectory skipped out of atmosphere.");
+      notes.push("Trajectory skipped out of the atmosphere (γ>0 after pull-up).");
       break;
     }
-    if (v < 250) break;
+    if (v < 180) break;
     const d2 = deriv(v + 0.5 * dt * d1.dv, gam + 0.5 * dt * d1.dgam, h + 0.5 * dt * d1.dh);
     const d3 = deriv(v + 0.5 * dt * d2.dv, gam + 0.5 * dt * d2.dgam, h + 0.5 * dt * d2.dh);
     const d4 = deriv(v + dt * d3.dv, gam + dt * d3.dgam, h + dt * d3.dh);
@@ -130,16 +140,19 @@ export function integrateGlide(
     h += (dt / 6) * (d1.dh + 2 * d2.dh + 2 * d3.dh + d4.dh);
     x += (dt / 6) * (d1.dx + 2 * d2.dx + 2 * d3.dx + d4.dx);
     v = Math.max(50, v);
-    gam = clamp(gam, -25 * DEG, 12 * DEG);
+    gam = clamp(gam, -40 * DEG, 18 * DEG);
     h = clamp(h, 0, 95000);
   }
-  notes.push("3DOF point-mass RK4. CL/CD from the panel polar at the Flight-tab α. No bank, no control.");
+  notes.push(
+    "3DOF point-mass RK4 (Δt=0.25 s). CL/CD from the panel polar, scaled by Cp_max(M)/Cp_max(M_ref) (Lees). Spherical Earth, US76. No bank.",
+  );
   const last = samples[samples.length - 1];
   return {
     samples,
     rangeKm: last ? last.xKm : x / 1000,
     timeS: last ? last.t : 0,
     maxQ,
+    maxQAltKm,
     maxHeat,
     heatLoad,
     finalV: last ? last.v : v,

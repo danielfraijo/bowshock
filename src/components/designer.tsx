@@ -193,15 +193,20 @@ export function Designer() {
   async function save(kind: string) {
     setBusy(kind);
     try {
-      const files = fileBlobs(built);
+      const files = fileBlobs(built, { cp: study.aero.cp, heat: study.aero.heat, twEq: study.aero.twEq });
       const n = files.name;
       if (kind === "stl") downloadBlob(files.stlBin, `${n}.stl`);
       else if (kind === "stl-ascii") downloadBlob(files.stlAscii, `${n}_ascii.stl`);
-      else if (kind === "step") downloadBlob(files.stepFacet, `${n}.step`);
+      else if (kind === "stl-regions") downloadBlob(files.stlRegions, `${n}_regions.stl`);
+      else if (kind === "step") downloadBlob(files.stepNurbs, `${n}_nurbs.step`);
       else if (kind === "step-nurbs") downloadBlob(files.stepNurbs, `${n}_nurbs.step`);
+      else if (kind === "step-tess") downloadBlob(files.stepTess, `${n}_tess.step`);
+      else if (kind === "step-facet") downloadBlob(files.stepFacet, `${n}_faceted.step`);
       else if (kind === "iges") downloadBlob(files.iges, `${n}.igs`);
-      else if (kind === "plot3d") downloadBlob(files.plot3d, `${n}.xyz`);
+      else if (kind === "plot3d") downloadBlob(files.plot3d, `${n}.x`);
       else if (kind === "obj") downloadBlob(files.obj, `${n}.obj`);
+      else if (kind === "vtk") downloadBlob(files.vtk, `${n}.vtk`);
+      else if (kind === "glyph") downloadBlob(files.glyph, `${n}.glf`);
       else if (kind === "json") downloadBlob(files.json, `${n}.json`);
       else if (kind === "analysis") downloadBlob(new Blob([studyJson(built, study)], { type: "application/json" }), `${n}_analysis.json`);
       else if (kind === "python") {
@@ -210,7 +215,11 @@ export function Designer() {
         if (cSrc) downloadBlob(new Blob([cSrc], { type: "text/x-csrc" }), "bowshock_aero.c");
         if (cppSrc) downloadBlob(new Blob([cppSrc], { type: "text/x-c++src" }), "bowshock.cpp");
       } else if (kind === "kit") {
-        const zip = await cfdZip(built, python, cSrc, studyJson(built, study), cppSrc);
+        const zip = await cfdZip(built, python, cSrc, studyJson(built, study), cppSrc, {
+          cp: study.aero.cp,
+          heat: study.aero.heat,
+          twEq: study.aero.twEq,
+        });
         downloadBlob(zip, `${n}_cfd_kit.zip`);
       }
     } finally {
@@ -353,7 +362,7 @@ export function Designer() {
               </div>
               {opts.color !== "surface" ? (
                 <div className="flex h-2 w-40 overflow-hidden rounded-sm bg-bg" title={opts.color === "cp" ? "Cp" : "heat"}>
-                  <span className="flex-1 bg-gradient-to-r from-bg to-fg" />
+                  <span className="jet-ramp-h h-full w-full" />
                 </div>
               ) : null}
             </div>
@@ -672,7 +681,11 @@ export function Designer() {
                 <Stat k="Volume" v={`${fmt(q.volume, 4)} m³`} />
                 <Stat k="Planform" v={`${fmt(a.planformArea, 3)} m²`} />
                 <Stat k="Triangles" v={String(q.triangles)} />
-                <Stat k="Watertight" v={q.watertight ? "yes" : `${q.openEdges} open`} ok={q.watertight} />
+                <Stat
+                  k="Watertight"
+                  v={q.watertight ? "yes" : `${q.openEdges} open`}
+                  ok={q.watertight || ((params.family === "ramjet" || params.family === "scramjet") && params.flowThrough)}
+                />
                 <Stat k="Manifold" v={q.manifold ? "yes" : "check"} ok={q.manifold} />
                 <div className="mt-4">
                   <span className="mb-2 block text-xs font-medium text-muted">Export unit</span>
@@ -691,20 +704,26 @@ export function Designer() {
                   <Button variant="secondary" size="sm" onClick={() => save("stl")}>
                     <Box /> STL
                   </Button>
-                  <Button variant="secondary" size="sm" onClick={() => save("step")}>
-                    <Layers /> STEP
+                  <Button variant="secondary" size="sm" onClick={() => save("plot3d")}>
+                    <Grid3x3 /> Plot3D .x
                   </Button>
-                  <Button variant="secondary" size="sm" onClick={() => save("step-nurbs")}>
-                    NURBS STEP
+                  <Button variant="secondary" size="sm" onClick={() => save("step")}>
+                    <Layers /> NURBS STEP
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => save("step-tess")}>
+                    Mesh STEP
                   </Button>
                   <Button variant="secondary" size="sm" onClick={() => save("iges")}>
                     IGES
                   </Button>
-                  <Button variant="secondary" size="sm" onClick={() => save("plot3d")}>
-                    <Grid3x3 /> Plot3D
-                  </Button>
                   <Button variant="secondary" size="sm" onClick={() => save("obj")}>
                     OBJ
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => save("vtk")}>
+                    VTK
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => save("glyph")}>
+                    Pointwise .glf
                   </Button>
                   <Button variant="secondary" size="sm" onClick={() => save("python")}>
                     <FileCode2 /> Python+C++
@@ -717,9 +736,12 @@ export function Designer() {
                   {busy === "kit" ? "Packing…" : "Download full CFD kit (.zip)"}
                 </Button>
                 <p className="mt-3 text-[11px] leading-relaxed text-subtle">
-                  Frame: X streamwise, Y span, Z up. The vehicle tip is at the origin. Kit includes analysis.json,
-                  waverider_cad.py, bowshock_aero.c, and bowshock.cpp (g++ 6DOF kernel). Closed families should
-                  read watertight.
+                  <span className="font-medium text-fg">Pointwise:</span> import the <span className="text-fg">binary STL</span> (File → Import → STL),
+                  the <span className="text-fg">IGES</span>, or the <span className="text-fg">Plot3D .x</span> as 3-D formatted, IBLANK off. Do not import STEP as XYZ
+                  points — that is the cyan cloud. NURBS STEP is degree-3 surfaces for SolidWorks / FreeCAD. Frame X stream, Y span, Z up, nose at the origin.
+                  {params.family === "ramjet" || params.family === "scramjet"
+                    ? " Ramjet: rectangular inlet at x=0 and nozzle at x=L. Flow-through leaves both OPEN."
+                    : ""}
                 </p>
               </div>
             ) : null}
@@ -731,8 +753,16 @@ export function Designer() {
 
       <footer className="hidden items-center justify-between border-t border-border px-6 py-2 text-[11px] text-subtle sm:flex">
         <span className="inline-flex items-center gap-1.5">
-          {q.watertight ? <Check className="size-3 text-fg" /> : <Octagon className="size-3 text-muted" />}
-          {q.watertight ? "Closed manifold solid" : "Open mesh — raise resolution"}
+          {q.watertight || ((params.family === "ramjet" || params.family === "scramjet") && params.flowThrough) ? (
+            <Check className="size-3 text-fg" />
+          ) : (
+            <Octagon className="size-3 text-muted" />
+          )}
+          {q.watertight
+            ? "Closed manifold solid"
+            : (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough
+              ? "Flow-through duct — inlet & nozzle open"
+              : "Open mesh — raise resolution"}
           <span className="mx-2 text-border">·</span>
           CL {fmt(study.aero.cl, 3)} · L/D {fmt(study.aero.ld, 2)} · q̇s {fmt(study.aero.qStag, 2)} W/cm²
           <span className="mx-2 text-border">·</span>

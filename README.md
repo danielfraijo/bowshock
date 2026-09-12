@@ -47,9 +47,9 @@ Stop the server with `Ctrl+C`.
 1. **Toolkit** — **External** (waveriders / lifting bodies) or **Internal** (inlets, ramjets, scramjets, Busemann, integrated).
 2. Pick a **family** on the left. The mesh rebuilds with the nose at the origin (white / grey axis triad). The lab view is black, white, and grey so the surface, seams, and shock sheet stay readable.
 3. **Geom** — length, span, height, Mach, shock/cone, lid (top or bottom), camber, elevons, fins, grid density.
-4. **Flight / Aero / Heat / Stab / 6DOF / Traj** (External) or **Cycle / Shocks / Heat** (Internal) — engineering analysis, not Navier–Stokes.
+4. **Flight / Aero / Heat / Stab / 6DOF / Traj** (External) or **Cycle / Shocks / Heat** (Internal) — engineering analysis, not Navier–Stokes. Switch the 3D view to **Heat** for rainbow q (W/cm²) or **Cp**. Surface mode stays black / white / grey.
 5. **Checks** — closed-form kernel tests (Rankine–Hugoniot, isentropic A/A*, Prandtl–Meyer, θ-β-M, Taylor–Maccoll, US76, Kantrowitz). All should read PASS.
-6. **CAD** — download STL, STEP (faceted or NURBS), IGES, Plot3D, OBJ, or the **full CFD kit (.zip)**.
+6. **CAD** — download binary STL (Pointwise), Plot3D `.x` (3-D formatted), IGES, NURBS STEP (SolidWorks / FreeCAD), or the **full CFD kit (.zip)**.
 
 The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py`, `bowshock_aero.c`, and `bowshock.cpp`.
 
@@ -99,9 +99,11 @@ python3 public/waverider_cad.py --type ramjet --mach 6 --all --out ramjet/
 
 Import:
 
-- **SolidWorks** — File → Open → `.step` (prefer NURBS STEP for filleting).
-- **FreeCAD** — Part → Import `.step`.
-- **Pointwise** — unstructured: Import STL (binary); structured: Import Plot3D `.xyz`.
+- **SolidWorks** — File → Open → `_nurbs.step` (degree-3 B-splines). Faceted STEP is a closed tessellation if NURBS knit fails.
+- **FreeCAD** — Part → Import `_nurbs.step` or `.igs`.
+- **Pointwise** — unstructured: Import **STL** (binary). Structured: Import Plot3D **`.x`** as **3-D formatted, IBLANK off**. IGES type-128 also works. Do **not** import STEP as XYZ points — that is the cyan point cloud. A Glyph script (`.glf`) in the kit imports STL then IGES then Plot3D.
+
+Ramjet / scramjet: both surfaces run from x=0 to x=L. The capture plane (rectangular inlet) is at the origin and the nozzle is at x=L. Enable **flow-through** to leave those faces open for internal CFD.
 
 ---
 

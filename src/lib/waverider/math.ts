@@ -310,6 +310,21 @@ export function suttonGraves(rho: number, V: number, Rn: number, recov = 1): num
   return 1.83e-8 * Math.sqrt(rho / Math.max(Rn, 1e-8)) * V ** 3 * recov;
 }
 
+/**
+ * Detra–Kemp–Riddell stagnation, W/cm² (Earth).
+ * q = 5.21×10⁴ √(ρ/Rn) (V/10⁴)^3.15  W/m² → /10⁴ for W/cm².
+ */
+export function detraKempRiddell(rho: number, V: number, Rn: number, recov = 1): number {
+  return 5.21 * Math.sqrt(rho / Math.max(Rn, 1e-8)) * Math.pow(V / 1e4, 3.15) * recov;
+}
+
+/** Radiation-equilibrium wall temperature from a convective flux in W/cm². ε=0.8. */
+export function twEquilibrium(qWcm2: number, eps = 0.8): number {
+  const q = Math.max(0, qWcm2) * 1e4;
+  const sig = 5.670374419e-8;
+  return Math.pow(q / Math.max(eps * sig, 1e-12), 0.25);
+}
+
 /** Tauber laminar running-length heating, W/cm² (NASA TP-2914). */
 export function tauberLaminar(rho: number, V: number, x: number, recov: number, sinth: number): number {
   return 1.83e-8 * Math.sqrt(rho / Math.max(x, 1e-8)) * V ** 3 * recov * Math.pow(Math.max(sinth, 0), 1.15);

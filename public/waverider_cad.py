@@ -3,9 +3,11 @@
 
 Zero third-party dependencies. Python 3.9+.
 
-Exports STL (ASCII + binary), STEP AP214 (faceted B-rep), IGES (NURBS 128),
-Plot3D XYZ, and OBJ. Coordinate frame: X streamwise (nose at origin), Y span,
-Z up. Lengths in metres internally; --unit scales the files.
+Exports STL (ASCII + binary), STEP AP214 (NURBS surfaces + faceted B-rep),
+IGES (NURBS 128), Plot3D `.x` (3-D formatted, nk=1), and OBJ. Coordinate frame:
+X streamwise (nose at origin), Y span, Z up. Lengths in metres internally;
+--unit scales the files. Pointwise: import the binary STL or Plot3D `.x`
+(3-D formatted, IBLANK off) — do not import STEP as XYZ points.
 
 Examples
 --------
@@ -570,95 +572,77 @@ def build_liftbody(d: Design) -> Tuple[Grid, Grid]:
     return make_grid("upper", nx, nj, up), make_grid("lower", nx, nj, lo)
 
 
-def build_ramjet(d: Design) -> Tuple[Grid, Grid]:
+def build_duct(d: Design, scram: bool) -> Tuple[Grid, Grid]:
+    """2-D ramjet/scramjet OML: rectangular capture at x=0, nozzle at x=L.
+
+    Floor ramps rise (internal compression) → isolator → SERN drop.
+    Cowl is constant capture height then expands. Both surfaces span 0→L so
+    the inlet and nozzle are real rectangular faces, not collapsed lips.
+    """
     L, s = d.length, d.span / 2.0
-    h_in = max(0.04, d.inlet_height)
-    h_max = max(h_in * 1.2, d.height)
+    h_in = max(0.05, d.inlet_height)
     th = d.ramp_deg * DEG
-    x1 = L * 0.2
-    x2 = L * clamp(d.cowl_frac, 0.28, 0.55)
-    x3 = min(L * 0.92, x2 + L * clamp(d.combustor_frac, 0.12, 0.4))
+    n_r = int(clamp(round(d.n_ramps or 2), 1, 3))
+    x_ramp = L * clamp(d.cowl_frac, 0.22, 0.58)
+    x_comb = min(L * (0.82 if scram else 0.86), x_ramp + L * clamp(d.combustor_frac, 0.12, 0.38))
     er = max(1.4, d.nozzle_er)
-    z_iso = -x1 * math.tan(th) - 1e-4
-    z_exit = z_iso * er
+    throat_t = clamp(0.52 * h_in if scram else 0.36 * h_in, 0.24 * h_in, 0.72 * h_in)
+    rise = clamp(h_in - throat_t, 0.08 * h_in, 0.78 * h_in)
+    throat = h_in - rise
+    h_exit = throat * math.sqrt(er) if scram else throat * er
+    expand = max(0.0, h_exit - throat)
+    cowl_up = 0.35 * expand
+    floor_drop = 0.65 * expand
+    dx = x_ramp / n_r
+    weights = [math.tan(th * (k + 1) / n_r) for k in range(n_r)]
+    wsum = sum(weights) or 1.0
 
-    def z_bot(x: float) -> float:
-        if x <= x1:
-            return -x * math.tan(th)
-        if x <= x3:
-            return z_iso
-        u = (x - x3) / max(L - x3, 1e-9)
-        return lerp(z_iso, min(z_exit, -h_max), u)
+    def z_floor(x: float) -> float:
+        if x <= 0:
+            return 0.0
+        if x <= x_ramp:
+            z = 0.0
+            x0 = 0.0
+            for k in range(n_r):
+                x1 = dx * (k + 1)
+                dz = rise * (weights[k] / wsum)
+                if x <= x1 + 1e-12:
+                    return z + (x - x0) / max(x1 - x0, 1e-12) * dz
+                z += dz
+                x0 = x1
+            return rise
+        if x <= x_comb:
+            return rise
+        u = (x - x_comb) / max(L - x_comb, 1e-9)
+        return rise - floor_drop * u * u
 
-    def z_top(x: float) -> float:
-        cowl = 0.012 * h_max
-        if x < x2:
-            return cowl + h_in * 0.15 * (1.0 - x / max(x2, 1e-9))
-        if x < x3:
-            return cowl
-        u = (x - x3) / max(L - x3, 1e-9)
-        return lerp(cowl, cowl + 0.25 * h_in * (er - 1.0), u)
+    def z_cowl(x: float) -> float:
+        if x <= x_comb:
+            return h_in
+        u = (x - x_comb) / max(L - x_comb, 1e-9)
+        return h_in + cowl_up * u
 
     ys = half_span_list(d.ny, s, d.half_model)
-    nx, nj = max(10, d.nx), len(ys)
-    upper = make_grid("upper", nx, nj, lambda i, j: ((i / (nx - 1)) * L, ys[j], z_top((i / (nx - 1)) * L)))
-    lower = make_grid("lower", nx, nj, lambda i, j: ((i / (nx - 1)) * L, ys[j], z_bot((i / (nx - 1)) * L)))
+    nx, nj = max(16, d.nx), len(ys)
+    n1 = max(6, round(nx * (x_ramp / L)))
+    n2 = max(4, round(nx * ((x_comb - x_ramp) / L)))
+    n3 = max(6, nx - n1 - n2)
+    xs = [(x_ramp * i) / max(n1 - 1, 1) for i in range(n1)]
+    xs += [x_ramp + ((x_comb - x_ramp) * i) / n2 for i in range(1, n2 + 1)]
+    xs += [x_comb + ((L - x_comb) * i) / n3 for i in range(1, n3 + 1)]
+    xs[0] = 0.0
+    xs[-1] = L
+    lower = make_grid("lower", len(xs), nj, lambda i, j: (xs[i], ys[j], z_floor(xs[i])))
+    upper = make_grid("cowl", len(xs), nj, lambda i, j: (xs[i], ys[j], z_cowl(xs[i])))
     return upper, lower
+
+
+def build_ramjet(d: Design) -> Tuple[Grid, Grid]:
+    return build_duct(d, False)
 
 
 def build_scramjet(d: Design) -> Tuple[Grid, Grid]:
-    L, s = d.length, d.span / 2.0
-    h_in = max(0.04, d.inlet_height)
-    h_max = max(h_in * 1.2, d.height)
-    th = d.ramp_deg * DEG
-    n_r = int(clamp(d.n_ramps, 1, 3))
-    x_ramp = L * (0.1 + 0.07 * n_r)
-    x2 = L * clamp(d.cowl_frac, 0.28, 0.58)
-    x3 = min(L * 0.88, x2 + L * clamp(d.combustor_frac, 0.1, 0.4))
-    er = max(1.4, d.nozzle_er)
-
-    def z_ramp(x: float) -> float:
-        dx = x_ramp / n_r
-        z = 0.0
-        x0 = 0.0
-        for k in range(n_r):
-            x1 = dx * (k + 1)
-            slope = math.tan(th * (k + 1) / n_r)
-            if x <= x1 + 1e-12:
-                return z - (x - x0) * slope
-            z -= (x1 - x0) * slope
-            x0 = x1
-        return z
-
-    z_iso = z_ramp(x_ramp) - 1e-4
-    z_comb = z_iso * 1.08
-    z_exit = z_iso * er
-
-    def z_bot(x: float) -> float:
-        if x <= x_ramp:
-            return z_ramp(x)
-        if x <= x2:
-            return z_iso
-        if x <= x3:
-            u = (x - x2) / max(x3 - x2, 1e-9)
-            return lerp(z_iso, z_comb, u)
-        u = (x - x3) / max(L - x3, 1e-9)
-        return lerp(z_comb, min(z_exit, -h_max), u)
-
-    def z_top(x: float) -> float:
-        cowl = 0.012 * h_max
-        if x < x2:
-            return cowl + h_in * 0.15 * (1.0 - x / max(x2, 1e-9))
-        if x < x3:
-            return cowl
-        u = (x - x3) / max(L - x3, 1e-9)
-        return lerp(cowl, cowl + 0.25 * h_in * (er - 1.0), u)
-
-    ys = half_span_list(d.ny, s, d.half_model)
-    nx, nj = max(10, d.nx), len(ys)
-    upper = make_grid("upper", nx, nj, lambda i, j: ((i / (nx - 1)) * L, ys[j], z_top((i / (nx - 1)) * L)))
-    lower = make_grid("lower", nx, nj, lambda i, j: ((i / (nx - 1)) * L, ys[j], z_bot((i / (nx - 1)) * L)))
-    return upper, lower
+    return build_duct(d, True)
 
 
 def build_integrated(d: Design) -> Tuple[Grid, Grid]:
@@ -784,7 +768,8 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
         if d.lid == "bottom":
             flip_z_grid(upper)
             flip_z_grid(lower)
-        if abs(d.elevon_deg) > 1e-3:
+        is_duct = d.family in ("ramjet", "scramjet")
+        if (not is_duct) and abs(d.elevon_deg) > 1e-3:
             hinge = 0.82 * d.length
             k = math.tan(d.elevon_deg * DEG)
             for g in (upper, lower):
@@ -794,14 +779,22 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
                     xyz.append((p[0], p[1], z))
                 g.xyz = xyz
         mesh = Mesh(d.length)
-        duct = bool(d.flow_through) and d.family in ("ramjet", "scramjet")
-        if not duct:
+        if not is_duct:
             zipper_sharp_edges(upper, lower, d.length)
-        apply_fins(upper, d, -1.0 if d.lid == "bottom" else 1.0)
-        if not duct:
+            apply_fins(upper, d, -1.0 if d.lid == "bottom" else 1.0)
             zipper_sharp_edges(upper, lower, d.length)
-        close_vehicle(mesh, upper, lower, d.half_model, duct)
+        close_vehicle(mesh, upper, lower, d.half_model, is_duct and d.flow_through)
         grids = [upper, lower]
+        if is_duct:
+            nj = min(upper.nj, lower.nj)
+            inlet = make_grid("inlet", 2, nj, lambda i, j: lower.at(0, j) if i == 0 else upper.at(0, j))
+            nozzle = make_grid(
+                "nozzle",
+                2,
+                nj,
+                lambda i, j: lower.at(lower.ni - 1, j) if i == 0 else upper.at(upper.ni - 1, j),
+            )
+            grids.extend([inlet, nozzle])
     snap_nose(mesh, grids)
     return mesh, grids, analyze(mesh)
 
@@ -867,6 +860,149 @@ def _s(n: float) -> str:
         return "0."
     t = f"{n:.14g}"
     return t if ("." in t or "e" in t or "E" in t) else t + "."
+
+
+def _spline_knots(n_poles: int, degree: int) -> Tuple[List[float], List[int]]:
+    p = min(degree, max(1, n_poles - 1))
+    knots = [0.0]
+    mult = [p + 1]
+    internal = n_poles - p - 1
+    for i in range(1, internal + 1):
+        knots.append(i / (internal + 1))
+        mult.append(1)
+    knots.append(1.0)
+    mult.append(p + 1)
+    return knots, mult
+
+
+def _downsample_grid(g: Grid, cap_u: int = 16, cap_v: int = 14) -> List[List[Vec3]]:
+    nu = min(g.ni, cap_u)
+    nv = min(g.nj, cap_v)
+    poles: List[List[Vec3]] = []
+    for iu in range(nu):
+        i = g.ni - 1 if iu == nu - 1 else round(iu * (g.ni - 1) / max(nu - 1, 1))
+        row = []
+        for jv in range(nv):
+            j = g.nj - 1 if jv == nv - 1 else round(jv * (g.nj - 1) / max(nv - 1, 1))
+            row.append(g.at(i, j))
+        poles.append(row)
+    return poles
+
+
+def write_nurbs_step(path: str, grids: List[Grid], name: str, unit: str) -> None:
+    """Degree-3 NURBS STEP — surfaces, not a CARTESIAN_POINT cloud."""
+    usable = [g for g in grids if g.ni >= 2 and g.nj >= 2]
+    lines: List[str] = []
+    n = [0]
+
+    def add(entity: str) -> int:
+        n[0] += 1
+        lines.append(f"#{n[0]} = {entity};")
+        return n[0]
+
+    hdr = (
+        "ISO-10303-21;\nHEADER;\n"
+        "FILE_DESCRIPTION(('Bowshock NURBS waverider'),'2;1');\n"
+        f"FILE_NAME('{name}.step','2026-01-01T00:00:00',('Bowshock'),('Bowshock'),"
+        "'Bowshock CAD','Bowshock','');\n"
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
+        "ENDSEC;\nDATA;\n"
+    )
+    app = add("APPLICATION_CONTEXT('automotive design')")
+    add(f"APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2010,#{app})")
+    pctx = add(f"PRODUCT_CONTEXT('',#{app},'mechanical')")
+    dctx = add(f"PRODUCT_DEFINITION_CONTEXT('',#{app},'design')")
+    prod = add(f"PRODUCT('waverider','Waverider','inverse-design waverider',(#{pctx}))")
+    pdf = add(f"PRODUCT_DEFINITION_FORMATION('','',#{prod})")
+    pd = add(f"PRODUCT_DEFINITION('design','',#{pdf},#{dctx})")
+    pds = add(f"PRODUCT_DEFINITION_SHAPE('','',#{pd})")
+    if unit == "mm":
+        lu = add("(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.))")
+    else:
+        lu = add("(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.))")
+    ang = add("(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))")
+    sol = add("(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())")
+    um = add("LENGTH_MEASURE(1.E-8)")
+    unc = add(f"UNCERTAINTY_MEASURE_WITH_UNIT(#{um},#{lu},'distance_accuracy_value','closure')")
+    ctx = add(
+        f"(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{unc})) "
+        f"GLOBAL_UNIT_ASSIGNED_CONTEXT((#{lu},#{ang},#{sol})) REPRESENTATION_CONTEXT('3D',' '))"
+    )
+
+    def emit_surface(poles: List[List[Vec3]], degree: int = 3) -> int:
+        ni, nj = len(poles), len(poles[0])
+        p1, p2 = min(degree, ni - 1), min(degree, nj - 1)
+        ids = []
+        for row in poles:
+            ids.append([add(f"CARTESIAN_POINT('',({_s(p[0])},{_s(p[1])},{_s(p[2])}))") for p in row])
+        ku, mu = _spline_knots(ni, p1)
+        kv, mv = _spline_knots(nj, p2)
+        grid = ",".join("(" + ",".join(f"#{i}" for i in row) + ")" for row in ids)
+        return add(
+            f"B_SPLINE_SURFACE_WITH_KNOTS('',{p1},{p2},({grid}),.UNSPECIFIED.,.F.,.F.,.F.,"
+            f"({','.join(str(m) for m in mu)}),({','.join(str(m) for m in mv)}),"
+            f"({','.join(_s(k) for k in ku)}),({','.join(_s(k) for k in kv)}),.UNSPECIFIED.)"
+        )
+
+    def emit_curve(poles: List[Vec3], degree: int = 3) -> int:
+        p = min(degree, len(poles) - 1)
+        ids = [add(f"CARTESIAN_POINT('',({_s(pt[0])},{_s(pt[1])},{_s(pt[2])}))") for pt in poles]
+        kts, mul = _spline_knots(len(poles), p)
+        return add(
+            f"B_SPLINE_CURVE_WITH_KNOTS('',{p},({','.join(f'#{i}' for i in ids)}),.UNSPECIFIED.,.F.,.F.,"
+            f"({','.join(str(m) for m in mul)}),({','.join(_s(k) for k in kts)}),.UNSPECIFIED.)"
+        )
+
+    def emit_face(poles: List[List[Vec3]], fname: str) -> int:
+        ni, nj = len(poles), len(poles[0])
+        surf = emit_surface(poles, 3)
+        corners = [poles[0][0], poles[ni - 1][0], poles[ni - 1][nj - 1], poles[0][nj - 1]]
+        vxs = []
+        for c in corners:
+            pt = add(f"CARTESIAN_POINT('',({_s(c[0])},{_s(c[1])},{_s(c[2])}))")
+            vxs.append(add(f"VERTEX_POINT('',#{pt})"))
+        c0 = emit_curve([row[0] for row in poles], 1)
+        c1 = emit_curve(poles[ni - 1], 1)
+        c2 = emit_curve(list(reversed([row[nj - 1] for row in poles])), 1)
+        c3 = emit_curve(list(reversed(poles[0])), 1)
+        e0 = add(f"EDGE_CURVE('',#{vxs[0]},#{vxs[1]},#{c0},.T.)")
+        e1 = add(f"EDGE_CURVE('',#{vxs[1]},#{vxs[2]},#{c1},.T.)")
+        e2 = add(f"EDGE_CURVE('',#{vxs[2]},#{vxs[3]},#{c2},.T.)")
+        e3 = add(f"EDGE_CURVE('',#{vxs[3]},#{vxs[0]},#{c3},.T.)")
+        o0 = add(f"ORIENTED_EDGE('',*,*,#{e0},.T.)")
+        o1 = add(f"ORIENTED_EDGE('',*,*,#{e1},.T.)")
+        o2 = add(f"ORIENTED_EDGE('',*,*,#{e2},.T.)")
+        o3 = add(f"ORIENTED_EDGE('',*,*,#{e3},.T.)")
+        loop = add(f"EDGE_LOOP('',(#{o0},#{o1},#{o2},#{o3}))")
+        bound = add(f"FACE_OUTER_BOUND('',#{loop},.T.)")
+        return add(f"ADVANCED_FACE('{fname}',(#{bound}),#{surf},.T.)")
+
+    faces = [emit_face(_downsample_grid(g), g.name or "surface") for g in usable]
+    upper = next((g for g in usable if g.name in ("upper", "cowl")), usable[0] if usable else None)
+    lower = next((g for g in usable if g.name == "lower"), usable[-1] if usable else None)
+    if upper and lower and upper is not lower:
+        u_p, l_p = _downsample_grid(upper), _downsample_grid(lower)
+        nj = min(len(u_p[0]), len(l_p[0]))
+        mid = nj // 2
+        te_u, te_l = u_p[-1][:nj], l_p[-1][:nj]
+        le_u, le_l = u_p[0][:nj], l_p[0][:nj]
+        te_d = math.hypot(te_u[mid][0] - te_l[mid][0], te_u[mid][1] - te_l[mid][1], te_u[mid][2] - te_l[mid][2])
+        le_d = math.hypot(le_u[mid][0] - le_l[mid][0], le_u[mid][1] - le_l[mid][1], le_u[mid][2] - le_l[mid][2])
+        if te_d > 1e-7:
+            faces.append(emit_face([te_u, te_l], "nozzle_or_base"))
+        if le_d > 1e-7:
+            faces.append(emit_face([le_u, le_l], "inlet"))
+    if not faces:
+        write_step(path, Mesh(1.0), name, unit)
+        return
+    shell = add("OPEN_SHELL('',(" + ",".join(f"#{i}" for i in faces) + "))")
+    model = add(f"SHELL_BASED_SURFACE_MODEL('Bowshock',(#{shell}))")
+    repr_ = add(f"MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#{model}),#{ctx})")
+    add(f"SHAPE_DEFINITION_REPRESENTATION(#{pds},#{repr_})")
+    with open(path, "w", encoding="ascii", errors="replace") as f:
+        f.write(hdr)
+        f.write("\n".join(lines))
+        f.write("\nENDSEC;\nEND-ISO-10303-21;\n")
 
 
 def write_step(path: str, mesh: Mesh, name: str, unit: str) -> None:
@@ -1042,10 +1178,23 @@ def export_all(d: Design, prefix: str, out_dir: str = ".") -> dict:
     base = os.path.join(out_dir, prefix)
     write_stl_binary(base + ".stl", mesh, d.name)
     write_stl_ascii(base + "_ascii.stl", mesh, d.name)
-    write_step(base + ".step", mesh, d.name, d.unit)
+    write_nurbs_step(base + ".step", grids, d.name, d.unit)
+    write_nurbs_step(base + "_nurbs.step", grids, d.name, d.unit)
+    write_step(base + "_faceted.step", mesh, d.name, d.unit)
     write_iges(base + ".igs", grids, d.name)
-    write_plot3d(base + ".xyz", grids)
+    write_plot3d(base + ".x", grids)
     write_obj(base + ".obj", mesh)
+    with open(base + "_POINTWISE.txt", "w", encoding="utf-8") as f:
+        f.write(
+            "POINTWISE\n"
+            "=========\n"
+            "Do not import STEP as XYZ points (cyan cloud).\n"
+            f"1. File > Import > STL     {prefix}.stl     (recommended)\n"
+            f"2. File > Import > IGES    {prefix}.igs\n"
+            f"3. File > Import > Plot3D  {prefix}.x   3-D formatted, IBLANK off\n"
+            f"4. NURBS STEP              {prefix}.step / {prefix}_nurbs.step  (SolidWorks/FreeCAD)\n"
+            "Frame: X stream, Y span, Z up. Nose / cowl lip at origin.\n"
+        )
     with open(base + "_quality.json", "w", encoding="utf-8") as f:
         json.dump({"design": asdict(d), "quality": q}, f, indent=2)
     print(f"{prefix}: {q['triangles']} tris, watertight={q['watertight']}, vol={q['volume']:.6g}")
@@ -1088,6 +1237,8 @@ def design_from_args(ns: argparse.Namespace) -> Design:
         d.half_model = True
     if ns.le_radius is not None:
         d.le_radius = ns.le_radius
+    if d.family in ("ramjet", "scramjet"):
+        d.flow_through = True
     return d
 
 
@@ -1147,7 +1298,7 @@ def main(argv: List[str] | None = None) -> int:
         write_stl_binary(ns.stl, mesh, d.name)
         wrote = True
     if ns.step:
-        write_step(ns.step, mesh, d.name, d.unit)
+        write_nurbs_step(ns.step, grids, d.name, d.unit)
         wrote = True
     if ns.iges:
         write_iges(ns.iges, grids, d.name)

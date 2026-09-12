@@ -134,6 +134,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
         rangeKm: 0,
         timeS: 0,
         maxQ: atm.q,
+        maxQAltKm: p.altKm,
         maxHeat: aero.qStag,
         heatLoad: 0,
         finalV: atm.V,
