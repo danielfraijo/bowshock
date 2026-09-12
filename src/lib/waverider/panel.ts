@@ -5,11 +5,19 @@ import {
   betaFromThetaM,
   clamp,
   coneSurfaceCp,
+  fayRiddell,
+  flowRegime,
+  hypersonicTripped,
   invPrandtlMeyer,
+  knudsen,
+  leesHeatFactor,
   newtonianCpMax,
   obliqueShock,
+  postShockT,
   prandtlMeyer,
+  rarefactionWeight,
   suttonGraves,
+  sweepHeatFactor,
   tauberLaminar,
   tauberSutton,
   tauberTurbulent,
@@ -18,6 +26,8 @@ import {
   vanDriestII,
   vcross,
   vlen,
+  viscousChi,
+  viscousInteractionPressure,
   vsub,
 } from "./math";
 import type { Atmosphere } from "./atmosphere";
@@ -44,6 +54,13 @@ export interface PanelAero {
   qMeanWind: number;
   qRad: number;
   twMax: number;
+  qFay: number;
+  qSG: number;
+  kn: number;
+  chiBar: number;
+  gammaEq: number;
+  regime: "continuum" | "slip" | "transitional" | "free-molecular";
+  pVisc: number;
   lRef: number;
   sRef: number;
   cg: Vec3;
@@ -172,6 +189,18 @@ export function panelAero(
   const hw = Tw * 1004.7;
   const recovStag = clamp(1 - hw / Math.max(h0, 1), 0.05, 0.95);
   const useCone = CONE_FAMILIES.has(params.family);
+  const kn = knudsen(atm.T, atm.p, Math.max(params.length, 1e-6));
+  const wRare = rarefactionWeight(kn);
+  const chiBar = viscousChi(M, Math.max(atm.ReL * params.length, 1), Tw, atm.T);
+  const pVisc = viscousInteractionPressure(chiBar);
+  const gammaEq = postShockT(M, atm.T, g).gammaEq;
+  const regime = flowRegime(kn);
+  const sweep = Math.atan2(params.length, Math.max(params.span / 2, 1e-6));
+  const sweepF = sweepHeatFactor(sweep);
+  const qSG = suttonGraves(atm.rho, atm.V, Rn, recovStag);
+  const qFay = fayRiddell(atm.rho, atm.V, Rn, atm.T, atm.p, Tw, g);
+  const qStag0 = qFay > 0 ? qFay : qSG;
+  let transArea = 0;
 
   for (let t = 0; t < nt; t++) {
     const a = get(mesh, mesh.indices[t * 3]);
@@ -217,6 +246,11 @@ export function panelAero(
       cpi = w.cp;
       if (!w.attached) nDetached++;
     }
+    if (ndv < 0) cpi *= pVisc;
+    if (wRare > 1e-4) {
+      const fm = 2 * sinth * sinth;
+      cpi = (1 - wRare) * cpi + wRare * fm;
+    }
     cp[t] = cpi;
     const dFx = -cpi * area * n[0];
     const dFy = -cpi * area * n[1];
@@ -232,21 +266,27 @@ export function panelAero(
     if (ndv < -0.02 && surf !== SURFACE_ID.base) {
       const x = Math.max(cx, Rn);
       const ReX = atm.ReL * x;
-      const rRec = ReX > 5e5 ? 0.89 : 0.84;
+      const tripped = hypersonicTripped(ReX, M);
+      const rRec = tripped ? 0.89 : 0.84;
       const hrec = atm.T * 1004.7 * (1 + rRec * 0.5 * (g - 1) * M * M);
       const recov = clamp(1 - hw / Math.max(hrec, 1), 0.05, 0.95);
       const qLam = tauberLaminar(atm.rho, atm.V, x, recov, sinth);
       const qTurb = tauberTurbulent(atm.rho, atm.V, x, recov, sinth);
-      const qW = ReX > 5e5 ? Math.max(qLam, qTurb) : qLam;
+      const qW0 = tripped ? Math.max(qLam, qTurb) : qLam;
+      const pRatio = clamp(cpi / Math.max(cpMax, 1e-6), 0.01, 1);
+      const qLees = qStag0 * leesHeatFactor(pRatio, x / Math.max(Rn, 1e-8), tripped);
+      const qMix = 0.55 * qW0 + 0.45 * qLees;
+      const qW = surf === SURFACE_ID.leading ? qMix * sweepF : qMix;
       heat[t] = qW;
       twEq[t] = twEquilibrium(qW);
       qWindSum += heat[t] * area;
       aWind += area;
+      if (tripped) transArea += area;
       if (heat[t] > qMax) qMax = heat[t];
     }
   }
 
-  qStag = suttonGraves(atm.rho, atm.V, Rn, recovStag);
+  qStag = qStag0;
   const qRad = tauberSutton(atm.rho, atm.V, Rn);
   if (qStag > qMax) qMax = qStag;
   const twMax = twEquilibrium(qMax);
@@ -255,7 +295,11 @@ export function panelAero(
   const S = Math.max(sRef, 1e-8);
   const L = Math.max(lRef, 1e-8);
   const wind = rotateForce([Fx * q, Fy * q, Fz * q], alpha, beta);
-  const Cf = vanDriestII(atm.ReL * L, M, atm.T, Tw, g);
+  const ReBody = atm.ReL * L;
+  const Cf =
+    ReBody < 5e5
+      ? 1.328 / Math.sqrt(Math.max(ReBody, 100))
+      : vanDriestII(ReBody, M, atm.T, Tw, g);
   const swet = aWind > 0 ? aWind * 1.35 : S * 2.4;
   const Dfric = Cf * q * swet;
   const lift = wind.lift;
@@ -278,7 +322,7 @@ export function panelAero(
     notes.push(
       useCone
         ? "Mixed: tangent-cone (Taylor–Maccoll) windward if attached, Modified Newtonian if detached; Prandtl–Meyer leeward; Love base; van Driest II Cf."
-        : "Mixed: tangent-wedge (θ-β-M) windward if attached, Modified Newtonian if detached; Prandtl–Meyer leeward; Love base; van Driest II Cf.",
+        : "Mixed: tangent-wedge (θ-β-M) windward if attached, Modified Newtonian if detached; Prandtl–Meyer leeward; Love base; van Driest II / Blasius Cf.",
     );
   } else if (method === "tangent") {
     notes.push(useCone ? "Tangent-cone (Sims / Taylor–Maccoll) on windward panels." : "Tangent-wedge (exact oblique shock) on windward panels.");
@@ -287,6 +331,13 @@ export function panelAero(
   }
   if (nDetached > 12) notes.push(`${nDetached} windward panels have a detached shock — Newtonian used there.`);
   if (params.lockFlight) notes.push("Flight Mach locked to design Mach.");
+  if (pVisc > 1.04) notes.push(`Viscous interaction χ̄=${chiBar.toFixed(2)} raises windward p by ${(pVisc - 1).toFixed(3)} (Hayes–Probstein).`);
+  if (wRare > 0.02) notes.push(`Rarefaction Kn=${kn.toExponential(2)} (${regime}): Cp bridged toward free-molecular.`);
+  if (aWind > 0 && transArea > 0) {
+    notes.push(
+      `Transition: ${(100 * transArea / aWind).toFixed(0)}% of windward area tripped (Reshotko Re_θ/M_e > 180). Heating is 0.55 Tauber + 0.45 Lees.`,
+    );
+  }
 
   return {
     cl,
@@ -310,6 +361,13 @@ export function panelAero(
     qMeanWind: aWind > 0 ? qWindSum / aWind : 0,
     qRad,
     twMax,
+    qFay,
+    qSG,
+    kn,
+    chiBar,
+    gammaEq,
+    regime,
+    pVisc,
     lRef: L,
     sRef: S,
     cg,

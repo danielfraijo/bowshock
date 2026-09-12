@@ -60,6 +60,38 @@ static double sutton_graves(double rho, double V, double Rn, double rec) {
   return 1.83e-8 * std::sqrt(rho / std::max(Rn, 1e-8)) * std::pow(V, 3.0) * rec;
 }
 
+static double billig_standoff(double M) {
+  double m = std::max(1.05, M);
+  return 0.143 * std::exp(3.24 / (m * m));
+}
+
+static double gamma_vib(double T) {
+  auto contrib = [](double theta, double t) {
+    double u = theta / std::max(t, 40.0);
+    if (u > 20) return 0.0;
+    double e = std::exp(u);
+    double d = e - 1.0;
+    return (u * u * e) / (d * d);
+  };
+  double cvR = 2.5 + 0.21 * contrib(2270, T) + 0.79 * contrib(3390, T);
+  return 1.0 + 1.0 / std::max(cvR, 1.5);
+}
+
+static double millikan_white_tau(double T, double p) {
+  double t = std::max(T, 400.0);
+  double Tm = std::pow(t, -1.0 / 3.0);
+  double tauN2 = std::exp(221.0 * (Tm - 0.029) - 18.42);
+  double tauO2 = std::exp(129.0 * (Tm - 0.0295) - 18.42);
+  double pAtm = std::max(p, 1e-6) / 101325.0;
+  return (0.79 * tauN2 + 0.21 * tauO2) / pAtm;
+}
+
+static double waltrup_billig(double M, double p2p1, double thH = 0.01) {
+  double d = std::max(p2p1, 1.0) - 1.0;
+  double num = 50.0 * d + 170.0 * d * d;
+  return std::sqrt(std::max(thH, 1e-4)) * num / std::max(M * M - 1.0, 0.25);
+}
+
 /* ---------- atmosphere (US76 tropo/strato) ---------- */
 
 static void us76(double alt_km, double M, double g, double& T, double& p, double& rho, double& a, double& V, double& q) {
@@ -238,6 +270,10 @@ static int check_kernel() {
   us76(30, 8, g, T, p, rho, a, V, q);
   modes_of(c, V, q, ms);
   ok("short-period ωn > 0 (stable Cmα)", ms[0].wn > 0 ? 1 : 0, 1, 0.1);
+  ok("Billig Δ/Rn M→∞ = 0.143", billig_standoff(1e6), 0.143, 1e-6);
+  ok("γ_vib 288 K ≈ 1.4", gamma_vib(288.15), 1.4, 0.01);
+  ok("Waltrup–Billig L/H M=3 pr=2.5", waltrup_billig(3, 2.5, 0.01), 5.719, 0.05);
+  ok("Millikan–White τ 3000 K 1 atm", millikan_white_tau(3000, 101325), 6e-5, 3e-5);
   std::printf("%s  %d failed\n", fail ? "KERNEL FAIL" : "KERNEL PASS", fail);
   return fail;
 }
@@ -345,6 +381,8 @@ int main(int argc, char** argv) {
     double Rn = argd(argc, argv, "--Rn", 0.01);
     std::printf("Sutton-Graves qs = %.4f W/cm^2  (M=%.2f h=%.1f km Rn=%.4f m)\n", sutton_graves(rho, V, Rn, 0.5), M, alt,
                 Rn);
+    std::printf("Billig Δ/Rn = %.4f   γ_vib(T∞)=%.4f   τ_v=%.3e s\n", billig_standoff(M), gamma_vib(T),
+                millikan_white_tau(T * (1 + 0.2 * M * M), p));
     return 0;
   }
   Coeffs c;

@@ -140,18 +140,22 @@ export function solveSixDof(
     };
   }
 
-  const dA = 1.5;
+  const dA = 1.0;
   const pu = panelAero(mesh, params, atm, a0 + dA, b0, sRef, lRef);
   const pd = panelAero(mesh, params, atm, a0 - dA, b0, sRef, lRef);
+  const pu2 = panelAero(mesh, params, atm, a0 + 2 * dA, b0, sRef, lRef);
+  const pd2 = panelAero(mesh, params, atm, a0 - 2 * dA, b0, sRef, lRef);
   const pb = panelAero(mesh, params, atm, a0, b0 + dA, sRef, lRef);
-  const da = 2 * dA * DEG;
-  const db = dA * DEG;
-  const cla = (pu.cl - pd.cl) / da;
-  const cda = (pu.cd - pd.cd) / da;
-  const cma = (pu.cm - pd.cm) / da;
-  const cnb = (pb.cn - p0.cn) / db;
-  const cyb = (pb.cy - p0.cy) / db;
-  const clb = (pb.cll - p0.cll) / db;
+  const pb2 = panelAero(mesh, params, atm, a0, b0 + 2 * dA, sRef, lRef);
+  const pbm = panelAero(mesh, params, atm, a0, b0 - dA, sRef, lRef);
+  const pbm2 = panelAero(mesh, params, atm, a0, b0 - 2 * dA, sRef, lRef);
+  const hA = dA * DEG;
+  const cla = (8 * (pu.cl - pd.cl) - (pu2.cl - pd2.cl)) / (12 * hA);
+  const cda = (8 * (pu.cd - pd.cd) - (pu2.cd - pd2.cd)) / (12 * hA);
+  const cma = (8 * (pu.cm - pd.cm) - (pu2.cm - pd2.cm)) / (12 * hA);
+  const cnb = (8 * (pb.cn - pbm.cn) - (pb2.cn - pbm2.cn)) / (12 * hA);
+  const cyb = (8 * (pb.cy - pbm.cy) - (pb2.cy - pbm2.cy)) / (12 * hA);
+  const clb = (8 * (pb.cll - pbm.cll) - (pb2.cll - pbm2.cll)) / (12 * hA);
 
   const V = Math.max(50, atm.V);
   const L = Math.max(lRef, 1e-6);
@@ -294,7 +298,7 @@ export function solveSixDof(
   ];
 
   notes.push(
-    "Static derivatives: central difference ±1.5° on the mixed panel method (CBAERO-class).",
+    "Static derivatives: 4th-order Richardson on α and β (±1°, ±2°). Mixed panel (CBAERO-class).",
   );
   notes.push(
     "Rotary derivatives: local velocity V∞ − ω × r_cg on every panel (Etkin). Nondim. q̂ = q L / 2V, p̂,r̂ = (p,r) b / 2V.",

@@ -47,8 +47,8 @@ Stop the server with `Ctrl+C`.
 1. **Toolkit** — **External** (waveriders / lifting bodies) or **Internal** (inlets, ramjets, scramjets, Busemann, integrated).
 2. Pick a **family** on the left. The mesh rebuilds with the nose at the origin (white / grey axis triad). The lab view is black, white, and grey so the surface, seams, and shock sheet stay readable.
 3. **Geom** — length, span, height, Mach, shock/cone, lid (top or bottom), camber, elevons, fins, grid density.
-4. **Flight / Aero / Heat / Stab / 6DOF / Traj** (External) or **Cycle / Shocks / Heat** (Internal) — engineering analysis, not Navier–Stokes. Switch the 3D view to **Heat** for rainbow q (W/cm²) or **Cp**. Surface mode stays black / white / grey.
-5. **Checks** — closed-form kernel tests (Rankine–Hugoniot, isentropic A/A*, Prandtl–Meyer, θ-β-M, Taylor–Maccoll, US76, Kantrowitz). All should read PASS.
+4. **Flight / Aero / Heat / Frontier / Stab / 6DOF / Traj** (External) or **Cycle / Shocks / Heat / Frontier** (Internal) — engineering analysis, not Navier–Stokes. Switch the 3D view to **Heat** for rainbow q (W/cm²) or **Cp**. Surface mode stays black / white / grey.
+5. **Checks** — closed-form kernel tests (Rankine–Hugoniot, isentropic A/A*, Prandtl–Meyer, θ-β-M, Taylor–Maccoll, US76, Kantrowitz, γ_vib, mean free path, Fay–Riddell, Billig, Lees, Millikan–White, Waltrup–Billig). All should read PASS.
 6. **CAD** — download binary STL (Pointwise), Plot3D `.x` (3-D formatted), IGES, NURBS STEP (SolidWorks / FreeCAD), or the **full CFD kit (.zip)**.
 
 The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py`, `bowshock_aero.c`, and `bowshock.cpp`.
@@ -134,18 +134,36 @@ g++ -O2 -std=c++17 public/bowshock.cpp -o bowshock
 
 CBAERO-class **engineering** methods. Fast enough to iterate on a laptop. Not a Navier–Stokes substitute.
 
-- **Shocks:** θ-β-M, Rankine–Hugoniot oblique + normal, Taylor–Maccoll RK4 (Sims NASA SP-3004)
+- **Shocks:** θ-β-M, Rankine–Hugoniot oblique + normal, Taylor–Maccoll RK4 (Sims NASA SP-3004), Billig 1967 sphere standoff
 - **Expansion:** Prandtl–Meyer
-- **Panel aero:** attached tangent-wedge (2-D families) or tangent-cone (axisymmetric families); Modified Newtonian (Lees) if the shock detaches; Prandtl–Meyer leeward; Love base \(C_p = -1/M^2\); van Driest II \(C_f\) (Hopkins & Inouye 1971)
-- **Heating:** Sutton–Graves stagnation (NASA TR R-802, \(k = 1.83\times 10^{-8}\) W/cm²), Tauber running-length (NASA TP-2914), Tauber–Sutton radiative (JSR 1991)
-- **Stability:** finite-difference \(C_{L\alpha}\), \(C_{m\alpha}\), \(C_{n\beta}\), \(C_{l\beta}\), static margin
-- **Rotary derivatives:** local velocity \(V_\infty + \omega \times r_{cg}\) on every panel → \(C_{mq}\), \(C_{lp}\), \(C_{nr}\), \(C_{lr}\), \(C_{np}\) (Etkin)
+- **Panel aero:** attached tangent-wedge (2-D families) or tangent-cone (axisymmetric families); Modified Newtonian (Lees) if the shock detaches; Prandtl–Meyer leeward; Love base \(C_p = -1/M^2\); van Driest II \(C_f\) (Hopkins & Inouye 1971) or Blasius if laminar; Hayes–Probstein viscous interaction on windward \(p\); Schaaf–Chambre rarefaction bridging
+- **Heating:** Fay–Riddell 1958 (Billig-corrected \(du_e/ds\)), Sutton–Graves (NASA TR R-802), Detra–Kemp–Riddell, Tauber running-length (NASA TP-2914) mixed with Lees 1956 \(q/q_s = (p/p_s)^{1/2}(R_n/(R_n+s))^{1/2}\), Tauber–Sutton radiative (JSR 1991), Beckwith swept-cylinder LE, Edney Type-IV bound at cowls; Reshotko / Mack \(Re_\theta/M_e\) transition
+- **Real gas:** vibrational-equilibrium \(\gamma(T)\) (Hansen / SHO O₂–N₂); Millikan–White / Park 1990 \(\tau_v\) and Damköhler freeze/eq blend; Lighthill ideal-dissociating gas \(\alpha_{O_2},\alpha_{N_2}\); Gupta–Yos-class \(\mu(T)\) above 1500 K. Inverse-design shocks stay at the input \(\gamma\).
+- **Stability:** 4th-order Richardson \(C_{L\alpha}\), \(C_{m\alpha}\), \(C_{n\beta}\), \(C_{l\beta}\); static margin
+- **Rotary derivatives:** local velocity \(V_\infty - \omega \times r_{cg}\) on every panel → \(C_{mq}\), \(C_{lp}\), \(C_{nr}\), \(C_{lr}\), \(C_{np}\) (Etkin)
 - **6DOF:** Etkin / Nelson linear modes (short period, phugoid, dutch roll, roll subsidence, spiral) + RK4 time history (400 steps × 0.02 s) from a +2° α pulse. Inertias from Mirtich tetrahedra.
-- **Trajectory:** RK4 3DOF point-mass on the panel polar
-- **Inlets / engines:** multi-ramp θ-β-M, Fanno isolator, Rayleigh heat addition, isentropic nozzle, Kantrowitz start, Heiser–Pratt 1-D cycle
-- **Atmosphere:** 1976 US Standard Atmosphere
+- **Trajectory:** adaptive RK4 3DOF (step doubling / Richardson) on the panel polar, Knudsen CD growth, Fay–Riddell heating, 3 mm C/C lumped \(T_w\), peak-\(n\) / max-\(q\) / heat load
+- **Inlets / engines:** multi-ramp θ-β-M, Fanno isolator, Waltrup–Billig shock-train \(L/H\), Rayleigh heat addition, isentropic nozzle, Kantrowitz start, Heiser–Pratt 1-D cycle
+- **Atmosphere:** 1976 US Standard Atmosphere + kinetic mean free path / Knudsen
 - **Geometry:** inverse-design lofts with a sharp-edge zipper (no LE/TE sliver walls, zero-chord tips collapse to a point)
-- **Checks tab:** Anderson / NACA 1135 / Sims / US76 / Kantrowitz identities — same solvers the vehicle uses
+- **Checks tab:** Anderson / NACA 1135 / Sims / US76 / Kantrowitz / γ_vib / λ / Fay–Riddell / Billig / Lees / Millikan–White / Waltrup–Billig identities — same solvers the vehicle uses
+
+**Frontier tab** reports regime, Kn, \(\gamma_\mathrm{vib}(T_2)\), \(\gamma_\mathrm{eff}(Da)\), Lighthill \(\alpha\), \(\rho L\), Billig \(\Delta/R_n\), Van Dyke \(K=M\tau\), \(\bar\chi\), Fay–Riddell vs Sutton–Graves vs DKR, sweep factor, Edney bound, isolator \(L/H\), and equilibrium-glide CL.
+
+---
+
+## Public website (Vercel)
+
+The repo is public: [github.com/danielfraijo/bowshock](https://github.com/danielfraijo/bowshock).
+
+To get a shareable `*.vercel.app` link (anyone can open the lab, no install):
+
+1. Open [vercel.com/new](https://vercel.com/new)
+2. Import **danielfraijo/bowshock**
+3. Framework: Vite (auto). Deploy.
+4. In the project: Settings → Deployment Protection → **disable** Vercel Authentication so the URL is public.
+
+Each `git push` to `main` rebuilds that URL.
 
 ---
 

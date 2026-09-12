@@ -7,6 +7,7 @@ import { massProperties, type MassProps } from "./mass";
 import { integrateGlide, type TrajResult } from "./trajectory";
 import { runValidation, validationSummary, type Check } from "./validate";
 import { solveSixDof, type SixDofResult } from "./sixdof";
+import { frontierPhysics, type FrontierResult } from "./frontier";
 
 export interface LitBand {
   ld: [number, number];
@@ -84,6 +85,7 @@ export interface StudyResult {
   prop: PropResult | null;
   mass: MassProps;
   traj: TrajResult;
+  frontier: FrontierResult;
   bench: Bench;
   literature: LitBand & { inBand: boolean; source: string };
   checks: Check[];
@@ -136,7 +138,10 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
         maxQ: atm.q,
         maxQAltKm: p.altKm,
         maxHeat: aero.qStag,
+        maxHeatAltKm: p.altKm,
+        maxN: 0,
         heatLoad: 0,
+        twPeak: 0,
         finalV: atm.V,
         finalH: p.altKm,
         skipped: true,
@@ -160,6 +165,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
   const checks = runValidation();
   const { ok } = validationSummary(checks);
   const elapsedMs = (performance.now?.() ?? Date.now()) - t0;
+  const frontier = frontierPhysics(p, atm, aero, mass, traj, prop);
   return {
     atm,
     aero,
@@ -168,6 +174,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
     prop,
     mass,
     traj,
+    frontier,
     bench,
     literature: { ...lit, inBand, source: p.family },
     checks,
@@ -179,7 +186,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
 }
 
 export function studyJson(built: BuiltVehicle, study: StudyResult): string {
-  const { atm, aero, stab, six, prop, mass, traj, bench, literature, checks, elapsedMs, flightMach, domain } = study;
+  const { atm, aero, stab, six, prop, mass, traj, frontier, bench, literature, checks, elapsedMs, flightMach, domain } = study;
   return JSON.stringify(
     {
       name: built.params.name,
@@ -202,8 +209,14 @@ export function studyJson(built: BuiltVehicle, study: StudyResult): string {
         cdFric: aero.cdFric,
         cdBase: aero.cdBase,
         qStag: aero.qStag,
+        qFay: aero.qFay,
+        qSG: aero.qSG,
         qMax: aero.qMax,
         qRad: aero.qRad,
+        kn: aero.kn,
+        chiBar: aero.chiBar,
+        gammaEq: aero.gammaEq,
+        regime: aero.regime,
       },
       stability: {
         cla: stab.cla,
@@ -236,7 +249,33 @@ export function studyJson(built: BuiltVehicle, study: StudyResult): string {
         timeS: traj.timeS,
         maxQ: traj.maxQ,
         maxHeat: traj.maxHeat,
+        maxHeatAltKm: traj.maxHeatAltKm,
+        maxN: traj.maxN,
         heatLoad: traj.heatLoad,
+        twPeak: traj.twPeak,
+      },
+      frontier: {
+        kn: frontier.kn,
+        regime: frontier.regime,
+        gammaEq: frontier.gammaEq,
+        gammaEff: frontier.gammaEff,
+        T2: frontier.T2,
+        chiBar: frontier.chiBar,
+        pVisc: frontier.pVisc,
+        qFay: frontier.qFay,
+        qSG: frontier.qSG,
+        qDkr: frontier.qDkr,
+        billigDelta: frontier.billigDelta,
+        daVib: frontier.daVib,
+        alphaO2: frontier.alphaO2,
+        alphaN2: frontier.alphaN2,
+        gammaReal: frontier.gammaReal,
+        rhoL: frontier.rhoL,
+        vanDykeK: frontier.vanDykeK,
+        isolatorLH: frontier.isolatorLH,
+        sweepDeg: frontier.sweepDeg,
+        clEqGlide: frontier.clEqGlide,
+        notes: frontier.notes,
       },
       bench,
       propulsion: prop

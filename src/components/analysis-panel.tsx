@@ -62,6 +62,8 @@ export function HeatBlock({ study }: { study: StudyResult }) {
   return (
     <div>
       <Stat k="Stag. heat" v={`${fmt(a.qStag, 3)} W/cm²`} />
+      <Stat k="Fay–Riddell" v={`${fmt(a.qFay, 3)} W/cm²`} />
+      <Stat k="Sutton–Graves" v={`${fmt(a.qSG, 3)} W/cm²`} />
       <Stat k="DKR stag." v={`${fmt(qDkr, 3)} W/cm²`} />
       <Stat k="Radiative" v={`${fmt(a.qRad, 3)} W/cm²`} />
       <Stat k="Peak panel" v={`${fmt(a.qMax, 3)} W/cm²`} />
@@ -75,10 +77,57 @@ export function HeatBlock({ study }: { study: StudyResult }) {
         view by Heat — rainbow is q in W/cm².
       </p>
       <div className="mt-3 space-y-2">
+        <Formula name="Fay–Riddell" expr="q = 0.763 Pr⁻⁰·⁶ (ρeμe)⁰·⁴ (ρwμw)⁰·¹ √(due/ds) (h0−hw)" note="Sphere stagnation, Lewis=1. due/ds = Rn⁻¹ √(2(pe−p∞)/ρe)." />
         <Formula name="Sutton–Graves" expr="q_s = 1.83×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-802; Tauber TP-2914 units." />
         <Formula name="Detra–Kemp–Riddell" expr="q = 5.21×10⁴ √(ρ/Rn) (V/10⁴)^3.15    W/m²" note="DKR stagnation; reported as Tw_eq from the SG flux." />
         <Formula name="Radiation equilibrium" expr="σ ε Tw⁴ = q_conv    ε = 0.8" />
         <Formula name="Tauber–Sutton radiative" expr="q_r = 4.736×10⁸ Rn^1.072 ρ^1.22 (V/10⁴)^8.5    (V ≳ 2.5 km/s)" />
+      </div>
+    </div>
+  );
+}
+
+export function FrontierBlock({ study }: { study: StudyResult }) {
+  const f = study.frontier;
+  return (
+    <div>
+      <Stat k="Regime" v={f.regime} ok={f.regime === "continuum"} />
+      <Stat k="Knudsen Kn" v={f.kn.toExponential(2)} />
+      <Stat k="Mean free path" v={`${fmt(f.lambda * 1e6, 2)} μm`} />
+      <Stat k="γ_vib (T₂)" v={fmt(f.gammaEq, 3)} />
+      <Stat k="γ_eff (Da)" v={fmt(f.gammaEff, 3)} />
+      <Stat k="γ_real (IDG)" v={fmt(f.gammaReal, 3)} />
+      <Stat k="T₂ post-NS" v={`${fmt(f.T2, 0)} K`} />
+      <Stat k="Da_vib" v={f.daVib.toExponential(2)} />
+      <Stat k="τ_v" v={`${fmt(f.tauVib * 1e6, 1)} μs`} />
+      <Stat k="α_O₂ / α_N₂" v={`${fmt(f.alphaO2, 3)} / ${fmt(f.alphaN2, 3)}`} />
+      <Stat k="ρL binary" v={`${f.rhoL.toExponential(2)} kg/m²`} />
+      <Stat k="Billig Δ/Rn" v={fmt(f.billigDelta, 3)} />
+      <Stat k="Van Dyke K" v={fmt(f.vanDykeK, 2)} />
+      <Stat k="χ̄ visc. int." v={fmt(f.chiBar, 2)} />
+      <Stat k="p / p_inv" v={fmt(f.pVisc, 3)} />
+      <Stat k="Fay–Riddell" v={`${fmt(f.qFay, 2)} W/cm²`} />
+      <Stat k="Sutton–Graves" v={`${fmt(f.qSG, 2)} W/cm²`} />
+      <Stat k="DKR" v={`${fmt(f.qDkr, 2)} W/cm²`} />
+      <Stat k="Tw FR" v={`${fmt(f.twFay, 0)} K`} />
+      <Stat k="LE sweep Λ" v={`${fmt(f.sweepDeg, 1)}°`} />
+      <Stat k="Sweep q/q₀" v={fmt(f.sweepFactor, 3)} />
+      {f.edney ? <Stat k="Edney Type IV" v={`${fmt(f.qEdney, 0)} W/cm²`} /> : null}
+      {f.edney ? <Stat k="Isolator L/H" v={fmt(f.isolatorLH, 1)} /> : null}
+      <Stat k="Eq-glide CL" v={fmt(f.clEqGlide, 3)} />
+      <Stat k="Panel CL" v={fmt(f.clAvail, 3)} />
+      {f.maxN > 0 ? <Stat k="Peak n (traj)" v={`${fmt(f.maxN, 2)} g`} /> : null}
+      {f.twPeak > 0 ? <Stat k="Tw lump (traj)" v={`${fmt(f.twPeak, 0)} K`} /> : null}
+      <p className="mt-3 text-xs leading-relaxed text-subtle">{f.notes.join(" ")}</p>
+      <div className="mt-3 space-y-2">
+        <Formula name="γ_vib" expr="cv/R = 5/2 + Σ xi (θv/T)² e^u/(e^u−1)²    γ = 1 + R/cv" note="O₂ 2270 K, N₂ 3390 K. Dissociation via Lighthill IDG on γ_real." />
+        <Formula name="Da_vib" expr="Da = (L/V) / τ_v    τ_v from Millikan–White / Park 1990" note="γ_eff = 1.4 + (γ_eq−1.4)(1−e^{−Da}). Frozen if Da≪1." />
+        <Formula name="Billig standoff" expr="Δ/Rn = 0.143 exp(3.24/M²)" note="Sphere. Enters Fay–Riddell due/ds." />
+        <Formula name="Lees heat" expr="q/q_s = (p/p_s)^{1/2} (Rn/(Rn+s))^{1/2}" note="Laminar. Turbulent exponents 0.8 / 0.2. Mixed with Tauber." />
+        <Formula name="χ̄" expr="χ̄ = M³ √C / √Re_x    p/p_inv = 1 + 0.31χ̄ + 0.05χ̄²" note="Hayes–Probstein weak interaction." />
+        <Formula name="Kn" expr="Kn = λ/L    λ = kT/(√2 π d² p)" note="Schaaf–Chambre bridging w = Kn/(Kn+0.08)." />
+        <Formula name="Waltrup–Billig" expr="L/H = √(θ/H) [50(p_r−1)+170(p_r−1)²] / (M²−1)" note="Isolator shock-train length." />
+        <Formula name="Richardson CLα, Cnβ" expr="f' = [8(f₊ − f₋) − (f₊₊ − f₋₋)] / 12h" note="4th-order on α and β for 6DOF. Adaptive RK4 on the glide." />
       </div>
     </div>
   );
@@ -111,7 +160,7 @@ export function StabBlock({ study }: { study: StudyResult }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <p className="mt-2 text-xs text-subtle">Finite-difference ±1.5°. Elevon on Geom tab for trim. CG at Flight x/L. Rotary derivatives live on the 6DOF tab.</p>
+      <p className="mt-2 text-xs text-subtle">4th-order Richardson on α. Elevon on Geom tab for trim. CG at Flight x/L. Rotary derivatives live on the 6DOF tab.</p>
     </div>
   );
 }
@@ -237,6 +286,7 @@ export function CycleBlock({ study }: { study: StudyResult }) {
       <Stat k="πd (inlet)" v={fmt(ic?.piD ?? 0, 3)} />
       <Stat k="Kantrowitz At/Ac" v={fmt(ic?.kantrowitz ?? 0, 3)} />
       <Stat k="Self-start" v={ic?.started ? "yes" : "maybe not"} ok={ic?.started} />
+      <Stat k="Isolator L/H" v={fmt(ic?.isolatorLH ?? 0, 1)} />
       <Stat k="η thermal" v={fmt(p.etaThermal, 3)} />
       <p className="mt-3 text-xs leading-relaxed text-subtle">{p.notes.join(" ")}</p>
       {ic ? (
@@ -337,7 +387,10 @@ export function TrajBlock({ study }: { study: StudyResult }) {
       <Stat k="Max q" v={`${fmt(t.maxQ / 1000, 2)} kPa`} />
       <Stat k="Max-q alt" v={`${fmt(t.maxQAltKm, 1)} km`} />
       <Stat k="Peak heat" v={`${fmt(t.maxHeat, 2)} W/cm²`} />
+      <Stat k="Peak-heat alt" v={`${fmt(t.maxHeatAltKm, 1)} km`} />
+      <Stat k="Peak n" v={`${fmt(t.maxN, 2)} g`} />
       <Stat k="Heat load" v={`${fmt(t.heatLoad, 1)} J/cm²`} />
+      <Stat k="Tw lump" v={`${fmt(t.twPeak, 0)} K`} />
       <Stat k="Final V" v={`${fmt(t.finalV, 0)} m/s`} />
       <Stat k="Final h" v={`${fmt(t.finalH, 1)} km`} />
       <div className="mt-4 h-36">

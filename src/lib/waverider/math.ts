@@ -274,6 +274,13 @@ export function sutherlandMu(T: number): number {
   return (mu0 * (T / T0) ** 1.5 * (T0 + S)) / (T + S);
 }
 
+/** Gupta–Yos class: Sutherland below 1500 K, μ ∝ T^0.70 above (air 1500–5000 K). */
+export function airMu(T: number): number {
+  const t = Math.max(T, 80);
+  if (t <= 1500) return sutherlandMu(t);
+  return sutherlandMu(1500) * Math.pow(t / 1500, 0.7);
+}
+
 export function skinCf(Re: number): number {
   if (!(Re > 100)) return 0.01;
   const log = Math.log10(Math.max(Re, 1e3));
@@ -466,6 +473,227 @@ export function prandtlMeyerDeg(M: number, gamma = 1.4) {
   return prandtlMeyer(M, gamma) * RAD;
 }
 
+/** US76 kinetic mean free path, m. λ = kT / (√2 π d² p), d_air = 3.65×10⁻¹⁰ m. */
+export function meanFreePath(T: number, p: number): number {
+  return (2.331e-5 * Math.max(T, 1)) / Math.max(p, 1e-12);
+}
+
+export function knudsen(T: number, p: number, L: number): number {
+  return meanFreePath(T, p) / Math.max(L, 1e-9);
+}
+
+/**
+ * Vibrational-equilibrium γ for air (no dissociation).
+ * O₂ 21% θv=2270 K, N₂ 79% θv=3390 K, simple harmonic oscillator.
+ * Hansen NASA SP-3013 / Millikan–White class.
+ */
+export function gammaVib(T: number): number {
+  const contrib = (theta: number) => {
+    const u = theta / Math.max(T, 40);
+    if (u > 20) return 0;
+    const e = Math.exp(u);
+    const d = e - 1;
+    return (u * u * e) / (d * d);
+  };
+  const cvR = 2.5 + 0.21 * contrib(2270) + 0.79 * contrib(3390);
+  return 1 + 1 / Math.max(cvR, 1.5);
+}
+
+/** Post-normal-shock T with one γ(T) iteration. */
+export function postShockT(M: number, T1: number, gamma = 1.4): { T2: number; gammaEq: number; p2p1: number } {
+  const sh = normalShock(Math.max(1.05, M), gamma);
+  const T2g = T1 * sh.t2t1;
+  const ge = gammaVib(T2g);
+  const sh2 = normalShock(Math.max(1.05, M), 0.5 * (gamma + ge));
+  const T2 = T1 * sh2.t2t1;
+  return { T2, gammaEq: gammaVib(T2), p2p1: sh2.p2p1 };
+}
+
+/** Eckert reference temperature (compressible BL). r = 0.89 turbulent. */
+export function eckertTstar(Te: number, Tw: number, M: number, gamma = 1.4, r = 0.89): number {
+  const Tr = Te * (1 + r * 0.5 * (gamma - 1) * M * M);
+  return Te + 0.5 * (Tw - Te) + 0.22 * (Tr - Te);
+}
+
+/**
+ * Hayes–Probstein viscous-interaction parameter χ̄ = M³ √C / √Re_x.
+ * C ≈ (μw/μe)(Te/Tw).
+ */
+export function viscousChi(M: number, ReX: number, Tw: number, Te: number): number {
+  const muW = sutherlandMu(Math.max(Tw, 80));
+  const muE = sutherlandMu(Math.max(Te, 80));
+  const C = (muW / Math.max(muE, 1e-12)) * (Math.max(Te, 1) / Math.max(Tw, 1));
+  return (M * M * M * Math.sqrt(Math.max(C, 1e-6))) / Math.sqrt(Math.max(ReX, 1));
+}
+
+/** Weak/strong interaction p/p_inv (Hayes–Probstein / Bertram). */
+export function viscousInteractionPressure(chi: number): number {
+  const x = Math.max(0, chi);
+  if (x > 3) return 0.514 * x + 0.759;
+  return 1 + 0.31 * x + 0.05 * x * x;
+}
+
+/**
+ * Fay–Riddell 1958 axisymmetric stagnation (Lewis=1), W/cm².
+ * q = 0.763 Pr⁻⁰·⁶ (ρe μe)⁰·⁴ (ρw μw)⁰·¹ √(due/ds) (h0 − hw)
+ * due/ds = (1/Rn) √(2(pe−p∞)/ρe) on a sphere.
+ */
+export function fayRiddell(
+  rho: number,
+  V: number,
+  Rn: number,
+  T: number,
+  p: number,
+  Tw: number,
+  gamma = 1.4,
+): number {
+  const a = Math.sqrt(Math.max(gamma * 287.05287 * T, 1));
+  const M = Math.max(1.05, V / a);
+  const sh = normalShock(M, gamma);
+  const T2 = T * sh.t2t1;
+  const p2 = p * sh.p2p1;
+  const rho2 = rho * sh.r2r1;
+  const TwK = Math.max(Tw, 200);
+  const mu2 = airMu(T2);
+  const muW = airMu(TwK);
+  const rhoW = p2 / (287.05287 * TwK);
+  const h0 = 1004.7 * T + 0.5 * V * V;
+  const hw = 1004.7 * TwK;
+  const delta = billigStandoff(M);
+  const duds =
+    Math.sqrt((2 * Math.max(p2 - p, 0)) / Math.max(rho2, 1e-12)) /
+    (Math.max(Rn, 1e-8) * (1 + 0.22 * delta));
+  const Pr = 0.71;
+  const q =
+    0.763 *
+    Math.pow(Pr, -0.6) *
+    Math.pow(Math.max(rho2 * mu2, 0), 0.4) *
+    Math.pow(Math.max(rhoW * muW, 0), 0.1) *
+    Math.sqrt(Math.max(duds, 0)) *
+    Math.max(h0 - hw, 0);
+  return q / 1e4;
+}
+
+/** Cheng / Schaaf–Chambre bridging weight. 0 = continuum, 1 = free-molecular. */
+export function rarefactionWeight(Kn: number): number {
+  const k = Math.max(0, Kn);
+  return k / (k + 0.08);
+}
+
+export function flowRegime(Kn: number): "continuum" | "slip" | "transitional" | "free-molecular" {
+  if (Kn < 0.01) return "continuum";
+  if (Kn < 0.1) return "slip";
+  if (Kn < 10) return "transitional";
+  return "free-molecular";
+}
+
+/** Laminar swept-cylinder attachment-line heating factor (Beckwith–Gallagher). */
+export function sweepHeatFactor(lambdaRad: number): number {
+  const c = Math.cos(clamp(lambdaRad, 0, 0.5 * Math.PI - 0.05));
+  return Math.pow(Math.max(c, 0.05), 1.5);
+}
+
+/**
+ * Billig 1967 sphere shock standoff Δ/Rn (J. Spacecraft).
+ * Δ/Rn → 0.143 as M→∞. Cylinder form is billigStandoffCylinder.
+ */
+export function billigStandoff(M: number): number {
+  const m = Math.max(1.05, M);
+  return 0.143 * Math.exp(3.24 / (m * m));
+}
+
+export function billigStandoffCylinder(M: number): number {
+  const m = Math.max(1.05, M);
+  return 0.386 * Math.exp(4.67 / (m * m));
+}
+
+/**
+ * Millikan–White 1963 / Park 1990 vibrational relaxation time for air, seconds.
+ * p_atm τ = exp[A(T^{-1/3} − B) − 18.42]; mix 79% N₂ + 21% O₂.
+ */
+export function millikanWhiteTau(T: number, p: number): number {
+  const t = Math.max(T, 400);
+  const Tm = Math.pow(t, -1 / 3);
+  const tauN2 = Math.exp(221.0 * (Tm - 0.029) - 18.42);
+  const tauO2 = Math.exp(129.0 * (Tm - 0.0295) - 18.42);
+  const pAtm = Math.max(p, 1e-6) / 101325;
+  return (0.79 * tauN2 + 0.21 * tauO2) / pAtm;
+}
+
+/** Vibrational Damköhler Da = t_flow / τ_v. ≫1 equilibrium, ≪1 frozen. */
+export function damkohlerVib(T: number, p: number, L: number, V: number): number {
+  const tau = millikanWhiteTau(T, p);
+  return Math.max(L, 1e-6) / Math.max(V, 1) / Math.max(tau, 1e-16);
+}
+
+/** Frozen γ=1.4 blended toward γ_vib(T) by 1−e^{−Da}. */
+export function gammaEffective(T: number, p: number, L: number, V: number): number {
+  const ge = gammaVib(T);
+  const w = 1 - Math.exp(-Math.max(0, damkohlerVib(T, p, L, V)));
+  return 1.4 + (ge - 1.4) * w;
+}
+
+/**
+ * Lighthill ideal-dissociating gas, equilibrium mass fraction.
+ * α²/(1−α) = (ρ_d/ρ) exp(−θ_d/T).
+ */
+export function lighthillAlpha(T: number, rho: number, thetaD: number, rhoD: number): number {
+  const rhs = (rhoD / Math.max(rho, 1e-12)) * Math.exp(-thetaD / Math.max(T, 200));
+  const a = 0.5 * (-rhs + Math.sqrt(Math.max(rhs * rhs + 4 * rhs, 0)));
+  return clamp(a, 0, 0.95);
+}
+
+/** Air O₂ then N₂ dissociation; γ drop on top of the SHO vibrator. */
+export function airDissoc(T: number, rho: number): { alphaO2: number; alphaN2: number; gamma: number } {
+  const aO2 = lighthillAlpha(T, Math.max(rho * 0.233, 1e-8), 59500, 1.5e5);
+  const aN2 = lighthillAlpha(T, Math.max(rho * 0.767, 1e-8), 113000, 1.3e5);
+  const gamma = clamp(gammaVib(T) - 0.14 * aO2 - 0.1 * aN2, 1.12, 1.41);
+  return { alphaO2: aO2, alphaN2: aN2, gamma };
+}
+
+/** Binary scaling parameter ρL (kg/m²). Dissociation similar at constant ρL. */
+export function binaryScale(rho: number, L: number): number {
+  return Math.max(rho, 0) * Math.max(L, 0);
+}
+
+/**
+ * Lees 1956 heating distribution.
+ * Laminar: q/q_s = (p/p_s)^{1/2} (R_n/(R_n+s))^{1/2}
+ * Turbulent: exponents 0.8 and 0.2 (Tauber / CBAERO).
+ */
+export function leesHeatFactor(pRatio: number, sOverRn: number, turbulent: boolean): number {
+  const pr = clamp(pRatio, 0.01, 1);
+  const geom = 1 / (1 + Math.max(sOverRn, 0));
+  if (turbulent) return Math.pow(pr, 0.8) * Math.pow(geom, 0.2);
+  return Math.sqrt(pr) * Math.sqrt(geom);
+}
+
+/**
+ * Waltrup–Billig 1973 isolator length / height.
+ * (L/H) = √(θ/H) [50(p_r−1) + 170(p_r−1)²] / (M²−1)
+ */
+export function waltrupBillig(M: number, p2p1: number, thetaOverH = 0.01): number {
+  const d = Math.max(p2p1, 1) - 1;
+  const num = 50 * d + 170 * d * d;
+  return (Math.sqrt(Math.max(thetaOverH, 1e-4)) * num) / Math.max(M * M - 1, 0.25);
+}
+
+/** Blasius Re_θ = 0.664 √Re_x. */
+export function reThetaBlasius(ReX: number): number {
+  return 0.664 * Math.sqrt(Math.max(ReX, 1));
+}
+
+/**
+ * Hypersonic transition: Reshotko / Mack Re_θ/M_e ≳ 180, or Re_x > 5×10⁵.
+ */
+export function hypersonicTripped(ReX: number, Me: number): boolean {
+  return reThetaBlasius(ReX) / Math.max(Me, 1) > 180 || ReX > 5e5;
+}
+
+/** Van Dyke hypersonic similarity K = M τ, τ = h/L. */
+export function vanDykeK(M: number, tau: number): number {
+  return Math.max(M, 0) * Math.max(tau, 0);
+}
 
 /** Tauber–Sutton 1991 Earth radiative heating, W/cm². Rn m, V m/s, rho SI. */
 export function tauberSutton(rho: number, V: number, Rn: number): number {

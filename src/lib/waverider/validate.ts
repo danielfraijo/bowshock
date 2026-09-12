@@ -13,9 +13,16 @@ import {
   RAD,
   areaRatio,
   betaFromThetaM,
+  billigStandoff,
+  fayRiddell,
+  gammaVib,
   isentropic,
   kantrowitz,
+  leesHeatFactor,
+  lighthillAlpha,
   machFromArea,
+  meanFreePath,
+  millikanWhiteTau,
   newtonianCpMax,
   normalShock,
   obliqueShock,
@@ -26,6 +33,7 @@ import {
   taylorMaccoll,
   thetaFromBetaM,
   vanDriestII,
+  waltrupBillig,
 } from "./math";
 import { atmosphere } from "./atmosphere";
 
@@ -202,6 +210,115 @@ export function runValidation(): Check[] {
       cfVD,
       "Hopkins & Inouye 1971 / van Driest 1956",
       0.02,
+    ),
+  );
+
+  out.push(
+    chk("g-vib-sl", "gas", "γ_vib 288 K", "SHO air → 1.4", 1.4, gammaVib(288.15), "Hansen SP-3013 vibrator (O₂/N₂)", 0.006),
+  );
+  out.push(
+    chk("g-vib-2k", "gas", "γ_vib 2000 K", "SHO air → 1.30", 1.302, gammaVib(2000), "Hansen SP-3013", 0.025),
+  );
+  out.push(
+    chk(
+      "mfp-sl",
+      "gas",
+      "Mean free path sea level",
+      "λ = kT / (√2 π d² p) = 6.63×10⁻⁸ m",
+      6.63e-8,
+      meanFreePath(288.15, 101325),
+      "US76 kinetic theory, d=3.65 Å",
+      0.03,
+    ),
+  );
+
+  const V30 = 8 * km30.a;
+  const qSG30 = suttonGraves(km30.rho, V30, 0.01, 0.5);
+  const qFR30 = fayRiddell(km30.rho, V30, 0.01, km30.T, km30.p, 800, 1.4);
+  out.push(
+    chk(
+      "fr-sg",
+      "external",
+      "Fay–Riddell vs Sutton–Graves, M8 / 30 km",
+      "q_FR / q_SG ~ O(1)",
+      1,
+      qFR30 / Math.max(qSG30, 1e-9),
+      "Fay & Riddell 1958 / TR R-802",
+      0.65,
+    ),
+  );
+
+  out.push(
+    chk(
+      "billig-inf",
+      "external",
+      "Billig sphere standoff M→∞",
+      "Δ/Rn → 0.143",
+      0.143,
+      billigStandoff(1e6),
+      "Billig 1967 J. Spacecraft",
+      0.002,
+    ),
+  );
+  out.push(
+    chk(
+      "billig-m8",
+      "external",
+      "Billig sphere standoff M=8",
+      "Δ/Rn = 0.143 exp(3.24/M²) = 0.1504",
+      0.1504,
+      billigStandoff(8),
+      "Billig 1967",
+      0.01,
+    ),
+  );
+  out.push(
+    chk(
+      "lees-stag",
+      "external",
+      "Lees heat factor at stagnation",
+      "q/q_s = 1 at p=p_s, s=0",
+      1,
+      leesHeatFactor(1, 0, false),
+      "Lees 1956",
+      1e-9,
+    ),
+  );
+  out.push(
+    chk(
+      "lighthill-cold",
+      "gas",
+      "Lighthill α_O₂ at 300 K, ρ=1.2",
+      "α ≈ 0 (frozen chemistry)",
+      0,
+      lighthillAlpha(300, 1.2, 59500, 1.5e5),
+      "Lighthill ideal dissociating gas",
+      0.001,
+    ),
+  );
+  const tauMW = millikanWhiteTau(3000, 101325);
+  out.push(
+    chk(
+      "mw-tau",
+      "gas",
+      "Millikan–White τ_v, 3000 K, 1 atm",
+      "pτ_N₂/O₂ mix ~ 6×10⁻⁵ s",
+      6e-5,
+      tauMW,
+      "Millikan–White 1963 / Park 1990",
+      0.35,
+    ),
+  );
+  out.push(
+    chk(
+      "wb-iso",
+      "internal",
+      "Waltrup–Billig L/H, M=3, p_r=2.5",
+      "√(θ/H)[50(p_r−1)+170(p_r−1)²]/(M²−1)",
+      5.719,
+      waltrupBillig(3, 2.5, 0.01),
+      "Waltrup & Billig 1973 AIAA J.",
+      0.01,
     ),
   );
 

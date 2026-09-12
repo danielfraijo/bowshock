@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { WaveriderViewer, type ViewerOpts } from "@/components/viewer";
 import { NumberField, Seg, Stat } from "@/components/fields";
-import { AeroBlock, ChecksBlock, CycleBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
+import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
 import { buildVehicle } from "@/lib/waverider/generate";
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import { fmt } from "@/lib/waverider/math";
@@ -38,7 +38,7 @@ import {
 } from "@/lib/waverider/types";
 import { downloadBlob } from "@/lib/utils";
 
-type Tab = "geom" | "flight" | "aero" | "heat" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "cad";
+type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "cad";
 
 function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
   if (domain === "internal") {
@@ -47,6 +47,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
       { id: "cycle", label: "Cycle" },
       { id: "shocks", label: "Shocks" },
       { id: "heat", label: "Heat" },
+      { id: "frontier", label: "Frontier" },
       { id: "sixdof", label: "6DOF" },
       { id: "checks", label: "Checks" },
       { id: "cad", label: "CAD" },
@@ -57,6 +58,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
     { id: "flight", label: "Flight" },
     { id: "aero", label: "Aero" },
     { id: "heat", label: "Heat" },
+    { id: "frontier", label: "Frontier" },
     { id: "stab", label: "Stab" },
     { id: "sixdof", label: "6DOF" },
     { id: "traj", label: "Traj" },
@@ -631,6 +633,7 @@ export function Designer() {
 
             {tab === "aero" ? <AeroBlock study={study} /> : null}
             {tab === "heat" ? <HeatBlock study={study} /> : null}
+            {tab === "frontier" ? <FrontierBlock study={study} /> : null}
             {tab === "stab" ? <StabBlock study={study} /> : null}
             {tab === "sixdof" ? <SixDofBlock study={study} /> : null}
 

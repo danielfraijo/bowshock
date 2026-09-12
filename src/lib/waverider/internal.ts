@@ -15,6 +15,7 @@ import {
   obliqueShock,
   rayleighM2,
   rayleighPStar,
+  waltrupBillig,
 } from "./math";
 import type { Atmosphere } from "./atmosphere";
 
@@ -60,6 +61,7 @@ export interface InternalResult {
   started: boolean;
   kantrowitz: number;
   contraction: number;
+  isolatorLH: number;
   etaThermal: number;
   phi: number;
   fuel: FuelKind;
@@ -144,6 +146,8 @@ export function internalCycle(params: DesignParams, atm: Atmosphere): InternalRe
     T *= sh.t2t1;
     stations.push(station(`${k + 1}  after ramp ${k + 1}`, M, p, T, p0, g));
   }
+  const MisoIn = M;
+  const pIsoIn = p;
 
   // Isolator: short Fanno (4fL/D ≈ 0.04) — M drifts toward 1.
   const fL = inletOnly ? 0.02 : 0.04;
@@ -163,6 +167,7 @@ export function internalCycle(params: DesignParams, atm: Atmosphere): InternalRe
   if (!started) notes.push(`Kantrowitz: A_t/A_c min = ${K.toFixed(3)}; geometric ${contraction.toFixed(3)} — may not self-start.`);
   else notes.push(`Kantrowitz A_t/A_c min = ${K.toFixed(3)}; geometric ${contraction.toFixed(3)} — startable.`);
 
+  let pIsoOut = p;
   if (!scram && !inletOnly && M > 1.12) {
     const ns = normalShock(M, g);
     shocks.push({
@@ -177,11 +182,22 @@ export function internalCycle(params: DesignParams, atm: Atmosphere): InternalRe
     p *= ns.p2p1;
     T *= ns.t2t1;
     M = ns.M2;
+    pIsoOut = p;
     stations.push(station("n  after normal shock", M, p, T, p0, g));
     notes.push("Ramjet: terminal normal shock (Rankine–Hugoniot) in the isolator.");
   } else if (scram) {
     notes.push("Scramjet: combustor remains supersonic — no terminal normal shock.");
   }
+  const pTrain = scram
+    ? 1.8
+    : inletOnly
+      ? clamp(pIsoOut / Math.max(pIsoIn, 1e-6), 1.05, 2.2)
+      : clamp(pIsoOut / Math.max(pIsoIn, 1e-6), 1.2, 2.8);
+  const Mwb = clamp(MisoIn, 1.5, 3.3);
+  const isolatorLH = waltrupBillig(Mwb, pTrain, 0.02);
+  notes.push(
+    `Waltrup–Billig isolator L/H ≈ ${isolatorLH.toFixed(1)} (M_in=${MisoIn.toFixed(2)}, correlation M=${Mwb.toFixed(2)}, shock-train p_r=${pTrain.toFixed(2)}; WB is calibrated near M≲3).`,
+  );
 
   const fuel = params.fuel;
   const phi = clamp(params.phi, 0.2, 1.4);
@@ -267,6 +283,10 @@ export function internalCycle(params: DesignParams, atm: Atmosphere): InternalRe
       name: "Kantrowitz",
       expr: "(A_t/A_c)_min = (A/A*)_{M₂,NS} / (A/A*)_{M₀}",
     },
+    {
+      name: "Waltrup–Billig isolator",
+      expr: "L/H = √(θ/H) [50(p_r−1) + 170(p_r−1)²] / (M²−1)",
+    },
   ];
 
   if (!attached) notes.push("Use a weaker ramp or higher Mach — the inlet shock is detached.");
@@ -293,6 +313,7 @@ export function internalCycle(params: DesignParams, atm: Atmosphere): InternalRe
     started,
     kantrowitz: K,
     contraction,
+    isolatorLH,
     etaThermal: clamp(eta, 0, 0.75),
     phi,
     fuel,
