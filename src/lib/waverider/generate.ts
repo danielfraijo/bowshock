@@ -13,6 +13,7 @@ import {
   thetaFromBetaM,
 } from "./math";
 import { MeshBuilder, analyzeMesh, gridPoint, makeGrid, orientOutward, stitchGrid, zipperSharpEdges } from "./mesh";
+import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletEnvelope, filletTipCap } from "./blunt";
 
 function halfSpanList(ny: number, s: number, half: boolean): number[] {
   const n = Math.max(half ? 4 : 5, half ? Math.ceil(ny / 2) : ny);
@@ -31,6 +32,7 @@ function xLeading(
   planform: DesignParams["planform"],
   p: number,
   spatular: number,
+  minChord = 0,
 ) {
   const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1);
   let x: number;
@@ -48,7 +50,7 @@ function xLeading(
     const pow = planform === "delta" ? 1 : clamp(p, 0.6, 2.4);
     x = L * yn ** pow;
   }
-  return Math.min(Math.max(x, 0), L);
+  return Math.min(Math.max(x, 0), Math.max(0, L - minChord));
 }
 
 function xTrailing(y: number, L: number, teTan: number, xl: number) {
@@ -71,9 +73,26 @@ function closeVehicle(
   lower: SurfaceGrid,
   half: boolean,
   flowThrough = false,
+  leading?: SurfaceGrid | null,
 ) {
   stitchGrid(b, upper, "upper", false);
   stitchGrid(b, lower, "lower", true);
+  if (leading && leading.ni >= 2 && leading.nj >= 2) stitchGrid(b, leading, "leading", false);
+  if (leading && leading.ni >= 3) {
+    const lead = leading;
+    const cap = (j: number, kind: "leading" | "symmetry") => {
+      const loop: number[] = [];
+      for (let k = 0; k < lead.ni; k++) loop.push(b.vertP(gridPoint(lead, k, j)));
+      b.fan(loop, kind);
+    };
+    if (half) {
+      cap(0, "symmetry");
+      cap(lead.nj - 1, "leading");
+    } else {
+      cap(0, "leading");
+      cap(lead.nj - 1, "leading");
+    }
+  }
 
   const nj = upper.nj;
   if (!flowThrough) {
@@ -112,7 +131,7 @@ function closeVehicle(
     }
   }
 
-  if (!flowThrough) {
+  if (!flowThrough && !(leading && leading.ni >= 2)) {
     const leU: number[] = [];
     const leL: number[] = [];
     for (let j = 0; j < nj; j++) leU.push(b.vertP(gridPoint(upper, 0, j)));
@@ -173,31 +192,6 @@ function closeDuct(
   if (!flowThrough) {
     capSpan(0, "inlet");
     capSpan(ni - 1, "nozzle");
-  }
-}
-
-function applyBlunt(upper: SurfaceGrid, lower: SurfaceGrid, radius: number, L: number) {
-  if (radius <= 1e-8) return;
-  const r = Math.min(radius, 0.08 * L);
-  const nj = upper.nj;
-  for (let j = 0; j < nj; j++) {
-    const u0 = gridPoint(upper, 0, j);
-    const u1 = gridPoint(upper, Math.min(1, upper.ni - 1), j);
-    const l1 = gridPoint(lower, Math.min(1, lower.ni - 1), j);
-    const dxU = u1[0] - u0[0];
-    const dzU = u1[2] - u0[2];
-    const dxL = l1[0] - u0[0];
-    const dzL = l1[2] - u0[2];
-    const nU = Math.hypot(dxU, dzU) || 1;
-    const nL = Math.hypot(dxL, dzL) || 1;
-    const bisX = dxU / nU + dxL / nL;
-    const bisZ = dzU / nU + dzL / nL;
-    const bn = Math.hypot(bisX, bisZ) || 1;
-    const o = j * 3;
-    upper.xyz[o] = u0[0] + (bisX / bn) * r;
-    upper.xyz[o + 2] = u0[2] + (bisZ / bn) * r;
-    lower.xyz[o] = u0[0] + (bisX / bn) * r;
-    lower.xyz[o + 2] = u0[2] + (bisZ / bn) * r;
   }
 }
 
@@ -284,10 +278,12 @@ function lofts(
 ): { upper: SurfaceGrid; lower: SurfaceGrid; shock: SurfaceGrid[] } {
   const L = params.length;
   const s = params.span / 2;
-  const ys = halfSpanList(params.ny, s, params.halfModel);
+  const env = filletEnvelope(params);
+  const ys = halfSpanList(params.ny, env.halfSpan, params.halfModel);
   const nx = Math.max(8, params.nx);
   const nj = ys.length;
-  const xle = (y: number) => xLeading(y, L, s, planform, power, spat);
+  const minChord = env.minChord;
+  const xle = (y: number) => xLeading(y, L, s, planform, power, spat, minChord);
   const zPow = Math.max(0.6, zExp);
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
   const cam = (params.camber || 0) * params.height;
@@ -693,9 +689,13 @@ function buildStar(params: DesignParams): {
       const a = point(x, k1, false);
       return [x, lerp(c[1], a[1], t), lerp(c[2], a[2], t)];
     });
-    stitchGrid(b, gA, "upper", false);
-    stitchGrid(b, gB, "lower", false);
     grids.push(gA, gB);
+  }
+  const Rn = effectiveLeRadius(params);
+  if (Rn > 0) bluntStarNose(grids, Rn, L);
+  for (let f = 0; f < fins; f++) {
+    stitchGrid(b, grids[2 * f], "upper", false);
+    stitchGrid(b, grids[2 * f + 1], "lower", false);
   }
 
   const outline: number[] = [];
@@ -801,22 +801,43 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
       flipGridsZ([built.upper, built.lower, ...built.shock]);
     }
     const isDuct = params.family === "ramjet" || params.family === "scramjet";
+    const R = effectiveLeRadius(params);
+    let leading: SurfaceGrid | null = null;
+    const tips: SurfaceGrid[] = [];
     if (!isDuct) {
-      applyBlunt(built.upper, built.lower, params.leRadius, params.length);
+      if (R > 0) leading = applyLeadingFillet(built.upper, built.lower, R, params.length);
+      if (leading) {
+        const a = filletTipCap(leading, 0, "tip_l");
+        const c = filletTipCap(leading, leading.nj - 1, "tip_r");
+        if (a) tips.push(a);
+        if (c) tips.push(c);
+      }
       applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
-      zipperSharpEdges(built.upper, built.lower, params.length);
+    } else if (R > 0 && params.flowThrough) {
+      const lip = applyCowlLip(built.upper, R, params.length);
+      if (lip) {
+        const extra = ((built as { extra?: SurfaceGrid[] }).extra ??= []);
+        extra.push(lip);
+      }
     }
     const zSign = params.lid === "bottom" ? -1 : 1;
     if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     const b = new MeshBuilder(params.length);
-    if (isDuct) closeDuct(b, built.upper, built.lower, params.halfModel, params.flowThrough);
-    else closeVehicle(b, built.upper, built.lower, params.halfModel, false);
+    if (isDuct) {
+      closeDuct(b, built.upper, built.lower, params.halfModel, params.flowThrough);
+      const extras = (built as { extra?: SurfaceGrid[] }).extra ?? [];
+      for (const g of extras) {
+        if (g.name === "cowl_lip") stitchGrid(b, g, "leading", false);
+      }
+    } else closeVehicle(b, built.upper, built.lower, params.halfModel, false, leading);
     mesh = b.finish();
     skipped = b.skipped;
     grids = [built.upper, built.lower];
     const extra = (built as { extra?: SurfaceGrid[] }).extra;
     if (extra) grids.push(...extra);
+    if (leading) grids.push(leading);
+    if (tips.length) grids.push(...tips);
     shock = built.shock;
     if (isDuct) {
       const u0 = gridPoint(built.upper, 0, 0);
@@ -838,6 +859,8 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
 
   const quality = analyzeMesh(mesh, skipped);
   const ductOpen = (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough;
+  const Rn = effectiveLeRadius(params);
+  if (Rn > 0) notes.push(`Leading-edge radius R = ${(Rn * 1000).toFixed(1)} mm (circular fillet, G1 to the wetted sheets).`);
   if (!quality.watertight && !ductOpen) notes.push(`Mesh has ${quality.openEdges} open edges — raise streamwise/spanwise points.`);
   if (!shockSolve.attached) notes.push(...shockSolve.notes);
   if (params.lid === "bottom") notes.push("Lid on the belly — compression surface is the upper face.");

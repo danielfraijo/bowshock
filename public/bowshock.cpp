@@ -1,4 +1,4 @@
-/* bowshock.cpp — C++ physics kernel for the Bowshock lab.
+/* bowshock.cpp — C++ physics kernel for the Cuspis lab.
  *
  * Compile:  g++ -O2 -std=c++17 bowshock.cpp -o bowshock
  * Verify:   ./bowshock --check

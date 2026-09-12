@@ -47,6 +47,7 @@ export interface DesignParams {
   nx: number;
   ny: number;
   leRadius: number;
+  leBlunt: boolean;
   halfModel: boolean;
   unit: LengthUnit;
   name: string;
@@ -96,7 +97,8 @@ export const DEFAULT_PARAMS: DesignParams = {
   captureFrac: 0.55,
   nx: 40,
   ny: 28,
-  leRadius: 0,
+  leRadius: 0.02,
+  leBlunt: true,
   halfModel: false,
   unit: "m",
   name: "waverider",

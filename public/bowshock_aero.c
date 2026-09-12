@@ -5,7 +5,7 @@
  *           Expected inviscid L/D ~ cot(theta) for a 2-D wedge (Modified Newtonian
  *           is a bit low; mixed tangent-wedge is closer).
  *
- * Methods match the Bowshock browser kernel:
+ * Methods match the Cuspis browser kernel:
  *   - 1976 US Std. Atmosphere (geopotential layers 0–86 km)
  *   - Modified Newtonian + Rayleigh-pitot Cp_max
  *   - Sutton–Graves stagnation heating

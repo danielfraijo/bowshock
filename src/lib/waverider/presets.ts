@@ -249,18 +249,26 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-const STORAGE_KEY = "bowshock.design.v4";
+const STORAGE_KEY = "cuspis.design.v1";
 
 export function loadSavedParams(): DesignParams | null {
   try {
     const raw =
       localStorage.getItem(STORAGE_KEY) ??
+      localStorage.getItem("bowshock.design.v4") ??
       localStorage.getItem("bowshock.design.v3") ??
       localStorage.getItem("bowshock.design.v2") ??
       localStorage.getItem("bowshock.design.v1");
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DesignParams>;
-    return { ...DEFAULT_PARAMS, ...parsed };
+    const merged: DesignParams = { ...DEFAULT_PARAMS, ...parsed };
+    if (parsed.leBlunt === undefined) {
+      merged.leBlunt = true;
+      if (!(typeof parsed.leRadius === "number" && parsed.leRadius > 0)) {
+        merged.leRadius = Math.max(0.005 * merged.length, DEFAULT_PARAMS.leRadius);
+      }
+    }
+    return merged;
   } catch {
     return null;
   }

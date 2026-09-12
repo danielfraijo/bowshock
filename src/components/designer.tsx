@@ -86,6 +86,7 @@ function geomKey(p: DesignParams) {
     p.nx,
     p.ny,
     p.leRadius,
+    p.leBlunt,
     p.halfModel,
     p.lid,
     p.dihedralDeg,
@@ -233,9 +234,9 @@ export function Designer() {
     <div className="flex min-h-dvh flex-col bg-bg text-fg">
       <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-6">
         <div className="min-w-0">
-          <p className="font-display text-xl font-semibold tracking-[0.18em] text-fg">BOWSHOCK</p>
+          <p className="font-display text-xl font-semibold tracking-[0.22em] text-fg">CUSPIS</p>
           <p className="truncate text-xs text-muted">
-            {domain === "external" ? "External aero · shocks · heat · stability" : "Internal flow · ramps · Rayleigh · nozzle"}
+            {domain === "external" ? "Roma · hypersonic CAD · external" : "Roma · hypersonic CAD · internal"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -564,16 +565,32 @@ export function Designer() {
                     ]}
                   />
                 </div>
-                <NumberField
-                  label="LE radius"
-                  value={params.leRadius}
-                  min={0}
-                  max={Math.max(0.08, params.length * 0.04)}
-                  step={0.001}
-                  unit="m"
-                  digits={3}
-                  onChange={(leRadius) => patch({ leRadius })}
-                />
+                <div className="flex items-center justify-between gap-3 pt-1">
+                  <span className="text-xs font-medium text-muted">Rounded leading edge</span>
+                  <Switch
+                    checked={params.leBlunt !== false}
+                    onCheckedChange={(leBlunt) =>
+                      patch({
+                        leBlunt,
+                        leRadius: leBlunt ? Math.max(params.leRadius, 0.005 * params.length) : 0,
+                      })
+                    }
+                  />
+                </div>
+                {params.leBlunt !== false ? (
+                  <NumberField
+                    label="Nose / LE radius"
+                    value={params.leRadius}
+                    min={0.001 * params.length}
+                    max={Math.max(0.08, params.length * 0.04)}
+                    step={0.001}
+                    unit="m"
+                    digits={3}
+                    onChange={(leRadius) => patch({ leRadius, leBlunt: true })}
+                  />
+                ) : (
+                  <p className="text-[11px] text-subtle">Sharp knife-edge — inviscid theory only. Pointwise needs a radius.</p>
+                )}
                 <div className="flex items-center justify-between gap-3 pt-1">
                   <span className="text-xs font-medium text-muted">Half-model (Y≥0)</span>
                   <Switch checked={params.halfModel} onCheckedChange={(halfModel) => patch({ halfModel })} />
@@ -739,9 +756,7 @@ export function Designer() {
                   {busy === "kit" ? "Packing…" : "Download full CFD kit (.zip)"}
                 </Button>
                 <p className="mt-3 text-[11px] leading-relaxed text-subtle">
-                  <span className="font-medium text-fg">Pointwise:</span> import the <span className="text-fg">binary STL</span> (File → Import → STL),
-                  the <span className="text-fg">IGES</span>, or the <span className="text-fg">Plot3D .x</span> as 3-D formatted, IBLANK off. Do not import STEP as XYZ
-                  points — that is the cyan cloud. NURBS STEP is degree-3 surfaces for SolidWorks / FreeCAD. Frame X stream, Y span, Z up, nose at the origin.
+                  <span className="font-medium text-fg">Pointwise:</span> import the <span className="text-fg">binary STL</span> (File → Import → STL) and run automatic unstructured mesh — the nose is a circular fillet, not a knife-edge. For NURBS: <span className="text-fg">IGES</span> type-128, or the <span className="text-fg">NURBS STEP</span> (sewn CLOSED_SHELL, degree-3, shared edges). Plot3D <span className="text-fg">.x</span> is 3-D formatted, IBLANK off. Do not import STEP as XYZ points (that is the cyan cloud). Toggle <span className="text-fg">Rounded leading edge</span> and set the radius before you export. Nose at the origin, X stream, Y span, Z up.
                   {params.family === "ramjet" || params.family === "scramjet"
                     ? " Ramjet: rectangular inlet at x=0 and nozzle at x=L. Flow-through leaves both OPEN."
                     : ""}

@@ -39,8 +39,9 @@ function knotsFor(nPoles: number, degree: number): number[] {
   return knots;
 }
 
-function downsample(g: SurfaceGrid, capU = 18, capV = 16): Vec3[][] {
-  const du = Math.max(1, Math.floor((g.ni - 1) / Math.min(capU, g.ni - 1)));
+function downsample(g: SurfaceGrid, capU = 16, capV = 16): Vec3[][] {
+  const cap = g.name === "leading" || g.name === "cowl_lip" || g.name.startsWith("tip") || g.ni <= 4 ? g.ni : capU;
+  const du = Math.max(1, Math.floor((g.ni - 1) / Math.min(cap, g.ni - 1)));
   const dv = Math.max(1, Math.floor((g.nj - 1) / Math.min(capV, g.nj - 1)));
   const poles: Vec3[][] = [];
   const is: number[] = [];
@@ -60,22 +61,16 @@ function downsample(g: SurfaceGrid, capU = 18, capV = 16): Vec3[][] {
 export function gridsToIges(grids: SurfaceGrid[], name: string): string {
   const start = new Date().toISOString();
   const s: string[] = [];
-  s.push(pad80(`, Bowshock waverider CAD, ${name}`.slice(0, 72) + "S" + "1".padStart(7)));
-  const g1 = pad80(
-    `1H,,1H;,${Math.min(8, name.length)}H${name.slice(0, 8)},7HIGES5.3,8HBowshock,8HBowshock,32,38,6,308,15,4HBowshock,1.0,1,4HINCH,32768,0.0,${start},0.000001,1000.0,7HUnknown,7HUnknown,11,0,0;` +
-      "G" +
-      "1".padStart(7),
-  );
-  // Global section is finicky; write a conservative 4-line block.
+  s.push(pad80(`, Cuspis waverider CAD, ${name}`.slice(0, 72) + "S" + "1".padStart(7)));
   const globals = [
     `1H,,1H;,8H${(name + "        ").slice(0, 8)},7HIGES5.3,`,
-    `8HBowshock,8HBowshock,32,38,6,308,15,`,
-    `8HBowshock,1.,2,2HMM,32768,0.,15H${start.replace(/[-:TZ]/g, "").slice(0, 15)},`,
+    `6HCuspis,6HCuspis,32,38,6,308,15,`,
+    `6HCuspis,1.,2,2HMM,32768,0.,15H${start.replace(/[-:TZ]/g, "").slice(0, 15)},`,
     `1.E-6,1000.,7HUnknown,7HUnknown,11,0,0;`,
   ];
   globals.forEach((line, i) => s.push(pad80(line + " ".repeat(Math.max(0, 72 - line.length)) + "G" + String(i + 1).padStart(7))));
 
-  const surfaces = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2).slice(0, 12);
+  const surfaces = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2).slice(0, 16);
   const dLines: string[] = [];
   const pLines: string[] = [];
   let pCursor = 1;

@@ -4,6 +4,7 @@
  * Millikan–White 1963 / Park 1990, Lighthill IDG, Lees 1956, Waltrup–Billig 1973,
  * Beckwith–Gallagher, Cheng rarefaction, Edney Type IV, Sänger glide, Van Dyke.
  */
+import { effectiveLeRadius } from "./blunt";
 import type { DesignParams } from "./types";
 import type { Atmosphere } from "./atmosphere";
 import type { PanelAero } from "./panel";
@@ -80,7 +81,7 @@ export function frontierPhysics(
   const notes: string[] = [];
   const M = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
   const L = Math.max(params.length, 1e-6);
-  const Rn = Math.max(params.leRadius, 0.0015 * L);
+  const Rn = Math.max(effectiveLeRadius(params), 0.0015 * L);
   const Tw = Math.max(200, params.twK);
   const lambda = meanFreePath(atm.T, atm.p);
   const kn = knudsen(atm.T, atm.p, L);
@@ -115,6 +116,9 @@ export function frontierPhysics(
   const kSim = vanDykeK(M, params.height / L);
   const isolatorLH = prop?.internal?.isolatorLH ?? (edney ? waltrupBillig(Math.max(M * 0.45, 1.2), 2.2, 0.012) : 0);
 
+  notes.push(
+    `Nose radius R = ${(effectiveLeRadius(params) * 1000).toFixed(1)} mm (R/L = ${(effectiveLeRadius(params) / L).toExponential(2)}). Fay–Riddell / Billig / Lees use this geometric R. Cheng entropy-layer swallowing scales with ρ R.`,
+  );
   notes.push(
     `Air γ_vib(T₂=${ps.T2.toFixed(0)} K) = ${ps.gammaEq.toFixed(3)}; Da_vib = ${daVib.toExponential(2)} (Millikan–White / Park). γ_eff = ${gammaEff.toFixed(3)} (frozen→eq). Inverse-design shocks stay at γ=${params.gamma}.`,
   );

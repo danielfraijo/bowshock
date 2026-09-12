@@ -3,7 +3,7 @@ import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "Bowshock";
+const APP_NAME = "Cuspis";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -14,7 +14,7 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Inverse-design waveriders. Export watertight STL, STEP, IGES, and Plot3D for SolidWorks, FreeCAD, and Pointwise.",
+          "Cuspis — inverse-design waveriders with a blunt leading edge. Watertight STL, NURBS STEP, IGES, and Plot3D for Pointwise, SolidWorks, and FreeCAD.",
       },
       { name: "theme-color", content: "#080808" },
     ],

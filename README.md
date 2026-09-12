@@ -1,10 +1,14 @@
-# Bowshock
+# Cuspis
 
-Inverse-design **waverider CAD lab** — geometry, panel aero, heating, stability, 6DOF, 3DOF trajectory, and ramjet/scramjet cycle analysis. Export watertight STL / STEP / IGES / Plot3D for SolidWorks, FreeCAD, and Pointwise.
+Inverse-design **waverider CAD** — Roma, hypersonic geometry. Panel aero, heating, stability, 6DOF, 3DOF trajectory, and ramjet/scramjet cycle analysis. Export watertight STL / sewn NURBS STEP / IGES / Plot3D for SolidWorks, FreeCAD, and Pointwise.
+
+Live lab: **[bowshock.vercel.app](https://bowshock.vercel.app/)**
 
 The browser lab and the physics kernel run **on your machine**. Nothing is uploaded.
 
 **Origin frame:** vehicle tip (or cowl lip) at `(0, 0, 0)`. **X** streamwise (flow +X), **Y** spanwise, **Z** up.
+
+**Leading edge:** always a circular fillet of finite radius (toggle + size on the Geom tab). Default \(R = 0.5\%\) of length. Pointwise automatic mesh needs this — a knife-edge is inviscid-theory only.
 
 ---
 
@@ -21,7 +25,7 @@ npm run dev
 
 Then open **[http://localhost:8080](http://localhost:8080)** in your browser.
 
-That is the same lab as the live preview: 3D viewer, External / Internal toolkit, live analysis, and CAD export.
+That is the same lab as the live site: 3D viewer, External / Internal toolkit, live analysis, and CAD export.
 
 **Already cloned?** Pull the latest:
 
@@ -46,14 +50,14 @@ Stop the server with `Ctrl+C`.
 
 1. **Toolkit** — **External** (waveriders / lifting bodies) or **Internal** (inlets, ramjets, scramjets, Busemann, integrated).
 2. Pick a **family** on the left. The mesh rebuilds with the nose at the origin (white / grey axis triad). The lab view is black, white, and grey so the surface, seams, and shock sheet stay readable.
-3. **Geom** — length, span, height, Mach, shock/cone, lid (top or bottom), camber, elevons, fins, grid density.
+3. **Geom** — length, span, height, Mach, shock/cone, lid (top or bottom), camber, elevons, fins, grid density, **rounded leading edge** (on by default) and **nose / LE radius**.
 4. **Flight / Aero / Heat / Frontier / Stab / 6DOF / Traj** (External) or **Cycle / Shocks / Heat / Frontier** (Internal) — engineering analysis, not Navier–Stokes. Switch the 3D view to **Heat** for rainbow q (W/cm²) or **Cp**. Surface mode stays black / white / grey.
 5. **Checks** — closed-form kernel tests (Rankine–Hugoniot, isentropic A/A*, Prandtl–Meyer, θ-β-M, Taylor–Maccoll, US76, Kantrowitz, γ_vib, mean free path, Fay–Riddell, Billig, Lees, Millikan–White, Waltrup–Billig). All should read PASS.
-6. **CAD** — download binary STL (Pointwise), Plot3D `.x` (3-D formatted), IGES, NURBS STEP (SolidWorks / FreeCAD), or the **full CFD kit (.zip)**.
+6. **CAD** — download binary STL (Pointwise auto-mesh), Plot3D `.x` (3-D formatted), IGES, sewn NURBS STEP (SolidWorks / FreeCAD / Pointwise Database), or the **full CFD kit (.zip)**.
 
 The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py`, `bowshock_aero.c`, and `bowshock.cpp`.
 
-Meshes are zipper-closed: the leading edge is a sharp seam (upper = lower), delta tips collapse to a point, and degenerate caps are skipped. Closed families should read **watertight / manifold** on the CAD tab.
+The leading edge is a circular G1 fillet in the local osculating plane. Tips keep a minimum chord so they do not collapse to a pole. Closed families should read **watertight / manifold** on the CAD tab.
 
 ---
 
@@ -99,9 +103,9 @@ python3 public/waverider_cad.py --type ramjet --mach 6 --all --out ramjet/
 
 Import:
 
-- **SolidWorks** — File → Open → `_nurbs.step` (degree-3 B-splines). Faceted STEP is a closed tessellation if NURBS knit fails.
+- **Pointwise (automatic mesh)** — File → Import → **STL** (binary). The nose is a circular fillet. Assemble a domain, T-Rex off the walls. Or File → Import → **IGES** (type-128) / **STEP** (sewn NURBS CLOSED_SHELL) and run the unstructured solver on the database. Plot3D **`.x`**: 3-D formatted, IBLANK off. Do **not** import STEP as XYZ points — that is the cyan cloud.
+- **SolidWorks** — File → Open → `_nurbs.step` (degree-3 B-splines, sewn solid). Faceted STEP is a closed tessellation if NURBS knit fails.
 - **FreeCAD** — Part → Import `_nurbs.step` or `.igs`.
-- **Pointwise** — unstructured: Import **STL** (binary). Structured: Import Plot3D **`.x`** as **3-D formatted, IBLANK off**. IGES type-128 also works. Do **not** import STEP as XYZ points — that is the cyan point cloud. A Glyph script (`.glf`) in the kit imports STL then IGES then Plot3D.
 
 Ramjet / scramjet: both surfaces run from x=0 to x=L. The capture plane (rectangular inlet) is at the origin and the nozzle is at x=L. Enable **flow-through** to leave those faces open for internal CFD.
 
@@ -145,28 +149,16 @@ CBAERO-class **engineering** methods. Fast enough to iterate on a laptop. Not a 
 - **Trajectory:** adaptive RK4 3DOF (step doubling / Richardson) on the panel polar, Knudsen CD growth, Fay–Riddell heating, 3 mm C/C lumped \(T_w\), peak-\(n\) / max-\(q\) / heat load
 - **Inlets / engines:** multi-ramp θ-β-M, Fanno isolator, Waltrup–Billig shock-train \(L/H\), Rayleigh heat addition, isentropic nozzle, Kantrowitz start, Heiser–Pratt 1-D cycle
 - **Atmosphere:** 1976 US Standard Atmosphere + kinetic mean free path / Knudsen
-- **Geometry:** inverse-design lofts with a sharp-edge zipper (no LE/TE sliver walls, zero-chord tips collapse to a point)
+- **Geometry:** inverse-design lofts with a circular LE fillet (G1, osculating-plane rolling ball). Tips cropped to a minimum chord. Closed manifold solid for STL; sewn NURBS CLOSED_SHELL for STEP
 - **Checks tab:** Anderson / NACA 1135 / Sims / US76 / Kantrowitz / γ_vib / λ / Fay–Riddell / Billig / Lees / Millikan–White / Waltrup–Billig identities — same solvers the vehicle uses
 
 **Frontier tab** reports regime, Kn, \(\gamma_\mathrm{vib}(T_2)\), \(\gamma_\mathrm{eff}(Da)\), Lighthill \(\alpha\), \(\rho L\), Billig \(\Delta/R_n\), Van Dyke \(K=M\tau\), \(\bar\chi\), Fay–Riddell vs Sutton–Graves vs DKR, sweep factor, Edney bound, isolator \(L/H\), and equilibrium-glide CL.
 
 ---
 
-## Public website (Vercel)
+## Public website
 
-The repo is public: [github.com/danielfraijo/bowshock](https://github.com/danielfraijo/bowshock).
+- Lab: [bowshock.vercel.app](https://bowshock.vercel.app/)
+- Source: [github.com/danielfraijo/bowshock](https://github.com/danielfraijo/bowshock)
 
-To get a shareable `*.vercel.app` link (anyone can open the lab, no install):
-
-1. Open [vercel.com/new](https://vercel.com/new)
-2. Import **danielfraijo/bowshock**
-3. Framework: Vite (auto). Deploy.
-4. In the project: Settings → Deployment Protection → **disable** Vercel Authentication so the URL is public.
-
-Each `git push` to `main` rebuilds that URL.
-
----
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Each `git push` to `main` rebuilds the site.

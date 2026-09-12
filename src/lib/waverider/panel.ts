@@ -1,5 +1,6 @@
 import type { AeroMethod, DesignParams, TriMesh, Vec3 } from "./types";
 import { SURFACE_ID } from "./types";
+import { effectiveLeRadius } from "./blunt";
 import {
   DEG,
   betaFromThetaM,
@@ -183,7 +184,7 @@ export function panelAero(
   let aWind = 0;
   let FxBase = 0;
   let nDetached = 0;
-  const Rn = Math.max(params.leRadius, 0.0015 * params.length);
+  const Rn = Math.max(effectiveLeRadius(params), 0.0015 * params.length);
   const Tw = Math.max(200, params.twK);
   const h0 = atm.T * (1 + 0.5 * (g - 1) * M * M) * 1004.7;
   const hw = Tw * 1004.7;

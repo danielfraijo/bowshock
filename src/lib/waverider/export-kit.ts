@@ -113,10 +113,11 @@ function pointwiseHowto(name: string): string {
 The cyan point cloud is what you get if Plot3D is opened as XYZ scatter
 or if STEP control points are imported as a point list. Use these instead.
 
-1) RECOMMENDED (unstructured, always works)
+1) RECOMMENDED (unstructured, automatic mesh)
    File > Import > STL
-   Pick ${name}.stl  (binary, watertight triangles)
-   Assemble a domain from the database surfaces. T-Rex off the walls.
+   Pick ${name}.stl  (binary, watertight triangles, blunt LE)
+   Assemble a domain from the database. T-Rex off the walls.
+   The nose is a circular fillet of finite radius — no knife-edge.
 
 2) STRUCTURED (database surface patches)
    File > Import > Plot3D
@@ -124,17 +125,18 @@ or if STEP control points are imported as a point list. Use these instead.
      Format:    Formatted (ASCII)
      IBLANK:    off
      File:      ${name}.x     << extension .x — NOT .xyz
-   Blocks are upper/cowl, lower/floor, inlet, nozzle, side walls.
+   Blocks are upper, lower, leading (the circular LE), base, side walls.
    Combine coincident connectors, then extrude.
 
 3) IGES NURBS (Pointwise's most reliable CAD surfaces)
    File > Import > IGES  →  ${name}.igs
-   Type-128 B-splines, one face per patch.
+   Type-128 B-splines, one face per patch including the LE strip.
 
-4) NURBS STEP (SolidWorks / FreeCAD first; Pointwise second)
+4) NURBS STEP (sewn B-rep — SolidWorks, FreeCAD, Pointwise Database)
    File > Import > STEP  →  ${name}_nurbs.step
-   Degree-3 B-splines, ~16×14 poles. If your Pointwise build only
-   shows poles, use STL or IGES — that is a STEP reader limitation.
+   Degree-3 B-splines with SHARED edges and a CLOSED_SHELL solid.
+   Circular leading-edge patch is a real face, not a knife-edge.
+   If an older Pointwise build still lists poles, use STL or IGES.
 
 5) Glyph
    File > Glyph > Execute  →  ${name}.glf

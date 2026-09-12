@@ -39,9 +39,12 @@ export function surfacePatches(grids: SurfaceGrid[]): SurfaceGrid[] {
   const lower = grids.find((g) => g.name === "lower");
   if (upper && lower && upper.nj === lower.nj) {
     const te = ruledGrid("base_or_nozzle", stripAt(upper, upper.ni - 1), stripAt(lower, lower.ni - 1));
-    const le = ruledGrid("inlet_or_le", stripAt(upper, 0), stripAt(lower, 0));
     if (te) out.push(te);
-    if (le) out.push(le);
+    const hasLead = grids.some((g) => g.name === "leading" || g.name === "cowl_lip");
+    if (!hasLead) {
+      const le = ruledGrid("inlet_or_le", stripAt(upper, 0), stripAt(lower, 0));
+      if (le) out.push(le);
+    }
     const jL = 0;
     const jR = upper.nj - 1;
     const sl = ruledGrid("side_l", sideAt(upper, jL), sideAt(lower, Math.min(jL, lower.nj - 1)));
@@ -83,7 +86,7 @@ export function gridsToPlot3d(grids: SurfaceGrid[]): string {
 
 export function meshToObj(mesh: { positions: Float64Array; indices: Uint32Array; surfaces: Uint8Array }): string {
   const names = ["upper", "lower", "base", "leading", "symmetry", "inlet", "nozzle", "cowl"];
-  const lines: string[] = ["# Bowshock waverider", "o waverider"];
+  const lines: string[] = ["# Cuspis waverider", "o waverider"];
   const nv = mesh.positions.length / 3;
   for (let i = 0; i < nv; i++) {
     lines.push(`v ${mesh.positions[i * 3]} ${mesh.positions[i * 3 + 1]} ${mesh.positions[i * 3 + 2]}`);
@@ -153,7 +156,7 @@ export function meshToVtk(
   const nt = mesh.indices.length / 3;
   const lines: string[] = [
     "# vtk DataFile Version 3.0",
-    "Bowshock panel Cp / heat",
+    "Cuspis panel Cp / heat",
     "ASCII",
     "DATASET UNSTRUCTURED_GRID",
     `POINTS ${nv} double`,
@@ -190,7 +193,7 @@ export function meshToVtk(
 }
 
 export function pointwiseGlyph(name: string): string {
-  return `# Pointwise Glyph 2 — Bowshock ${name}
+  return `# Pointwise Glyph 2 — Cuspis ${name}
 # File > Glyph > Execute, or: pointwise -b ${name}.glf
 package require PWI_Glyph 2
 

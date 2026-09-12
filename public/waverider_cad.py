@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bowshock — watertight waverider CAD for CFD.
+"""Cuspis — watertight waverider CAD for CFD.
 
 Zero third-party dependencies. Python 3.9+.
 
@@ -7,7 +7,8 @@ Exports STL (ASCII + binary), STEP AP214 (NURBS surfaces + faceted B-rep),
 IGES (NURBS 128), Plot3D `.x` (3-D formatted, nk=1), and OBJ. Coordinate frame:
 X streamwise (nose at origin), Y span, Z up. Lengths in metres internally;
 --unit scales the files. Pointwise: import the binary STL or Plot3D `.x`
-(3-D formatted, IBLANK off) — do not import STEP as XYZ points.
+(3-D formatted, IBLANK off) — do not import STEP as XYZ points. Blunt LE
+is on by default (--le-radius).
 
 Examples
 --------
@@ -49,7 +50,8 @@ class Design:
     capture_frac: float = 0.55
     nx: int = 48
     ny: int = 36
-    le_radius: float = 0.0
+    le_radius: float = 0.02
+    le_blunt: bool = True
     half_model: bool = False
     unit: str = "m"
     name: str = "waverider"
@@ -259,23 +261,25 @@ def half_span_list(ny: int, s: float, half: bool) -> List[float]:
     return ys
 
 
-def x_leading(y: float, L: float, s: float, planform: str, p: float, spatular: float) -> float:
+def x_leading(y: float, L: float, s: float, planform: str, p: float, spatular: float, min_chord: float = 0.0) -> float:
     yn = clamp(abs(y) / max(s, 1e-12), 0.0, 1.0)
     if planform == "rect":
-        return 0.0
-    if planform == "spatular":
+        x = 0.0
+    elif planform == "spatular":
         nose = clamp(spatular, 0.04, 0.45)
         blunt = 1.0 - math.sqrt(max(0.0, 1.0 - yn * yn))
-        return min(max(L * lerp(nose * blunt, yn, 0.35), 0.0), L)
-    if planform == "double":
+        x = L * lerp(nose * blunt, yn, 0.35)
+    elif planform == "double":
         kink = 0.42
         if yn < kink:
             x = L * 0.1 * (yn / kink)
         else:
             x = L * (0.1 + 0.9 * ((yn - kink) / (1.0 - kink)) ** 1.05)
-        return min(max(x, 0.0), L)
-    pow_ = 1.0 if planform == "delta" else clamp(p, 0.6, 2.4)
-    return min(max(L * (yn ** pow_), 0.0), L)
+    else:
+        pow_ = 1.0 if planform == "delta" else clamp(p, 0.6, 2.4)
+        x = L * (yn ** pow_)
+    cap = max(0.0, L - max(min_chord, 0.0))
+    return min(max(x, 0.0), cap)
 
 
 def x_trailing(y: float, L: float, te_tan: float, xl: float) -> float:
@@ -301,9 +305,20 @@ def stitch(mesh: Mesh, g: Grid, surface: int, flip: bool = False) -> None:
                 mesh.quad(a, b, c, d, surface)
 
 
-def close_vehicle(mesh: Mesh, upper: Grid, lower: Grid, half: bool, flow_through: bool = False) -> None:
+def close_vehicle(
+    mesh: Mesh, upper: Grid, lower: Grid, half: bool, flow_through: bool = False, leading: Grid | None = None
+) -> None:
     stitch(mesh, upper, 0, False)
     stitch(mesh, lower, 1, True)
+    if leading is not None and leading.ni >= 2 and leading.nj >= 2:
+        stitch(mesh, leading, 3, False)
+        if leading.ni >= 3:
+            if half:
+                mesh.fan([mesh.vert(*leading.at(k, 0)) for k in range(leading.ni)], 4)
+                mesh.fan([mesh.vert(*leading.at(k, leading.nj - 1)) for k in range(leading.ni)], 3)
+            else:
+                mesh.fan([mesh.vert(*leading.at(k, 0)) for k in range(leading.ni)], 3)
+                mesh.fan([mesh.vert(*leading.at(k, leading.nj - 1)) for k in range(leading.ni)], 3)
     if not flow_through:
         te_u = [mesh.vert(*upper.at(upper.ni - 1, j)) for j in range(upper.nj)]
         te_l = [mesh.vert(*lower.at(lower.ni - 1, j)) for j in range(lower.nj)]
@@ -332,7 +347,7 @@ def close_vehicle(mesh: Mesh, upper: Grid, lower: Grid, half: bool, flow_through
             if su[i] == sl[i] and su[i + 1] == sl[i + 1]:
                 continue
             mesh.quad(su[i], su[i + 1], sl[i + 1], sl[i], 4)
-    if not flow_through:
+    if not flow_through and leading is None:
         le_u = [mesh.vert(*upper.at(0, j)) for j in range(upper.nj)]
         le_l = [mesh.vert(*lower.at(0, j)) for j in range(lower.nj)]
         for j in range(upper.nj - 1):
@@ -343,6 +358,236 @@ def close_vehicle(mesh: Mesh, upper: Grid, lower: Grid, half: bool, flow_through
 
 def _set(g: Grid, i: int, j: int, p: Vec3) -> None:
     g.xyz[i * g.nj + j] = p
+
+
+def _vsub(a: Vec3, b: Vec3) -> Vec3:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _vadd(a: Vec3, b: Vec3) -> Vec3:
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def _vscale(a: Vec3, s: float) -> Vec3:
+    return (a[0] * s, a[1] * s, a[2] * s)
+
+
+def _vdot(a: Vec3, b: Vec3) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _vlen(a: Vec3) -> float:
+    return math.hypot(a[0], a[1], a[2])
+
+
+def _vnorm(a: Vec3) -> Vec3:
+    n = _vlen(a)
+    return a if n < 1e-15 else (a[0] / n, a[1] / n, a[2] / n)
+
+
+def _slerp(a: Vec3, b: Vec3, t: float) -> Vec3:
+    d = max(-1.0, min(1.0, _vdot(a, b)))
+    om = math.acos(d)
+    if om < 1e-8:
+        return _vnorm((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t))
+    s = math.sin(om)
+    wa = math.sin((1.0 - t) * om) / s
+    wb = math.sin(t * om) / s
+    return _vnorm((a[0] * wa + b[0] * wb, a[1] * wa + b[1] * wb, a[2] * wa + b[2] * wb))
+
+
+def _row(g: Grid, j: int) -> List[Vec3]:
+    return [g.at(i, j) for i in range(g.ni)]
+
+
+def _write_row(g: Grid, j: int, pts: Sequence[Vec3]) -> None:
+    for i, p in enumerate(pts[: g.ni]):
+        _set(g, i, j, p)
+
+
+def _chord_len(pts: Sequence[Vec3]) -> float:
+    return sum(_vlen(_vsub(pts[i], pts[i - 1])) for i in range(1, len(pts)))
+
+
+def _tangent_at(pts: Sequence[Vec3]) -> Vec3:
+    for i in range(len(pts) - 1):
+        t = _vsub(pts[i + 1], pts[i])
+        if _vlen(t) > 1e-12:
+            return _vnorm(t)
+    return (1.0, 0.0, 0.0)
+
+
+def _point_at_length(pts: Sequence[Vec3], s_want: float) -> Tuple[Vec3, int]:
+    acc = 0.0
+    for i in range(len(pts) - 1):
+        d = _vlen(_vsub(pts[i + 1], pts[i]))
+        if acc + d >= s_want or i == len(pts) - 2:
+            u = 0.0 if d <= 1e-15 else clamp((s_want - acc) / d, 0.0, 1.0)
+            p = (
+                pts[i][0] + (pts[i + 1][0] - pts[i][0]) * u,
+                pts[i][1] + (pts[i + 1][1] - pts[i][1]) * u,
+                pts[i][2] + (pts[i + 1][2] - pts[i][2]) * u,
+            )
+            return p, i + 1
+        acc += d
+    return pts[-1], len(pts) - 1
+
+
+def _resample(pts: Sequence[Vec3], n: int, power: float = 1.45) -> List[Vec3]:
+    if n <= 1:
+        return [pts[0]]
+    acc = [0.0]
+    for i in range(1, len(pts)):
+        acc.append(acc[-1] + _vlen(_vsub(pts[i], pts[i - 1])))
+    total = acc[-1]
+    if total < 1e-15:
+        return [pts[0]] * n
+    out: List[Vec3] = []
+    for i in range(n):
+        u = i / (n - 1)
+        s = (u ** power) * total
+        k = 0
+        while k < len(acc) - 2 and acc[k + 1] < s:
+            k += 1
+        span = acc[k + 1] - acc[k]
+        t = 0.0 if span <= 1e-15 else (s - acc[k]) / span
+        t = clamp(t, 0.0, 1.0)
+        out.append(
+            (
+                pts[k][0] + (pts[k + 1][0] - pts[k][0]) * t,
+                pts[k][1] + (pts[k + 1][1] - pts[k][1]) * t,
+                pts[k][2] + (pts[k + 1][2] - pts[k][2]) * t,
+            )
+        )
+    out[0] = pts[0]
+    out[-1] = pts[-1]
+    return out
+
+
+def apply_leading_fillet(upper: Grid, lower: Grid, radius: float, length: float) -> Grid | None:
+    """Circular LE fillet in the local osculating plane. Recedes the sheets (G1)."""
+    if radius <= 1e-9:
+        return None
+    L = max(length, 1e-6)
+    nj = min(upper.nj, lower.nj)
+    n_arc = 13
+    alpha_min = math.radians(3.5)
+    stations = []
+    for j in range(nj):
+        U, Lo = _row(upper, j), _row(lower, j)
+        p = ((U[0][0] + Lo[0][0]) * 0.5, (U[0][1] + Lo[0][1]) * 0.5, (U[0][2] + Lo[0][2]) * 0.5)
+        t_u, t_l = _tangent_at(U), _tangent_at(Lo)
+        du = max(-0.999, min(0.999, _vdot(t_u, t_l)))
+        alpha = math.acos(du)
+        if alpha < alpha_min:
+            bis = _vnorm(_vadd(t_u, t_l)) if _vlen(_vadd(t_u, t_l)) > 0.2 else (1.0, 0.0, 0.0)
+            thick = (-bis[2], 0.0, bis[0])
+            if _vlen(thick) < 0.2:
+                thick = (0.0, 0.0, 1.0)
+            thick = _vnorm(thick)
+            h = alpha_min / 2.0
+            t_u = _vnorm(_vadd(_vscale(bis, math.cos(h)), _vscale(thick, math.sin(h))))
+            t_l = _vnorm(_vadd(_vscale(bis, math.cos(h)), _vscale(thick, -math.sin(h))))
+            alpha = alpha_min
+        half = 0.5 * alpha
+        chord = max(_chord_len(U), _chord_len(Lo), 1e-9)
+        r = min(radius, 0.08 * L, 0.28 * chord * math.tan(half))
+        ok = False
+        arc = [p] * n_arc
+        tu = tl = p
+        u_row = l_row = None
+        if r > 1e-9:
+            s_len = r / math.tan(half)
+            d = r / math.sin(half)
+            bis = _vnorm(_vadd(t_u, t_l))
+            if _vlen(bis) >= 0.2:
+                c = _vadd(p, _vscale(bis, d))
+                s_cut = min(s_len, 0.45 * chord)
+                tu, uk = _point_at_length(U, s_cut)
+                tl, lk = _point_at_length(Lo, s_cut)
+                f = _vsub(c, _vscale(bis, r))
+                a_tl, a_tu, a_f = _vnorm(_vsub(tl, c)), _vnorm(_vsub(tu, c)), _vnorm(_vsub(f, c))
+                if _vlen(a_tl) >= 0.5 and _vlen(_vsub(tu, tl)) > 4e-4 * L:
+                    arc = []
+                    for k in range(n_arc):
+                        t = k / (n_arc - 1)
+                        direction = _slerp(a_tl, a_f, t * 2) if t <= 0.5 else _slerp(a_f, a_tu, t * 2 - 1)
+                        arc.append(_vadd(c, _vscale(direction, r)))
+                    arc[0], arc[-1] = tl, tu
+                    u_row = _resample([tu] + U[max(uk, 1) :], upper.ni)
+                    l_row = _resample([tl] + Lo[max(lk, 1) :], lower.ni)
+                    ok = True
+        stations.append((ok, arc, tu, tl, u_row, l_row))
+    if sum(1 for st in stations if st[0]) < 3:
+        return None
+    for j, st in enumerate(stations):
+        if st[0]:
+            continue
+        lo = next((i for i in range(j - 1, -1, -1) if stations[i][0]), None)
+        hi = next((i for i in range(j + 1, nj) if stations[i][0]), None)
+        src = stations[lo] if lo is not None else stations[hi] if hi is not None else None
+        if src is None:
+            continue
+        if lo is not None and hi is not None:
+            t = (j - lo) / max(hi - lo, 1)
+            arc = [
+                (
+                    stations[lo][1][k][0] + (stations[hi][1][k][0] - stations[lo][1][k][0]) * t,
+                    stations[lo][1][k][1] + (stations[hi][1][k][1] - stations[lo][1][k][1]) * t,
+                    stations[lo][1][k][2] + (stations[hi][1][k][2] - stations[lo][1][k][2]) * t,
+                )
+                for k in range(n_arc)
+            ]
+            tu = (
+                stations[lo][2][0] + (stations[hi][2][0] - stations[lo][2][0]) * t,
+                stations[lo][2][1] + (stations[hi][2][1] - stations[lo][2][1]) * t,
+                stations[lo][2][2] + (stations[hi][2][2] - stations[lo][2][2]) * t,
+            )
+            tl = (
+                stations[lo][3][0] + (stations[hi][3][0] - stations[lo][3][0]) * t,
+                stations[lo][3][1] + (stations[hi][3][1] - stations[lo][3][1]) * t,
+                stations[lo][3][2] + (stations[hi][3][2] - stations[lo][3][2]) * t,
+            )
+            stations[j] = (True, arc, tu, tl, src[4], src[5])
+        else:
+            stations[j] = src
+    lead = make_grid("leading", n_arc, nj, lambda i, j: stations[j][1][i])
+    for j, (_ok, arc, tu, tl, u_row, l_row) in enumerate(stations):
+        if u_row:
+            _write_row(upper, j, u_row)
+        if l_row:
+            _write_row(lower, j, l_row)
+        _set(upper, 0, j, tu)
+        _set(lower, 0, j, tl)
+        _set(lead, 0, j, tl)
+        _set(lead, n_arc - 1, j, tu)
+    return lead
+
+
+def fillet_tip_cap(lead: Grid, j: int, name: str) -> Grid | None:
+    n = lead.ni
+    if n < 3 or j < 0 or j >= lead.nj:
+        return None
+    tl, tu = lead.at(0, j), lead.at(n - 1, j)
+    bow = 0.0
+    for k in range(n):
+        t = 0.0 if n <= 1 else k / (n - 1)
+        chord = (tl[0] + (tu[0] - tl[0]) * t, tl[1] + (tu[1] - tl[1]) * t, tl[2] + (tu[2] - tl[2]) * t)
+        bow = max(bow, _vlen(_vsub(lead.at(k, j), chord)))
+    if bow < 1e-10:
+        return None
+    return make_grid(
+        name,
+        2,
+        n,
+        lambda i, k: lead.at(k, j)
+        if i == 0
+        else (
+            tl[0] + (tu[0] - tl[0]) * (k / (n - 1)),
+            tl[1] + (tu[1] - tl[1]) * (k / (n - 1)),
+            tl[2] + (tu[2] - tl[2]) * (k / (n - 1)),
+        ),
+    )
 
 
 def zipper_sharp_edges(upper: Grid, lower: Grid, length: float) -> None:
@@ -434,7 +679,10 @@ def analyze(mesh: Mesh) -> dict:
 
 def _loft(d: Design, z_base, planform: str, power: float, spat: float, z_exp: float = 1.0) -> Tuple[Grid, Grid]:
     L, s = d.length, d.span / 2.0
-    ys = half_span_list(d.ny, s, d.half_model)
+    r_le = d.le_radius if getattr(d, "le_blunt", True) else 0.0
+    min_chord = min(0.16 * L, max(8.0 * r_le, 0.05 * L)) if r_le > 1e-9 else 0.0
+    s_use = max(0.72 * s, s * (1.0 - min_chord / max(L, 1e-9))) if r_le > 1e-9 else s
+    ys = half_span_list(d.ny, s_use, d.half_model)
     nx, nj = max(8, d.nx), len(ys)
     dih = math.tan(d.dihedral_deg * DEG)
     cam = d.camber * d.height
@@ -442,7 +690,7 @@ def _loft(d: Design, z_base, planform: str, power: float, spat: float, z_exp: fl
     z_pow = max(0.6, z_exp)
 
     def xle(y: float) -> float:
-        return x_leading(y, L, s, planform, power, spat)
+        return x_leading(y, L, s, planform, power, spat, min_chord)
 
     def xt(y: float, xl: float) -> float:
         return x_trailing(y, L, te_tan, xl)
@@ -769,6 +1017,16 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
             flip_z_grid(upper)
             flip_z_grid(lower)
         is_duct = d.family in ("ramjet", "scramjet")
+        leading = None
+        r_le = d.le_radius if getattr(d, "le_blunt", True) else 0.0
+        tips: List[Grid] = []
+        if (not is_duct) and r_le > 1e-9:
+            leading = apply_leading_fillet(upper, lower, r_le, d.length)
+            if leading is not None:
+                for j, name in ((0, "tip_l"), (leading.nj - 1, "tip_r")):
+                    cap = fillet_tip_cap(leading, j, name)
+                    if cap is not None:
+                        tips.append(cap)
         if (not is_duct) and abs(d.elevon_deg) > 1e-3:
             hinge = 0.82 * d.length
             k = math.tan(d.elevon_deg * DEG)
@@ -783,8 +1041,11 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
             zipper_sharp_edges(upper, lower, d.length)
             apply_fins(upper, d, -1.0 if d.lid == "bottom" else 1.0)
             zipper_sharp_edges(upper, lower, d.length)
-        close_vehicle(mesh, upper, lower, d.half_model, is_duct and d.flow_through)
+        close_vehicle(mesh, upper, lower, d.half_model, is_duct and d.flow_through, leading)
         grids = [upper, lower]
+        if leading is not None:
+            grids.append(leading)
+        grids.extend(tips)
         if is_duct:
             nj = min(upper.nj, lower.nj)
             inlet = make_grid("inlet", 2, nj, lambda i, j: lower.at(0, j) if i == 0 else upper.at(0, j))
@@ -844,7 +1105,7 @@ def write_stl_ascii(path: str, mesh: Mesh, name: str) -> None:
 
 
 def write_stl_binary(path: str, mesh: Mesh, name: str) -> None:
-    header = f"Bowshock {name} watertight STL".encode("ascii", "replace")[:80]
+    header = f"Cuspis {name} watertight STL".encode("ascii", "replace")[:80]
     header = header + b"\x00" * (80 - len(header))
     with open(path, "wb") as f:
         f.write(header)
@@ -875,8 +1136,9 @@ def _spline_knots(n_poles: int, degree: int) -> Tuple[List[float], List[int]]:
     return knots, mult
 
 
-def _downsample_grid(g: Grid, cap_u: int = 16, cap_v: int = 14) -> List[List[Vec3]]:
-    nu = min(g.ni, cap_u)
+def _downsample_grid(g: Grid, cap_u: int = 16, cap_v: int = 16) -> List[List[Vec3]]:
+    keep_u = g.ni <= 4 or g.name in ("leading", "cowl_lip", "tip_l", "tip_r") or g.name.startswith("side")
+    nu = g.ni if keep_u else min(g.ni, cap_u)
     nv = min(g.nj, cap_v)
     poles: List[List[Vec3]] = []
     for iu in range(nu):
@@ -902,9 +1164,9 @@ def write_nurbs_step(path: str, grids: List[Grid], name: str, unit: str) -> None
 
     hdr = (
         "ISO-10303-21;\nHEADER;\n"
-        "FILE_DESCRIPTION(('Bowshock NURBS waverider'),'2;1');\n"
-        f"FILE_NAME('{name}.step','2026-01-01T00:00:00',('Bowshock'),('Bowshock'),"
-        "'Bowshock CAD','Bowshock','');\n"
+        "FILE_DESCRIPTION(('Cuspis NURBS waverider blunt LE'),'2;1');\n"
+        f"FILE_NAME('{name}.step','2026-01-01T00:00:00',('Cuspis'),('Cuspis Roma'),"
+        "'Cuspis CAD','Cuspis','');\n"
         "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
         "ENDSEC;\nDATA;\n"
     )
@@ -990,14 +1252,15 @@ def write_nurbs_step(path: str, grids: List[Grid], name: str, unit: str) -> None
         le_d = math.hypot(le_u[mid][0] - le_l[mid][0], le_u[mid][1] - le_l[mid][1], le_u[mid][2] - le_l[mid][2])
         if te_d > 1e-7:
             faces.append(emit_face([te_u, te_l], "nozzle_or_base"))
-        if le_d > 1e-7:
+        has_lead = any(g.name in ("leading", "cowl_lip") for g in usable)
+        if le_d > 1e-7 and not has_lead:
             faces.append(emit_face([le_u, le_l], "inlet"))
     if not faces:
         write_step(path, Mesh(1.0), name, unit)
         return
-    shell = add("OPEN_SHELL('',(" + ",".join(f"#{i}" for i in faces) + "))")
-    model = add(f"SHELL_BASED_SURFACE_MODEL('Bowshock',(#{shell}))")
-    repr_ = add(f"MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#{model}),#{ctx})")
+    shell = add("CLOSED_SHELL('',(" + ",".join(f"#{i}" for i in faces) + "))")
+    model = add(f"MANIFOLD_SOLID_BREP('Cuspis',#{shell})")
+    repr_ = add(f"ADVANCED_BREP_SHAPE_REPRESENTATION('',(#{model}),#{ctx})")
     add(f"SHAPE_DEFINITION_REPRESENTATION(#{pds},#{repr_})")
     with open(path, "w", encoding="ascii", errors="replace") as f:
         f.write(hdr)
@@ -1016,9 +1279,9 @@ def write_step(path: str, mesh: Mesh, name: str, unit: str) -> None:
 
     hdr = (
         "ISO-10303-21;\nHEADER;\n"
-        "FILE_DESCRIPTION(('Bowshock watertight waverider'),'2;1');\n"
-        f"FILE_NAME('{name}.step','2026-01-01T00:00:00',('Bowshock'),('Bowshock'),"
-        "'Bowshock CAD','Bowshock','');\n"
+        "FILE_DESCRIPTION(('Cuspis watertight waverider'),'2;1');\n"
+        f"FILE_NAME('{name}.step','2026-01-01T00:00:00',('Cuspis'),('Cuspis Roma'),"
+        "'Cuspis CAD','Cuspis','');\n"
         "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
         "ENDSEC;\nDATA;\n"
     )
@@ -1092,7 +1355,7 @@ def write_plot3d(path: str, grids: List[Grid]) -> None:
 def write_obj(path: str, mesh: Mesh) -> None:
     names = ["upper", "lower", "base", "leading", "symmetry"]
     with open(path, "w", encoding="utf-8") as f:
-        f.write("# Bowshock waverider\no waverider\n")
+        f.write("# Cuspis waverider\no waverider\n")
         for p in mesh.pos:
             f.write(f"v {p[0]} {p[1]} {p[2]}\n")
         last = -1
@@ -1118,11 +1381,11 @@ def write_iges(path: str, grids: List[Grid], name: str) -> None:
         k.extend([1.0] * (p + 1))
         return k
 
-    lines = [pad("Bowshock IGES,".ljust(72) + "S" + "1".rjust(7))]
+    lines = [pad("Cuspis IGES,".ljust(72) + "S" + "1".rjust(7))]
     gsec = [
         "1H,,1H;,8HWAVERIDE,7HIGES5.3,",
-        "8HBowshock,8HBowshock,32,38,6,308,15,",
-        "8HBowshock,1.,2,1HM,32768,0.,15H20260101.000000,",
+        "6HCuspis,6HCuspis,32,38,6,308,15,",
+        "6HCuspis,1.,2,1HM,32768,0.,15H20260101.000000,",
         "1.E-6,1000.,7HUnknown,7HUnknown,11,0,0;",
     ]
     for i, g in enumerate(gsec):
@@ -1192,8 +1455,9 @@ def export_all(d: Design, prefix: str, out_dir: str = ".") -> dict:
             f"1. File > Import > STL     {prefix}.stl     (recommended)\n"
             f"2. File > Import > IGES    {prefix}.igs\n"
             f"3. File > Import > Plot3D  {prefix}.x   3-D formatted, IBLANK off\n"
-            f"4. NURBS STEP              {prefix}.step / {prefix}_nurbs.step  (SolidWorks/FreeCAD)\n"
+            f"4. NURBS STEP              {prefix}.step / {prefix}_nurbs.step  (sewn CLOSED_SHELL)\n"
             "Frame: X stream, Y span, Z up. Nose / cowl lip at origin.\n"
+            "Rounded LE is ON by default (--le-radius). Toggle off with --le-radius 0.\n"
         )
     with open(base + "_quality.json", "w", encoding="utf-8") as f:
         json.dump({"design": asdict(d), "quality": q}, f, indent=2)
@@ -1209,7 +1473,7 @@ def design_from_args(ns: argparse.Namespace) -> Design:
         mapping = {
             "shockDeg": "shock_deg", "coneDeg": "cone_deg", "superN": "super_n",
             "planformPower": "planform_power", "wedgeFrac": "wedge_frac",
-            "captureFrac": "capture_frac", "leRadius": "le_radius", "halfModel": "half_model",
+            "captureFrac": "capture_frac", "leRadius": "le_radius", "leBlunt": "le_blunt", "halfModel": "half_model",
             "dihedralDeg": "dihedral_deg", "teSweepDeg": "te_sweep_deg", "elevonDeg": "elevon_deg",
             "finHeight": "fin_height", "nRamps": "n_ramps", "cowlSide": "cowl_side",
             "inletHeight": "inlet_height", "cowlFrac": "cowl_frac", "combustorFrac": "combustor_frac",

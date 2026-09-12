@@ -1,6 +1,7 @@
 import type { LengthUnit, SurfaceGrid, TriMesh, Vec3 } from "./types";
 import { vcross, vnorm, vsub } from "./math";
 import { gridPoint } from "./mesh";
+import { surfacePatches } from "./export-plot3d";
 
 function s(n: number): string {
   if (!Number.isFinite(n) || Math.abs(n) < 1e-15) return "0.";
@@ -24,8 +25,8 @@ function stepHeader(name: string) {
   const now = new Date().toISOString().slice(0, 19);
   return `ISO-10303-21;
 HEADER;
-FILE_DESCRIPTION(('Bowshock watertight waverider'),'2;1');
-FILE_NAME('${name}.step','${now}',('Bowshock'),('Bowshock'),'Bowshock CAD','Bowshock','');
+FILE_DESCRIPTION(('Cuspis watertight waverider NURBS blunt LE'),'2;1');
+FILE_NAME('${name}.step','${now}',('Cuspis'),('Cuspis Roma'),'Cuspis CAD','Cuspis','');
 FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
 ENDSEC;
 DATA;`;
@@ -36,7 +37,7 @@ function unitBlock(doc: StepDoc, unit: LengthUnit) {
   doc.add(`APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2010,#${app})`);
   const pctx = doc.add(`PRODUCT_CONTEXT('',#${app},'mechanical')`);
   const dctx = doc.add(`PRODUCT_DEFINITION_CONTEXT('',#${app},'design')`);
-  const prod = doc.add(`PRODUCT('waverider','Waverider','inverse-design waverider',(#${pctx}))`);
+  const prod = doc.add(`PRODUCT('waverider','Cuspis waverider','inverse-design waverider',(#${pctx}))`);
   const pdf = doc.add(`PRODUCT_DEFINITION_FORMATION('','',#${prod})`);
   const pd = doc.add(`PRODUCT_DEFINITION('design','',#${pdf},#${dctx})`);
   const pds = doc.add(`PRODUCT_DEFINITION_SHAPE('','',#${pd})`);
@@ -156,8 +157,22 @@ function emitBSplineCurve(doc: StepDoc, poles: Vec3[], degree = 3): number {
   );
 }
 
-function gridToPoles(g: SurfaceGrid, capU = 16, capV = 14): Vec3[][] {
-  const nu = Math.min(g.ni, capU);
+function keepDenseU(g: SurfaceGrid): boolean {
+  return (
+    g.ni <= 4 ||
+    g.name === "leading" ||
+    g.name === "cowl_lip" ||
+    g.name === "tip_l" ||
+    g.name === "tip_r" ||
+    g.name.startsWith("side") ||
+    g.name.startsWith("base") ||
+    g.name.startsWith("inlet") ||
+    g.name.startsWith("nozzle")
+  );
+}
+
+function gridToPoles(g: SurfaceGrid, capU = 16, capV = 16): Vec3[][] {
+  const nu = keepDenseU(g) ? g.ni : Math.min(g.ni, capU);
   const nv = Math.min(g.nj, capV);
   const poles: Vec3[][] = [];
   for (let iu = 0; iu < nu; iu++) {
@@ -172,44 +187,89 @@ function gridToPoles(g: SurfaceGrid, capU = 16, capV = 14): Vec3[][] {
   return poles;
 }
 
-function vertex(doc: StepDoc, p: Vec3): { pt: number; vx: number } {
-  const pt = doc.add(`CARTESIAN_POINT('',(${s(p[0])},${s(p[1])},${s(p[2])}))`);
-  const vx = doc.add(`VERTEX_POINT('',#${pt})`);
-  return { pt, vx };
+function qk(p: Vec3): string {
+  return `${Math.round(p[0] * 1e7)}:${Math.round(p[1] * 1e7)}:${Math.round(p[2] * 1e7)}`;
 }
 
-function emitFace(doc: StepDoc, poles: Vec3[][], name: string): number {
+function curveKey(poles: Vec3[]): { key: string; reversed: boolean } {
+  const a = qk(poles[0]);
+  const b = qk(poles[poles.length - 1]);
+  const m = qk(poles[Math.floor(poles.length / 2)]);
+  if (a < b || (a === b && m <= qk(poles[Math.floor((poles.length - 1) / 2)]))) {
+    return { key: `${a}|${b}|${m}`, reversed: false };
+  }
+  return { key: `${b}|${a}|${m}`, reversed: true };
+}
+
+function vertex(doc: StepDoc, p: Vec3, cache: Map<string, { pt: number; vx: number }>): { pt: number; vx: number } {
+  const k = qk(p);
+  const hit = cache.get(k);
+  if (hit) return hit;
+  const pt = doc.add(`CARTESIAN_POINT('',(${s(p[0])},${s(p[1])},${s(p[2])}))`);
+  const vx = doc.add(`VERTEX_POINT('',#${pt})`);
+  const rec = { pt, vx };
+  cache.set(k, rec);
+  return rec;
+}
+
+function emitEdge(
+  doc: StepDoc,
+  poles: Vec3[],
+  verts: Map<string, { pt: number; vx: number }>,
+  edges: Map<string, { id: number }>,
+): { id: number; same: boolean } {
+  const { key, reversed } = curveKey(poles);
+  const hit = edges.get(key);
+  if (hit) return { id: hit.id, same: !reversed };
+  const pts = reversed ? [...poles].reverse() : poles;
+  const v0 = vertex(doc, pts[0], verts);
+  const v1 = vertex(doc, pts[pts.length - 1], verts);
+  const curve = emitBSplineCurve(doc, pts, Math.min(3, pts.length - 1));
+  const id = doc.add(`EDGE_CURVE('',#${v0.vx},#${v1.vx},#${curve},.T.)`);
+  edges.set(key, { id });
+  return { id, same: !reversed };
+}
+
+function emitSewnFace(
+  doc: StepDoc,
+  poles: Vec3[][],
+  name: string,
+  verts: Map<string, { pt: number; vx: number }>,
+  edges: Map<string, { id: number }>,
+): number | null {
   const ni = poles.length;
   const nj = poles[0].length;
   const surf = emitBSplineSurface(doc, poles, 3);
-  const v00 = vertex(doc, poles[0][0]);
-  const v10 = vertex(doc, poles[ni - 1][0]);
-  const v11 = vertex(doc, poles[ni - 1][nj - 1]);
-  const v01 = vertex(doc, poles[0][nj - 1]);
-  const c0 = emitBSplineCurve(doc, poles.map((row) => row[0]), 1);
-  const c1 = emitBSplineCurve(doc, poles[ni - 1], 1);
-  const c2 = emitBSplineCurve(doc, poles.map((row) => row[nj - 1]).reverse(), 1);
-  const c3 = emitBSplineCurve(doc, [...poles[0]].reverse(), 1);
-  const e0 = doc.add(`EDGE_CURVE('',#${v00.vx},#${v10.vx},#${c0},.T.)`);
-  const e1 = doc.add(`EDGE_CURVE('',#${v10.vx},#${v11.vx},#${c1},.T.)`);
-  const e2 = doc.add(`EDGE_CURVE('',#${v11.vx},#${v01.vx},#${c2},.T.)`);
-  const e3 = doc.add(`EDGE_CURVE('',#${v01.vx},#${v00.vx},#${c3},.T.)`);
-  const o0 = doc.add(`ORIENTED_EDGE('',*,*,#${e0},.T.)`);
-  const o1 = doc.add(`ORIENTED_EDGE('',*,*,#${e1},.T.)`);
-  const o2 = doc.add(`ORIENTED_EDGE('',*,*,#${e2},.T.)`);
-  const o3 = doc.add(`ORIENTED_EDGE('',*,*,#${e3},.T.)`);
-  const loop = doc.add(`EDGE_LOOP('',(#${o0},#${o1},#${o2},#${o3}))`);
+  const raw: Vec3[][] = [
+    poles.map((row) => row[0]),
+    poles[ni - 1],
+    poles.map((row) => row[nj - 1]).reverse(),
+    [...poles[0]].reverse(),
+  ];
+  const kept = raw.filter((c) => {
+    let len = 0;
+    for (let i = 1; i < c.length; i++) {
+      const d = Math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1], c[i][2] - c[i - 1][2]);
+      len += d;
+    }
+    return len > 1e-10;
+  });
+  if (kept.length < 2) return null;
+  const oriented = kept.map((c) => emitEdge(doc, c, verts, edges));
+  const os = oriented.map((e) => doc.add(`ORIENTED_EDGE('',*,*,#${e.id},${e.same ? ".T." : ".F."})`));
+  const loop = doc.add(`EDGE_LOOP('',(${os.map((id) => `#${id}`).join(",")}))`);
   const bound = doc.add(`FACE_OUTER_BOUND('',#${loop},.T.)`);
   return doc.add(`ADVANCED_FACE('${name}',(#${bound}),#${surf},.T.)`);
 }
 
 /**
- * Untrimmed NURBS faces as a SHELL_BASED_SURFACE_MODEL.
- * Degree-3 B-splines, ~16×14 poles per patch — Pointwise File > Import > STEP
- * reads surfaces. Dense degree-1 poles look like the cyan point cloud.
+ * Sewn NURBS B-rep: degree-3 B-splines, shared EDGE_CURVE on coincident
+ * boundaries, CLOSED_SHELL + MANIFOLD_SOLID_BREP. Pointwise / SolidWorks /
+ * FreeCAD import this as surfaces (not a control-point cloud). Dense
+ * degree-1 poles were the cyan scatter.
  */
 export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: LengthUnit): string {
-  const usable = grids.filter((g) => g.ni >= 2 && g.nj >= 2);
+  const usable = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2);
   if (!usable.length) {
     return meshToFacetedStep(
       { positions: new Float64Array(), indices: new Uint32Array(), surfaces: new Uint8Array() },
@@ -220,29 +280,25 @@ export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: Lengt
 
   const doc = new StepDoc();
   const { pds, ctx } = unitBlock(doc, unit);
+  const verts = new Map<string, { pt: number; vx: number }>();
+  const edges = new Map<string, { id: number }>();
   const faces: number[] = [];
-  for (const g of usable) faces.push(emitFace(doc, gridToPoles(g), g.name || "surface"));
-
-  const upper = usable.find((g) => g.name === "upper" || g.name === "cowl") ?? usable[0];
-  const lower = usable.find((g) => g.name === "lower") ?? usable[usable.length - 1];
-  if (upper && lower && upper !== lower) {
-    const uP = gridToPoles(upper);
-    const lP = gridToPoles(lower);
-    const nj = Math.min(uP[0].length, lP[0].length);
-    const mid = Math.floor(nj / 2);
-    const teU = uP[uP.length - 1].slice(0, nj);
-    const teL = lP[lP.length - 1].slice(0, nj);
-    const leU = uP[0].slice(0, nj);
-    const leL = lP[0].slice(0, nj);
-    const teDist = Math.hypot(teU[mid][0] - teL[mid][0], teU[mid][1] - teL[mid][1], teU[mid][2] - teL[mid][2]);
-    const leDist = Math.hypot(leU[mid][0] - leL[mid][0], leU[mid][1] - leL[mid][1], leU[mid][2] - leL[mid][2]);
-    if (teDist > 1e-7) faces.push(emitFace(doc, [teU, teL], "nozzle_or_base"));
-    if (leDist > 1e-7) faces.push(emitFace(doc, [leU, leL], "inlet"));
+  for (const g of usable) {
+    const face = emitSewnFace(doc, gridToPoles(g), g.name || "surface", verts, edges);
+    if (face != null) faces.push(face);
   }
 
-  const shell = doc.add(`OPEN_SHELL('',(${faces.map((id) => `#${id}`).join(",")}))`);
-  const model = doc.add(`SHELL_BASED_SURFACE_MODEL('Bowshock',(#${shell}))`);
-  const repr = doc.add(`MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#${model}),#${ctx})`);
+  if (!faces.length) {
+    return meshToFacetedStep(
+      { positions: new Float64Array(), indices: new Uint32Array(), surfaces: new Uint8Array() },
+      name,
+      unit,
+    );
+  }
+
+  const shell = doc.add(`CLOSED_SHELL('',(${faces.map((id) => `#${id}`).join(",")}))`);
+  const solid = doc.add(`MANIFOLD_SOLID_BREP('Cuspis',#${shell})`);
+  const repr = doc.add(`ADVANCED_BREP_SHAPE_REPRESENTATION('',(#${solid}),#${ctx})`);
   doc.add(`SHAPE_DEFINITION_REPRESENTATION(#${pds},#${repr})`);
   return `${stepHeader(name)}\n${doc.lines.join("\n")}\nENDSEC;\nEND-ISO-10303-21;\n`;
 }
@@ -279,8 +335,8 @@ export function meshToTessellatedStep(mesh: TriMesh, name: string, unit: LengthU
   void chunks;
   const header = `ISO-10303-21;
 HEADER;
-FILE_DESCRIPTION(('Bowshock tessellated waverider'),'2;1');
-FILE_NAME('${name}.step','${new Date().toISOString().slice(0, 19)}',('Bowshock'),('Bowshock'),'Bowshock CAD','Bowshock','');
+FILE_DESCRIPTION(('Cuspis tessellated waverider'),'2;1');
+FILE_NAME('${name}.step','${new Date().toISOString().slice(0, 19)}',('Cuspis'),('Cuspis Roma'),'Cuspis CAD','Cuspis','');
 FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));
 ENDSEC;
 DATA;`;

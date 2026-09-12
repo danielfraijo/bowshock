@@ -8,6 +8,7 @@ import { integrateGlide, type TrajResult } from "./trajectory";
 import { runValidation, validationSummary, type Check } from "./validate";
 import { solveSixDof, type SixDofResult } from "./sixdof";
 import { frontierPhysics, type FrontierResult } from "./frontier";
+import { effectiveLeRadius } from "./blunt";
 
 export interface LitBand {
   ld: [number, number];
@@ -128,7 +129,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
   };
   const prop = ramjetCycle(p, atm);
   mass.ballistic = aero.cd > 1e-8 ? mass.mass / (aero.cd * sRef) : 0;
-  const Rn = Math.max(p.leRadius, 0.0015 * p.length);
+  const Rn = Math.max(effectiveLeRadius(p), 0.0015 * p.length);
   const traj = full
     ? integrateGlide(p, stab.polar, mass.mass, sRef, Rn)
     : {

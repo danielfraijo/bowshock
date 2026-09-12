@@ -2,7 +2,7 @@
   "name": "bowshock",
   "version": "0.1.0",
   "private": true,
-  "description": "Inverse-design waverider CAD lab — watertight STL/STEP/IGES, panel aero, heating, ramjet/scramjet cycle.",
+  "description": "Cuspis — inverse-design waverider CAD. Blunt leading edge, watertight STL/STEP/IGES for Pointwise.",
   "license": "MIT",
   "engines": {
     "node": ">=20"

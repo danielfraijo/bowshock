@@ -29,7 +29,7 @@ export function meshToBinaryStl(mesh: TriMesh, name = "waverider"): ArrayBuffer 
   const nt = mesh.indices.length / 3;
   const buf = new ArrayBuffer(84 + nt * 50);
   const view = new DataView(buf);
-  const header = `Bowshock ${name} watertight STL`.slice(0, 80);
+  const header = `Cuspis ${name} watertight STL`.slice(0, 80);
   for (let i = 0; i < 80; i++) view.setUint8(i, i < header.length ? header.charCodeAt(i) : 0);
   view.setUint32(80, nt, true);
   let o = 84;
