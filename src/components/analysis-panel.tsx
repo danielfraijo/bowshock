@@ -73,8 +73,9 @@ export function HeatBlock({ study }: { study: StudyResult }) {
       <p className="mt-3 text-xs leading-relaxed text-subtle">
         Sutton–Graves stagnation (TR R-802) is the Earth engineering form of Fay–Riddell. Tauber
         laminar/turbulent along running length (TP-2914), Tauber–Sutton radiative (JSR 1991). Detra–Kemp–Riddell
-        is a second stagnation check. Wall temperature is radiation equilibrium σ ε T⁴ = q, ε=0.8. Color the
-        view by Heat — rainbow is q in W/cm².
+        is a second stagnation check. Leading-edge strip uses Fay–Riddell × Beckwith–Gallagher sweep.
+        Wall temperature is radiation equilibrium σ ε T⁴ = q, ε=0.8. Color the view by Heat — rainbow is
+        log(q) over the panel range so the nose is hot and the aft body is cool.
       </p>
       <div className="mt-3 space-y-2">
         <Formula name="Fay–Riddell" expr="q = 0.763 Pr⁻⁰·⁶ (ρeμe)⁰·⁴ (ρwμw)⁰·¹ √(due/ds) (h0−hw)" note="Sphere stagnation, Lewis=1. due/ds = Rn⁻¹ √(2(pe−p∞)/ρe)." />

@@ -515,6 +515,11 @@ def apply_leading_fillet(upper: Grid, lower: Grid, radius: float, length: float)
         half = 0.5 * alpha
         chord = max(_chord_len(U), _chord_len(Lo), 1e-9)
         r = min(radius, 0.08 * L, 0.28 * chord * math.tan(half))
+        t_probe = min(0.16 * chord, max(4.0 * radius, 1e-6))
+        tu_p, _ = _point_at_length(U, t_probe)
+        tl_p, _ = _point_at_length(Lo, t_probe)
+        t_loc = _vlen(_vsub(tu_p, tl_p))
+        r = min(r, 0.42 * t_loc, 0.12 * chord)
         if r < 2e-5 * L and chord > 4e-4 * L:
             r = min(2e-5 * L, 0.18 * chord)
         ok = False
@@ -527,11 +532,12 @@ def apply_leading_fillet(upper: Grid, lower: Grid, radius: float, length: float)
             continue
         if r > 1e-12:
             s_len = r / math.tan(half)
+            s_cut = min(s_len, 2.4 * r, 0.10 * chord)
+            r = s_cut * math.tan(half)
             d = r / math.sin(half)
             bis = _xz_norm(_vadd(t_u, t_l))
             if _vlen(bis) >= 0.2:
                 c = _planar(_vadd(p, _vscale(bis, d)), y)
-                s_cut = min(s_len, 0.45 * chord)
                 tu, uk = _point_at_length(U, s_cut)
                 tl, lk = _point_at_length(Lo, s_cut)
                 tu, tl = _planar(tu, y), _planar(tl, y)
@@ -641,6 +647,23 @@ def fillet_tip_cap(lead: Grid, j: int, name: str) -> Grid | None:
             tl[2] + (tu[2] - tl[2]) * (k / (n - 1)),
         ),
     )
+
+
+def sharpen_tips(upper: Grid, lower: Grid, leading: Grid | None, half: bool) -> None:
+    ni, nj = min(upper.ni, lower.ni), min(upper.nj, lower.nj)
+    if nj < 3:
+        return
+    js = [nj - 1] if half else [0, nj - 1]
+    for j in js:
+        for i in range(ni):
+            u, lo = upper.at(i, j), lower.at(i, j)
+            m = ((u[0] + lo[0]) * 0.5, (u[1] + lo[1]) * 0.5, (u[2] + lo[2]) * 0.5)
+            _set(upper, i, j, m)
+            _set(lower, i, j, m)
+        if leading is not None:
+            p = upper.at(0, j)
+            for k in range(leading.ni):
+                _set(leading, k, j, p)
 
 
 def zipper_sharp_edges(upper: Grid, lower: Grid, length: float) -> None:
@@ -1072,6 +1095,9 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
         tips: List[Grid] = []
         if (not is_duct) and r_le > 1e-9:
             leading = apply_leading_fillet(upper, lower, r_le, d.length)
+        if not is_duct:
+            if d.family != "liftbody":
+                sharpen_tips(upper, lower, leading, d.half_model)
             if leading is not None:
                 for j, name in ((0, "tip_l"), (leading.nj - 1, "tip_r")):
                     cap = fillet_tip_cap(leading, j, name)
@@ -1168,7 +1194,7 @@ def lock_frame(mesh: Mesh | None, grids: List[Grid], half: bool) -> None:
     if not finite:
         return
     xmin = min(p[0] for p in finite)
-    band = 1e-4
+    band = 1e-3
     y_n = 0.0
     z_n = 0.0
     best_ay = float("inf")

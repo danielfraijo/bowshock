@@ -621,6 +621,27 @@ function applyElevon(upper: SurfaceGrid, lower: SurfaceGrid, deg: number, L: num
   apply(lower);
 }
 
+/** Collapse the wingtip station to a seam so the planform edge is not a chopped slab. */
+function sharpenTips(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGrid | null, half: boolean) {
+  const ni = Math.min(upper.ni, lower.ni);
+  const nj = Math.min(upper.nj, lower.nj);
+  if (nj < 3) return;
+  const js = half ? [nj - 1] : [0, nj - 1];
+  for (const j of js) {
+    for (let i = 0; i < ni; i++) {
+      const u = gridPoint(upper, i, j);
+      const l = gridPoint(lower, i, j);
+      const m: Vec3 = [(u[0] + l[0]) * 0.5, (u[1] + l[1]) * 0.5, (u[2] + l[2]) * 0.5];
+      setGridPoint(upper, i, j, m);
+      setGridPoint(lower, i, j, m);
+    }
+    if (leading) {
+      const p = gridPoint(upper, 0, j);
+      for (let k = 0; k < leading.ni; k++) setGridPoint(leading, k, j, p);
+    }
+  }
+}
+
 function applyFins(lid: SurfaceGrid, params: DesignParams, zSign: number) {
   const h = (params.finHeight || 0) * Math.max(params.height, 0.05);
   if (h < 1e-4) return;
@@ -780,7 +801,7 @@ function lockFrame(mesh: { positions: Float64Array; indices?: Uint32Array } | nu
   if (!xs.length) return;
   let xmin = Infinity;
   for (const x of xs) if (x < xmin) xmin = x;
-  const band = 1e-4;
+  const band = 1e-3;
   let bestAy = Infinity;
   let yN = 0;
   let zN = 0;
@@ -881,6 +902,9 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const tips: SurfaceGrid[] = [];
     if (!isDuct) {
       if (R > 0) leading = applyLeadingFillet(built.upper, built.lower, R, params.length);
+      if (params.family !== "liftbody") {
+        sharpenTips(built.upper, built.lower, leading, params.halfModel);
+      }
       if (leading) {
         const a = filletTipCap(leading, 0, "tip_l");
         const c = filletTipCap(leading, leading.nj - 1, "tip_r");

@@ -264,26 +264,34 @@ export function panelAero(
     My += rz * dFx - rx * dFz;
     Mz += rx * dFy - ry * dFx;
 
-    if (ndv < -0.02 && surf !== SURFACE_ID.base) {
-      const x = Math.max(cx, Rn);
-      const ReX = atm.ReL * x;
-      const tripped = hypersonicTripped(ReX, M);
-      const rRec = tripped ? 0.89 : 0.84;
-      const hrec = atm.T * 1004.7 * (1 + rRec * 0.5 * (g - 1) * M * M);
-      const recov = clamp(1 - hw / Math.max(hrec, 1), 0.05, 0.95);
-      const qLam = tauberLaminar(atm.rho, atm.V, x, recov, sinth);
-      const qTurb = tauberTurbulent(atm.rho, atm.V, x, recov, sinth);
+    const xRun = Math.max(Math.hypot(cx, 0.12 * cy), Rn);
+    const ReX = atm.ReL * xRun;
+    const tripped = hypersonicTripped(ReX, M);
+    const rRec = tripped ? 0.89 : 0.84;
+    const hrec = atm.T * 1004.7 * (1 + rRec * 0.5 * (g - 1) * M * M);
+    const recov = clamp(1 - hw / Math.max(hrec, 1), 0.05, 0.95);
+    const pRatio = clamp(cpi / Math.max(cpMax, 1e-6), 0.02, 1);
+
+    if (surf === SURFACE_ID.leading) {
+      heat[t] = qStag0 * sweepF * leesHeatFactor(pRatio, 1, tripped);
+    } else if (ndv < -0.02 && surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle) {
+      const qLam = tauberLaminar(atm.rho, atm.V, xRun, recov, sinth);
+      const qTurb = tauberTurbulent(atm.rho, atm.V, xRun, recov, sinth);
       const qW0 = tripped ? Math.max(qLam, qTurb) : qLam;
-      const pRatio = clamp(cpi / Math.max(cpMax, 1e-6), 0.01, 1);
-      const qLees = qStag0 * leesHeatFactor(pRatio, x / Math.max(Rn, 1e-8), tripped);
-      const qMix = 0.55 * qW0 + 0.45 * qLees;
-      const qW = surf === SURFACE_ID.leading ? qMix * sweepF : qMix;
-      heat[t] = qW;
-      twEq[t] = twEquilibrium(qW);
-      qWindSum += heat[t] * area;
-      aWind += area;
-      if (tripped) transArea += area;
+      const qLees = qStag0 * leesHeatFactor(pRatio, xRun / Math.max(Rn, 1e-8), tripped);
+      heat[t] = 0.55 * qW0 + 0.45 * qLees;
+    } else if (surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle) {
+      const qLam = tauberLaminar(atm.rho, atm.V, xRun, recov, Math.max(sinth, 0.05));
+      heat[t] = 0.22 * qLam;
+    }
+    if (heat[t] > 0) {
+      twEq[t] = twEquilibrium(heat[t]);
       if (heat[t] > qMax) qMax = heat[t];
+      if (surf === SURFACE_ID.leading || ndv < -0.02) {
+        qWindSum += heat[t] * area;
+        aWind += area;
+        if (tripped && ndv < -0.02) transArea += area;
+      }
     }
   }
 
