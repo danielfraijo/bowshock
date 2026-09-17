@@ -12,16 +12,29 @@ import {
   solveConeShock,
   thetaFromBetaM,
 } from "./math";
-import { MeshBuilder, analyzeMesh, gridPoint, makeGrid, orientOutward, stitchGrid, zipperSharpEdges } from "./mesh";
-import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletEnvelope, filletTipCap } from "./blunt";
+import { MeshBuilder, analyzeMesh, compactMesh, gridPoint, makeGrid, orientOutward, setGridPoint, stitchGrid, zipperSharpEdges } from "./mesh";
+import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 
-function halfSpanList(ny: number, s: number, half: boolean): number[] {
-  const n = Math.max(half ? 4 : 5, half ? Math.ceil(ny / 2) : ny);
-  const ys: number[] = [];
-  for (let j = 0; j < n; j++) {
-    const t = cosineSpace(j, n);
-    ys.push(half ? s * t : -s + 2 * s * t);
+function spanStations(ny: number, s: number, half: boolean): number[] {
+  // Never sit on y = ±s (zero-chord delta pole) and always include y = 0
+  // so Pointwise can pick a planar symmetry / centerline.
+  if (half) {
+    const n = Math.max(6, Math.ceil(ny / 2));
+    const yMax = s * (1 - 0.4 / n);
+    const ys: number[] = [];
+    for (let j = 0; j < n; j++) ys.push(yMax * cosineSpace(j, n));
+    ys[0] = 0;
+    ys[n - 1] = yMax;
+    return ys;
   }
+  let n = Math.max(7, ny);
+  if (n % 2 === 0) n += 1;
+  const yMax = s * (1 - 0.4 / n);
+  const ys: number[] = [];
+  for (let j = 0; j < n; j++) ys.push(-yMax + 2 * yMax * cosineSpace(j, n));
+  ys[0] = -yMax;
+  ys[n - 1] = yMax;
+  ys[(n - 1) >> 1] = 0;
   return ys;
 }
 
@@ -32,7 +45,6 @@ function xLeading(
   planform: DesignParams["planform"],
   p: number,
   spatular: number,
-  minChord = 0,
 ) {
   const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1);
   let x: number;
@@ -50,7 +62,7 @@ function xLeading(
     const pow = planform === "delta" ? 1 : clamp(p, 0.6, 2.4);
     x = L * yn ** pow;
   }
-  return Math.min(Math.max(x, 0), Math.max(0, L - minChord));
+  return clamp(x, 0, L);
 }
 
 function xTrailing(y: number, L: number, teTan: number, xl: number) {
@@ -278,12 +290,10 @@ function lofts(
 ): { upper: SurfaceGrid; lower: SurfaceGrid; shock: SurfaceGrid[] } {
   const L = params.length;
   const s = params.span / 2;
-  const env = filletEnvelope(params);
-  const ys = halfSpanList(params.ny, env.halfSpan, params.halfModel);
+  const ys = spanStations(params.ny, s, params.halfModel);
   const nx = Math.max(8, params.nx);
   const nj = ys.length;
-  const minChord = env.minChord;
-  const xle = (y: number) => xLeading(y, L, s, planform, power, spat, minChord);
+  const xle = (y: number) => xLeading(y, L, s, planform, power, spat);
   const zPow = Math.max(0.6, zExp);
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
   const cam = (params.camber || 0) * params.height;
@@ -450,7 +460,7 @@ function buildLiftbody(params: DesignParams) {
   const s = params.span / 2;
   const h = params.height;
   const nx = Math.max(8, params.nx);
-  const ys = halfSpanList(params.ny, 1, params.halfModel);
+  const ys = spanStations(params.ny, 1, params.halfModel);
   const nj = ys.length;
   const pow = params.planform === "delta" ? 1 : clamp(params.planformPower, 0.55, 1.6);
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
@@ -529,7 +539,7 @@ function buildDuct(params: DesignParams, scram: boolean) {
     const u = (x - xComb) / Math.max(L - xComb, 1e-9);
     return hIn + cowlUp * u;
   };
-  const ys = halfSpanList(params.ny, s, params.halfModel);
+  const ys = spanStations(params.ny, s, params.halfModel);
   const nx = Math.max(16, params.nx);
   const nj = ys.length;
   const xs: number[] = [];
@@ -713,29 +723,94 @@ function buildStar(params: DesignParams): {
   return { mesh: b.finish(), grids, shock: [], skipped: b.skipped };
 }
 
-function snapNoseToOrigin(mesh: { positions: Float64Array }, grids: SurfaceGrid[], shock: SurfaceGrid[]) {
-  const p = mesh.positions;
-  let xmin = Infinity;
-  for (let i = 0; i < p.length; i += 3) if (p[i] < xmin) xmin = p[i];
-  let bestAbsY = Infinity;
-  let zTip = 0;
-  for (let i = 0; i < p.length; i += 3) {
-    if (p[i] - xmin > 1e-8) continue;
-    const ay = Math.abs(p[i + 1]);
-    if (ay < bestAbsY) {
-      bestAbsY = ay;
-      zTip = p[i + 2];
+function projectHalfModel(grids: SurfaceGrid[], half: boolean) {
+  if (!half) {
+    for (const g of grids) {
+      for (let j = 0; j < g.nj; j++) {
+        let yMean = 0;
+        for (let i = 0; i < g.ni; i++) yMean += gridPoint(g, i, j)[1];
+        yMean /= Math.max(g.ni, 1);
+        if (Math.abs(yMean) > 1e-9) continue;
+        for (let i = 0; i < g.ni; i++) {
+          const p = gridPoint(g, i, j);
+          p[1] = 0;
+          setGridPoint(g, i, j, p);
+        }
+      }
+    }
+    return;
+  }
+  for (const g of grids) {
+    for (let i = 0; i < g.ni; i++) {
+      for (let j = 0; j < g.nj; j++) {
+        const p = gridPoint(g, i, j);
+        p[1] = j === 0 || Math.abs(p[1]) < 1e-6 ? 0 : Math.max(p[1], 0);
+        setGridPoint(g, i, j, p);
+      }
     }
   }
+}
+
+/**
+ * Nose of the exported solid at (0,0,0). Origin is the most-forward
+ * USED triangle vertex (the solid Pointwise sees), not unused builder
+ * verts. Grids/shock ride the same shift. Half-model never shifts Y.
+ */
+function lockFrame(mesh: { positions: Float64Array; indices?: Uint32Array } | null, grids: SurfaceGrid[], shock: SurfaceGrid[], half: boolean) {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const zs: number[] = [];
+  const consider = (x: number, y: number, z: number) => {
+    if (!Number.isFinite(x + y + z)) return;
+    xs.push(x);
+    ys.push(y);
+    zs.push(z);
+  };
+  if (mesh?.indices && mesh.indices.length) {
+    const p = mesh.positions;
+    for (let t = 0; t < mesh.indices.length; t++) {
+      const i = mesh.indices[t];
+      consider(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
+    }
+  } else {
+    for (const g of grids) {
+      for (let i = 0; i < g.xyz.length; i += 3) consider(g.xyz[i], g.xyz[i + 1], g.xyz[i + 2]);
+    }
+  }
+  if (!xs.length) return;
+  let xmin = Infinity;
+  for (const x of xs) if (x < xmin) xmin = x;
+  const band = 1e-4;
+  let bestAy = Infinity;
+  let yN = 0;
+  let zN = 0;
+  for (let i = 0; i < xs.length; i++) {
+    if (xs[i] > xmin + band) continue;
+    const ay = Math.abs(ys[i]);
+    if (ay < bestAy) {
+      bestAy = ay;
+      yN = ys[i];
+      zN = zs[i];
+    }
+  }
+  const dy = half ? 0 : yN;
   const shift = (a: Float64Array) => {
     for (let i = 0; i < a.length; i += 3) {
       a[i] -= xmin;
-      a[i + 2] -= zTip;
+      a[i + 1] -= dy;
+      a[i + 2] -= zN;
     }
   };
-  shift(p);
+  if (mesh) shift(mesh.positions);
   for (const g of grids) shift(g.xyz);
   for (const g of shock) shift(g.xyz);
+  projectHalfModel(grids, half);
+  if (half && mesh) {
+    const p = mesh.positions;
+    for (let i = 1; i < p.length; i += 3) {
+      if (Math.abs(p[i]) < 1e-6) p[i] = 0;
+    }
+  }
 }
 
 function planformAreaOf(upper: SurfaceGrid): number {
@@ -823,6 +898,14 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const zSign = params.lid === "bottom" ? -1 : 1;
     if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
+    grids = [built.upper, built.lower];
+    const extra = (built as { extra?: SurfaceGrid[] }).extra;
+    if (extra) grids.push(...extra);
+    if (leading) grids.push(leading);
+    if (tips.length) grids.push(...tips);
+    shock = built.shock;
+    projectHalfModel(grids, params.halfModel);
+    lockFrame(null, grids, shock, params.halfModel);
     const b = new MeshBuilder(params.length);
     if (isDuct) {
       closeDuct(b, built.upper, built.lower, params.halfModel, params.flowThrough);
@@ -833,12 +916,6 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     } else closeVehicle(b, built.upper, built.lower, params.halfModel, false, leading);
     mesh = b.finish();
     skipped = b.skipped;
-    grids = [built.upper, built.lower];
-    const extra = (built as { extra?: SurfaceGrid[] }).extra;
-    if (extra) grids.push(...extra);
-    if (leading) grids.push(leading);
-    if (tips.length) grids.push(...tips);
-    shock = built.shock;
     if (isDuct) {
       const u0 = gridPoint(built.upper, 0, 0);
       const l0 = gridPoint(built.lower, 0, 0);
@@ -854,8 +931,21 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     }
   }
 
-  snapNoseToOrigin(mesh, grids, shock);
-  notes.push("Tip snapped to the origin: X stream, Y span, Z up.");
+  mesh = compactMesh(mesh);
+  orientOutward(mesh);
+  lockFrame(mesh, grids, shock, params.halfModel);
+  const usedX = (() => {
+    let m = Infinity;
+    const p = mesh.positions;
+    for (let t = 0; t < mesh.indices.length; t++) m = Math.min(m, p[mesh.indices[t] * 3]);
+    return m;
+  })();
+  notes.push(
+    params.halfModel
+      ? `Frame: most-forward point at (0,0,0). Half-model: Y = 0 is a planar symmetry face (Pointwise DC).`
+      : `Frame: most-forward point at (0,0,0). X stream, Y span, Z up.`,
+  );
+  if (usedX > 1e-6) notes.push("STL used-vertex xmin > 0 — raise LE resolution.");
 
   const quality = analyzeMesh(mesh, skipped);
   const ductOpen = (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough;

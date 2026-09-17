@@ -56,16 +56,17 @@ Vertices        ${q.vertices}
 Rounded leading edge
 --------------------
 When blunt is ON the knife-edge is replaced by a circular fillet of radius R
-in the local osculating plane (G1 to upper and lower). Tips keep a minimum
-chord so they do not collapse to a pole. Pointwise auto-mesh wants this.
+in each constant-y station (G1 to upper and lower). The planform is not
+chopped: tips keep a tiny finite chord instead of a rectangular cut.
+Pointwise auto-mesh wants this.
 
 Coordinates
 -----------
-X  streamwise, tip of the vehicle at the origin, flow +X
-Y  spanwise
+X  streamwise, MOST-FORWARD POINT of the solid at (0, 0, 0), flow +X
+Y  spanwise. Half-model: Y = 0 is an exact planar symmetry face.
 Z  up
-The generator always translates the mesh so the nose / cowl lip is (0,0,0).
-This is the same frame Pointwise, SU2, and most structured CFD codes expect.
+STL, IGES, STEP, and Plot3D share this frame. Unused builder vertices are
+not used to place the origin — only points that appear on a surface.
 
 SolidWorks
 ----------

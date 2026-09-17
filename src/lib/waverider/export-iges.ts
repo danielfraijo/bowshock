@@ -65,7 +65,7 @@ export function gridsToIges(grids: SurfaceGrid[], name: string): string {
   const globals = [
     `1H,,1H;,8H${(name + "        ").slice(0, 8)},7HIGES5.3,`,
     `6HCuspis,6HCuspis,32,38,6,308,15,`,
-    `6HCuspis,1.,2,2HMM,32768,0.,15H${start.replace(/[-:TZ]/g, "").slice(0, 15)},`,
+    `6HCuspis,1.,5,1HM,32768,0.,15H${start.replace(/[-:TZ]/g, "").slice(0, 15)},`,
     `1.E-6,1000.,7HUnknown,7HUnknown,11,0,0;`,
   ];
   globals.forEach((line, i) => s.push(pad80(line + " ".repeat(Math.max(0, 72 - line.length)) + "G" + String(i + 1).padStart(7))));

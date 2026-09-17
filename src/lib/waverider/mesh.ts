@@ -312,6 +312,32 @@ export function analyzeMesh(mesh: TriMesh, skipped = 0): MeshQuality {
   };
 }
 
+export function compactMesh(mesh: TriMesh): TriMesh {
+  const nv = mesh.positions.length / 3;
+  const used = new Uint8Array(nv);
+  for (let t = 0; t < mesh.indices.length; t++) used[mesh.indices[t]] = 1;
+  let keep = 0;
+  for (let i = 0; i < nv; i++) if (used[i]) keep++;
+  if (keep === nv) return mesh;
+  const remap = new Int32Array(nv);
+  const positions = new Float64Array(keep * 3);
+  let w = 0;
+  for (let i = 0; i < nv; i++) {
+    if (!used[i]) {
+      remap[i] = -1;
+      continue;
+    }
+    remap[i] = w;
+    positions[w * 3] = mesh.positions[i * 3];
+    positions[w * 3 + 1] = mesh.positions[i * 3 + 1];
+    positions[w * 3 + 2] = mesh.positions[i * 3 + 2];
+    w++;
+  }
+  const indices = new Uint32Array(mesh.indices.length);
+  for (let t = 0; t < mesh.indices.length; t++) indices[t] = remap[mesh.indices[t]];
+  return { positions, indices, surfaces: mesh.surfaces };
+}
+
 export function scaleMesh(mesh: TriMesh, s: number): TriMesh {
   if (s === 1) return mesh;
   const positions = new Float64Array(mesh.positions.length);

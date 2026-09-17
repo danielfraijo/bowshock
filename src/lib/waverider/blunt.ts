@@ -3,10 +3,12 @@
  *
  * Sharp inverse-design waveriders meet at a knife-edge. CFD / automatic
  * surface mesh needs a finite nose radius: a circular arc in the local
- * osculating plane (the plane of the upper and lower tangents), constant
- * R along the span where the chord allows, tapering near the tips.
- * Tangent points recede the wetted surfaces so the join is G1. Tips keep
- * a minimum chord and a cropped span so they do not collapse to a pole.
+ * XZ (constant-y) plane, G1 to upper and lower. Spanwise y is locked so
+ * the loft stays a structured constant-y station — no diagonal cuts.
+ *
+ * Radius tapers where the local chord cannot hold the requested R.
+ * Tips keep a tiny finite chord (the span list never sits on y = ±s)
+ * so the wingtip is not a pole and is not a rectangular chop.
  *
  * References: Bowcutt viscous waveriders; Takashima / Lewis blunt LE;
  * standard 2-D rolling-ball fillet.
@@ -23,17 +25,6 @@ export function effectiveLeRadius(params: DesignParams): number {
   const L = Math.max(params.length, 1e-6);
   const requested = params.leRadius > 0 ? params.leRadius : 0.005 * L;
   return clamp(requested, 0.001 * L, 0.04 * L);
-}
-
-/** Span / chord crop so a finite-R fillet has room at the tips. */
-export function filletEnvelope(params: DesignParams): { R: number; minChord: number; halfSpan: number } {
-  const L = Math.max(params.length, 1e-6);
-  const s = params.span / 2;
-  const R = effectiveLeRadius(params);
-  if (!(R > 0)) return { R: 0, minChord: 0, halfSpan: s };
-  const minChord = Math.min(0.16 * L, Math.max(8 * R, 0.05 * L));
-  const halfSpan = Math.max(0.72 * s, s * (1 - minChord / L));
-  return { R, minChord, halfSpan };
 }
 
 function rowOf(g: SurfaceGrid, j: number): Vec3[] {
@@ -104,70 +95,98 @@ function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
   return vnorm(vadd(vscale(a, Math.sin((1 - t) * om) / s), vscale(b, Math.sin(t * om) / s)));
 }
 
-function openTangents(tU: Vec3, tL: Vec3, spanHint: Vec3): { tU: Vec3; tL: Vec3; alpha: number } {
+type Station = { ok: boolean; arc: Vec3[]; tu: Vec3; tl: Vec3; uRow: Vec3[] | null; lRow: Vec3[] | null };
+
+function planar(v: Vec3, y: number): Vec3 {
+  return [v[0], y, v[2]];
+}
+
+function xzNorm(v: Vec3): Vec3 {
+  const n = Math.hypot(v[0], v[2]);
+  if (n < 1e-15) return [1, 0, 0];
+  return [v[0] / n, 0, v[2] / n];
+}
+
+function lockY(st: Station, y: number) {
+  for (const p of st.arc) p[1] = y;
+  st.tu[1] = y;
+  st.tl[1] = y;
+  if (st.uRow) st.uRow[0][1] = y;
+  if (st.lRow) st.lRow[0][1] = y;
+}
+
+function openTangents(tU: Vec3, tL: Vec3): { tU: Vec3; tL: Vec3; alpha: number } {
+  tU = xzNorm(tU);
+  tL = xzNorm(tL);
   let alpha = Math.acos(clamp(vdot(tU, tL), -0.999, 0.999));
   if (alpha >= ALPHA_MIN) return { tU, tL, alpha };
   let bis = vadd(tU, tL);
   if (vlen(bis) < 0.2) bis = [1, 0, 0];
-  bis = vnorm(bis);
-  let thick = vcross(spanHint, bis);
-  if (vlen(thick) < 0.2) thick = vcross([0, 1, 0], bis);
+  bis = xzNorm(bis);
+  let thick: Vec3 = [0, 0, 1];
+  if (Math.abs(bis[2]) > 0.92) thick = [1, 0, 0];
+  thick = xzNorm(vcross([0, 1, 0], bis));
   if (vlen(thick) < 0.2) thick = [0, 0, 1];
-  thick = vnorm(thick);
   const h = ALPHA_MIN / 2;
   return {
-    tU: vnorm(vadd(vscale(bis, Math.cos(h)), vscale(thick, Math.sin(h)))),
-    tL: vnorm(vadd(vscale(bis, Math.cos(h)), vscale(thick, -Math.sin(h)))),
+    tU: xzNorm(vadd(vscale(bis, Math.cos(h)), vscale(thick, Math.sin(h)))),
+    tL: xzNorm(vadd(vscale(bis, Math.cos(h)), vscale(thick, -Math.sin(h)))),
     alpha: ALPHA_MIN,
   };
 }
 
-type Station = { ok: boolean; arc: Vec3[]; tu: Vec3; tl: Vec3; uRow: Vec3[] | null; lRow: Vec3[] | null };
-
 function stationFillet(U: Vec3[], Lo: Vec3[], radius: number, L: number): Station {
-  const P = vlerp(U[0], Lo[0], 0.5);
-  const opened = openTangents(tangentAt(U), tangentAt(Lo), [0, U[0][1] - Lo[0][1] || 1, 0]);
+  const y = U[0][1];
+  const P = planar(vlerp(U[0], Lo[0], 0.5), y);
+  const opening = vlen(vsub(U[0], Lo[0]));
+  const fail = (p: Vec3): Station => ({
+    ok: false,
+    arc: Array.from({ length: N_ARC }, () => planar(p, y)),
+    tu: planar(p, y),
+    tl: planar(p, y),
+    uRow: U.map((q) => [q[0], q[1], q[2]] as Vec3),
+    lRow: Lo.map((q) => [q[0], q[1], q[2]] as Vec3),
+  });
+  if (opening > 1.6 * Math.max(radius, 1e-9)) return fail(P);
+  const opened = openTangents(tangentAt(U), tangentAt(Lo));
   const tU = opened.tU;
   const tL = opened.tL;
   const alpha = opened.alpha;
   const half = 0.5 * alpha;
   const chord = Math.max(chordLen(U), chordLen(Lo), 1e-9);
-  const R = Math.min(radius, 0.08 * L, 0.28 * chord * Math.tan(half));
-  const fail = (p: Vec3): Station => ({
-    ok: false,
-    arc: Array.from({ length: N_ARC }, () => p),
-    tu: p,
-    tl: p,
-    uRow: null,
-    lRow: null,
-  });
-  if (!(R > 1e-9)) return fail(P);
+  let R = Math.min(radius, 0.08 * L, 0.28 * chord * Math.tan(half));
+  if (R < 2e-5 * L && chord > 4e-4 * L) R = Math.min(2e-5 * L, 0.18 * chord);
+  if (!(R > 1e-12)) return fail(P);
   const s = R / Math.tan(half);
   const d = R / Math.sin(half);
-  const bis = vnorm(vadd(tU, tL));
+  const bis = xzNorm(vadd(tU, tL));
   if (vlen(bis) < 0.2) return fail(P);
-  const C = vadd(P, vscale(bis, d));
-  const TU = pointAtLength(U, Math.min(s, 0.45 * chord)).p;
-  const TL = pointAtLength(Lo, Math.min(s, 0.45 * chord)).p;
-  const F = vsub(C, vscale(bis, R));
-  const aTL = vnorm(vsub(TL, C));
-  const aTU = vnorm(vsub(TU, C));
-  const aF = vnorm(vsub(F, C));
+  const C = planar(vadd(P, vscale(bis, d)), y);
+  const sUse = Math.min(s, 0.45 * chord);
+  const uCut = pointAtLength(U, sUse);
+  const lCut = pointAtLength(Lo, sUse);
+  let TU = planar(uCut.p, y);
+  let TL = planar(lCut.p, y);
+  if (vlen(vsub(TU, TL)) < 4e-4 * L) {
+    TU = planar(vadd(P, vscale(tU, sUse)), y);
+    TL = planar(vadd(P, vscale(tL, sUse)), y);
+  }
+  const F = planar(vsub(C, vscale(bis, R)), y);
+  const aTL = xzNorm(vsub(TL, C));
+  const aTU = xzNorm(vsub(TU, C));
+  const aF = xzNorm(vsub(F, C));
   if (vlen(aTL) < 0.5 || vlen(aTU) < 0.5 || vlen(aF) < 0.5) return fail(P);
-  if (vlen(vsub(TU, TL)) < 4e-4 * L) return fail(P);
   const arc: Vec3[] = [];
   for (let k = 0; k < N_ARC; k++) {
     const t = k / (N_ARC - 1);
     const dir = t <= 0.5 ? slerpUnit(aTL, aF, t * 2) : slerpUnit(aF, aTU, t * 2 - 1);
-    arc.push(vadd(C, vscale(dir, R)));
+    arc.push(planar(vadd(C, vscale(xzNorm(dir), R)), y));
   }
   arc[0] = TL;
   arc[N_ARC - 1] = TU;
-  const uCut = pointAtLength(U, Math.min(s, 0.45 * chord));
-  const lCut = pointAtLength(Lo, Math.min(s, 0.45 * chord));
   const uRest = [TU, ...U.slice(Math.max(uCut.k, 1))];
   const lRest = [TL, ...Lo.slice(Math.max(lCut.k, 1))];
-  return {
+  const st: Station = {
     ok: true,
     arc,
     tu: TU,
@@ -175,6 +194,8 @@ function stationFillet(U: Vec3[], Lo: Vec3[], radius: number, L: number): Statio
     uRow: resample(uRest, U.length, 1.45),
     lRow: resample(lRest, Lo.length, 1.45),
   };
+  lockY(st, y);
+  return st;
 }
 
 function lerpStation(a: Station, b: Station, t: number): Station {
@@ -205,8 +226,11 @@ export function applyLeadingFillet(
   const nj = Math.min(upper.nj, lower.nj);
   const nArc = N_ARC;
   const stations: Station[] = [];
+  const yj: number[] = [];
   for (let j = 0; j < nj; j++) {
-    stations.push(stationFillet(rowOf(upper, j), rowOf(lower, j), radius, L));
+    const U = rowOf(upper, j);
+    yj.push(U[0][1]);
+    stations.push(stationFillet(U, rowOf(lower, j), radius, L));
   }
 
   const nOk = stations.filter((s) => s.ok).length;
@@ -214,6 +238,8 @@ export function applyLeadingFillet(
 
   for (let j = 0; j < nj; j++) {
     if (stations[j].ok) continue;
+    const keepU = stations[j].uRow;
+    const keepL = stations[j].lRow;
     let lo = j - 1;
     while (lo >= 0 && !stations[lo].ok) lo--;
     let hi = j + 1;
@@ -225,15 +251,21 @@ export function applyLeadingFillet(
     } else if (hi < nj) {
       stations[j] = lerpStation(stations[hi], stations[hi], 0);
     }
+    stations[j].uRow = keepU;
+    stations[j].lRow = keepL;
+    if (keepU) keepU[0] = stations[j].tu;
+    if (keepL) keepL[0] = stations[j].tl;
   }
 
   const lead = makeGrid("leading", nArc, nj, (i, j) => stations[j].arc[i] ?? stations[j].tu);
   for (let j = 0; j < nj; j++) {
     const st = stations[j];
+    lockY(st, yj[j]);
     if (st.uRow) writeRow(upper, j, st.uRow);
     if (st.lRow) writeRow(lower, j, st.lRow);
     setGridPoint(upper, 0, j, st.tu);
     setGridPoint(lower, 0, j, st.tl);
+    for (let k = 0; k < nArc; k++) setGridPoint(lead, k, j, st.arc[k]);
     setGridPoint(lead, 0, j, st.tl);
     setGridPoint(lead, nArc - 1, j, st.tu);
   }

@@ -142,7 +142,9 @@ or if STEP control points are imported as a point list. Use these instead.
    File > Glyph > Execute  →  ${name}.glf
    Imports the STL, then IGES, then Plot3D automatically.
 
-Frame: X streamwise (nose / cowl lip at origin), Y span, Z up.
+Frame: X streamwise — most-forward USED point of the solid at (0, 0, 0).
+Y span. Half-model: Y = 0 is an exact planar symmetry face (set as DC).
+Z up. STL / IGES (metres) / STEP / Plot3D share this frame.
 Ramjet/scramjet flow-through: inlet at x=0 and nozzle at x=L are OPEN
 faces in the Plot3D blocks named inlet / nozzle. Set those as inflow/outflow.
 `;

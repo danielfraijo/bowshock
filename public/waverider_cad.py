@@ -5,7 +5,7 @@ Zero third-party dependencies. Python 3.9+.
 
 Exports STL (ASCII + binary), STEP AP214 (NURBS surfaces + faceted B-rep),
 IGES (NURBS 128), Plot3D `.x` (3-D formatted, nk=1), and OBJ. Coordinate frame:
-X streamwise (nose at origin), Y span, Z up. Lengths in metres internally;
+X streamwise (most-forward USED point of the solid at origin), Y span, Z up. Lengths in metres internally;
 --unit scales the files. Pointwise: import the binary STL or Plot3D `.x`
 (3-D formatted, IBLANK off) — do not import STEP as XYZ points. Blunt LE
 is on by default (--le-radius).
@@ -253,11 +253,21 @@ def cluster(i: int, n: int, power: float = 1.35) -> float:
 
 
 def half_span_list(ny: int, s: float, half: bool) -> List[float]:
-    n = max(4 if half else 5, math.ceil(ny / 2) if half else ny)
-    ys = []
-    for j in range(n):
-        t = cosine_space(j, n)
-        ys.append(s * t if half else -s + 2.0 * s * t)
+    if half:
+        n = max(6, math.ceil(ny / 2))
+        y_max = s * (1.0 - 0.4 / n)
+        ys = [y_max * cosine_space(j, n) for j in range(n)]
+        ys[0] = 0.0
+        ys[-1] = y_max
+        return ys
+    n = max(7, ny)
+    if n % 2 == 0:
+        n += 1
+    y_max = s * (1.0 - 0.4 / n)
+    ys = [-y_max + 2.0 * y_max * cosine_space(j, n) for j in range(n)]
+    ys[0] = -y_max
+    ys[-1] = y_max
+    ys[(n - 1) // 2] = 0.0
     return ys
 
 
@@ -278,7 +288,7 @@ def x_leading(y: float, L: float, s: float, planform: str, p: float, spatular: f
     else:
         pow_ = 1.0 if planform == "delta" else clamp(p, 0.6, 2.4)
         x = L * (yn ** pow_)
-    cap = max(0.0, L - max(min_chord, 0.0))
+    cap = L
     return min(max(x, 0.0), cap)
 
 
@@ -464,8 +474,17 @@ def _resample(pts: Sequence[Vec3], n: int, power: float = 1.45) -> List[Vec3]:
     return out
 
 
+def _planar(p: Vec3, y: float) -> Vec3:
+    return (p[0], y, p[2])
+
+
+def _xz_norm(p: Vec3) -> Vec3:
+    n = math.hypot(p[0], p[2])
+    return (1.0, 0.0, 0.0) if n < 1e-15 else (p[0] / n, 0.0, p[2] / n)
+
+
 def apply_leading_fillet(upper: Grid, lower: Grid, radius: float, length: float) -> Grid | None:
-    """Circular LE fillet in the local osculating plane. Recedes the sheets (G1)."""
+    """Circular LE fillet in each constant-y station (G1). Never chops the planform."""
     if radius <= 1e-9:
         return None
     L = max(length, 1e-6)
@@ -475,49 +494,64 @@ def apply_leading_fillet(upper: Grid, lower: Grid, radius: float, length: float)
     stations = []
     for j in range(nj):
         U, Lo = _row(upper, j), _row(lower, j)
-        p = ((U[0][0] + Lo[0][0]) * 0.5, (U[0][1] + Lo[0][1]) * 0.5, (U[0][2] + Lo[0][2]) * 0.5)
-        t_u, t_l = _tangent_at(U), _tangent_at(Lo)
+        y = U[0][1]
+        p = _planar(
+            ((U[0][0] + Lo[0][0]) * 0.5, y, (U[0][2] + Lo[0][2]) * 0.5),
+            y,
+        )
+        opening = _vlen(_vsub(U[0], Lo[0]))
+        t_u, t_l = _xz_norm(_tangent_at(U)), _xz_norm(_tangent_at(Lo))
         du = max(-0.999, min(0.999, _vdot(t_u, t_l)))
         alpha = math.acos(du)
         if alpha < alpha_min:
-            bis = _vnorm(_vadd(t_u, t_l)) if _vlen(_vadd(t_u, t_l)) > 0.2 else (1.0, 0.0, 0.0)
-            thick = (-bis[2], 0.0, bis[0])
+            bis = _xz_norm(_vadd(t_u, t_l)) if _vlen(_vadd(t_u, t_l)) > 0.2 else (1.0, 0.0, 0.0)
+            thick = _xz_norm((-bis[2], 0.0, bis[0]))
             if _vlen(thick) < 0.2:
                 thick = (0.0, 0.0, 1.0)
-            thick = _vnorm(thick)
             h = alpha_min / 2.0
-            t_u = _vnorm(_vadd(_vscale(bis, math.cos(h)), _vscale(thick, math.sin(h))))
-            t_l = _vnorm(_vadd(_vscale(bis, math.cos(h)), _vscale(thick, -math.sin(h))))
+            t_u = _xz_norm(_vadd(_vscale(bis, math.cos(h)), _vscale(thick, math.sin(h))))
+            t_l = _xz_norm(_vadd(_vscale(bis, math.cos(h)), _vscale(thick, -math.sin(h))))
             alpha = alpha_min
         half = 0.5 * alpha
         chord = max(_chord_len(U), _chord_len(Lo), 1e-9)
         r = min(radius, 0.08 * L, 0.28 * chord * math.tan(half))
+        if r < 2e-5 * L and chord > 4e-4 * L:
+            r = min(2e-5 * L, 0.18 * chord)
         ok = False
         arc = [p] * n_arc
         tu = tl = p
-        u_row = l_row = None
-        if r > 1e-9:
+        u_row = list(U)
+        l_row = list(Lo)
+        if opening > 1.6 * max(radius, 1e-9):
+            stations.append((False, arc, tu, tl, u_row, l_row, y))
+            continue
+        if r > 1e-12:
             s_len = r / math.tan(half)
             d = r / math.sin(half)
-            bis = _vnorm(_vadd(t_u, t_l))
+            bis = _xz_norm(_vadd(t_u, t_l))
             if _vlen(bis) >= 0.2:
-                c = _vadd(p, _vscale(bis, d))
+                c = _planar(_vadd(p, _vscale(bis, d)), y)
                 s_cut = min(s_len, 0.45 * chord)
                 tu, uk = _point_at_length(U, s_cut)
                 tl, lk = _point_at_length(Lo, s_cut)
-                f = _vsub(c, _vscale(bis, r))
-                a_tl, a_tu, a_f = _vnorm(_vsub(tl, c)), _vnorm(_vsub(tu, c)), _vnorm(_vsub(f, c))
-                if _vlen(a_tl) >= 0.5 and _vlen(_vsub(tu, tl)) > 4e-4 * L:
+                tu, tl = _planar(tu, y), _planar(tl, y)
+                if _vlen(_vsub(tu, tl)) < 4e-4 * L:
+                    tu = _planar(_vadd(p, _vscale(t_u, s_cut)), y)
+                    tl = _planar(_vadd(p, _vscale(t_l, s_cut)), y)
+                f = _planar(_vsub(c, _vscale(bis, r)), y)
+                a_tl, a_tu, a_f = _xz_norm(_vsub(tl, c)), _xz_norm(_vsub(tu, c)), _xz_norm(_vsub(f, c))
+                if _vlen(a_tl) >= 0.5 and _vlen(a_tu) >= 0.5:
                     arc = []
                     for k in range(n_arc):
                         t = k / (n_arc - 1)
                         direction = _slerp(a_tl, a_f, t * 2) if t <= 0.5 else _slerp(a_f, a_tu, t * 2 - 1)
-                        arc.append(_vadd(c, _vscale(direction, r)))
+                        arc.append(_planar(_vadd(c, _vscale(_xz_norm(direction), r)), y))
                     arc[0], arc[-1] = tl, tu
-                    u_row = _resample([tu] + U[max(uk, 1) :], upper.ni)
-                    l_row = _resample([tl] + Lo[max(lk, 1) :], lower.ni)
+                    u_row = _resample([tu] + list(U[max(uk, 1) :]), upper.ni)
+                    l_row = _resample([tl] + list(Lo[max(lk, 1) :]), lower.ni)
+                    u_row[0], l_row[0] = tu, tl
                     ok = True
-        stations.append((ok, arc, tu, tl, u_row, l_row))
+        stations.append((ok, arc, tu, tl, u_row, l_row, y))
     if sum(1 for st in stations if st[0]) < 3:
         return None
     for j, st in enumerate(stations):
@@ -525,40 +559,59 @@ def apply_leading_fillet(upper: Grid, lower: Grid, radius: float, length: float)
             continue
         lo = next((i for i in range(j - 1, -1, -1) if stations[i][0]), None)
         hi = next((i for i in range(j + 1, nj) if stations[i][0]), None)
-        src = stations[lo] if lo is not None else stations[hi] if hi is not None else None
-        if src is None:
-            continue
+        y = st[6]
+        keep_u, keep_l = st[4], st[5]
         if lo is not None and hi is not None:
             t = (j - lo) / max(hi - lo, 1)
-            arc = [
-                (
-                    stations[lo][1][k][0] + (stations[hi][1][k][0] - stations[lo][1][k][0]) * t,
-                    stations[lo][1][k][1] + (stations[hi][1][k][1] - stations[lo][1][k][1]) * t,
-                    stations[lo][1][k][2] + (stations[hi][1][k][2] - stations[lo][1][k][2]) * t,
-                )
-                for k in range(n_arc)
-            ]
-            tu = (
-                stations[lo][2][0] + (stations[hi][2][0] - stations[lo][2][0]) * t,
-                stations[lo][2][1] + (stations[hi][2][1] - stations[lo][2][1]) * t,
-                stations[lo][2][2] + (stations[hi][2][2] - stations[lo][2][2]) * t,
+
+            def mix(a: Vec3, b: Vec3) -> Vec3:
+                return _planar((a[0] + (b[0] - a[0]) * t, y, a[2] + (b[2] - a[2]) * t), y)
+
+            arc = [mix(stations[lo][1][k], stations[hi][1][k]) for k in range(n_arc)]
+            tu = mix(stations[lo][2], stations[hi][2])
+            tl = mix(stations[lo][3], stations[hi][3])
+            if keep_u:
+                keep_u = list(keep_u)
+                keep_u[0] = tu
+            if keep_l:
+                keep_l = list(keep_l)
+                keep_l[0] = tl
+            stations[j] = (True, arc, tu, tl, keep_u, keep_l, y)
+        elif lo is not None or hi is not None:
+            src = stations[lo] if lo is not None else stations[hi]
+            tu = _planar(src[2], y)
+            tl = _planar(src[3], y)
+            if keep_u:
+                keep_u = list(keep_u)
+                keep_u[0] = tu
+            if keep_l:
+                keep_l = list(keep_l)
+                keep_l[0] = tl
+            stations[j] = (
+                True,
+                [_planar(p, y) for p in src[1]],
+                tu,
+                tl,
+                keep_u,
+                keep_l,
+                y,
             )
-            tl = (
-                stations[lo][3][0] + (stations[hi][3][0] - stations[lo][3][0]) * t,
-                stations[lo][3][1] + (stations[hi][3][1] - stations[lo][3][1]) * t,
-                stations[lo][3][2] + (stations[hi][3][2] - stations[lo][3][2]) * t,
-            )
-            stations[j] = (True, arc, tu, tl, src[4], src[5])
-        else:
-            stations[j] = src
     lead = make_grid("leading", n_arc, nj, lambda i, j: stations[j][1][i])
-    for j, (_ok, arc, tu, tl, u_row, l_row) in enumerate(stations):
+    for j, (_ok, arc, tu, tl, u_row, l_row, yj) in enumerate(stations):
+        tu, tl = _planar(tu, yj), _planar(tl, yj)
+        arc = [_planar(p, yj) for p in arc]
         if u_row:
+            u_row = list(u_row)
+            u_row[0] = tu
             _write_row(upper, j, u_row)
         if l_row:
+            l_row = list(l_row)
+            l_row[0] = tl
             _write_row(lower, j, l_row)
         _set(upper, 0, j, tu)
         _set(lower, 0, j, tl)
+        for k, p in enumerate(arc):
+            _set(lead, k, j, p)
         _set(lead, 0, j, tl)
         _set(lead, n_arc - 1, j, tu)
     return lead
@@ -679,10 +732,7 @@ def analyze(mesh: Mesh) -> dict:
 
 def _loft(d: Design, z_base, planform: str, power: float, spat: float, z_exp: float = 1.0) -> Tuple[Grid, Grid]:
     L, s = d.length, d.span / 2.0
-    r_le = d.le_radius if getattr(d, "le_blunt", True) else 0.0
-    min_chord = min(0.16 * L, max(8.0 * r_le, 0.05 * L)) if r_le > 1e-9 else 0.0
-    s_use = max(0.72 * s, s * (1.0 - min_chord / max(L, 1e-9))) if r_le > 1e-9 else s
-    ys = half_span_list(d.ny, s_use, d.half_model)
+    ys = half_span_list(d.ny, s, d.half_model)
     nx, nj = max(8, d.nx), len(ys)
     dih = math.tan(d.dihedral_deg * DEG)
     cam = d.camber * d.height
@@ -690,7 +740,7 @@ def _loft(d: Design, z_base, planform: str, power: float, spat: float, z_exp: fl
     z_pow = max(0.6, z_exp)
 
     def xle(y: float) -> float:
-        return x_leading(y, L, s, planform, power, spat, min_chord)
+        return x_leading(y, L, s, planform, power, spat, 0.0)
 
     def xt(y: float, xl: float) -> float:
         return x_trailing(y, L, te_tan, xl)
@@ -1036,12 +1086,10 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
                     z = p[2] - (p[0] - hinge) * k if p[0] > hinge else p[2]
                     xyz.append((p[0], p[1], z))
                 g.xyz = xyz
-        mesh = Mesh(d.length)
         if not is_duct:
             zipper_sharp_edges(upper, lower, d.length)
             apply_fins(upper, d, -1.0 if d.lid == "bottom" else 1.0)
             zipper_sharp_edges(upper, lower, d.length)
-        close_vehicle(mesh, upper, lower, d.half_model, is_duct and d.flow_through, leading)
         grids = [upper, lower]
         if leading is not None:
             grids.append(leading)
@@ -1056,26 +1104,92 @@ def build(d: Design) -> Tuple[Mesh, List[Grid], dict]:
                 lambda i, j: lower.at(lower.ni - 1, j) if i == 0 else upper.at(upper.ni - 1, j),
             )
             grids.extend([inlet, nozzle])
-    snap_nose(mesh, grids)
+        project_half(grids, d.half_model)
+        lock_frame(None, grids, d.half_model)
+        mesh = Mesh(d.length)
+        close_vehicle(mesh, upper, lower, d.half_model, is_duct and d.flow_through, leading)
+    compact_mesh(mesh)
+    lock_frame(mesh, grids, d.half_model)
     return mesh, grids, analyze(mesh)
 
 
-def snap_nose(mesh: Mesh, grids: List[Grid]) -> None:
-    """Put the vehicle tip at the origin (X stream, Y span, Z up)."""
-    if not mesh.pos:
+def compact_mesh(mesh: Mesh) -> None:
+    """Drop unused builder verts so STL/OBJ origin is the solid, not the loft."""
+    if not mesh.idx:
         return
-    xmin = min(p[0] for p in mesh.pos)
-    z_tip = 0.0
-    best_y = 1e9
-    for p in mesh.pos:
-        if p[0] - xmin > 1e-8:
+    used = [False] * len(mesh.pos)
+    for a, b, c in mesh.idx:
+        used[a] = used[b] = used[c] = True
+    remap = [-1] * len(mesh.pos)
+    new_pos: List[Vec3] = []
+    for i, p in enumerate(mesh.pos):
+        if not used[i]:
             continue
-        if abs(p[1]) < best_y:
-            best_y = abs(p[1])
-            z_tip = p[2]
-    mesh.pos = [(p[0] - xmin, p[1], p[2] - z_tip) for p in mesh.pos]
+        remap[i] = len(new_pos)
+        new_pos.append(p)
+    if len(new_pos) == len(mesh.pos):
+        return
+    mesh.pos = new_pos
+    mesh.idx = [(remap[a], remap[b], remap[c]) for a, b, c in mesh.idx]
+    mesh._key = {}
+
+
+def project_half(grids: List[Grid], half: bool) -> None:
+    if not half:
+        for g in grids:
+            for j in range(g.nj):
+                y_mean = sum(g.at(i, j)[1] for i in range(g.ni)) / max(g.ni, 1)
+                if abs(y_mean) > 1e-9:
+                    continue
+                for i in range(g.ni):
+                    p = g.at(i, j)
+                    _set(g, i, j, (p[0], 0.0, p[2]))
+        return
     for g in grids:
-        g.xyz = [(p[0] - xmin, p[1], p[2] - z_tip) for p in g.xyz]
+        for i in range(g.ni):
+            for j in range(g.nj):
+                p = g.at(i, j)
+                y = 0.0 if j == 0 or abs(p[1]) < 1e-6 else max(p[1], 0.0)
+                _set(g, i, j, (p[0], y, p[2]))
+
+
+def lock_frame(mesh: Mesh | None, grids: List[Grid], half: bool) -> None:
+    """Most-forward USED solid point at (0,0,0). Half-model never shifts Y."""
+    pts: List[Vec3] = []
+    if mesh is not None and mesh.idx:
+        for a, b, c in mesh.idx:
+            pts.append(mesh.pos[a])
+            pts.append(mesh.pos[b])
+            pts.append(mesh.pos[c])
+    else:
+        for g in grids:
+            pts.extend(g.xyz)
+    finite = [p for p in pts if math.isfinite(p[0]) and math.isfinite(p[1]) and math.isfinite(p[2])]
+    if not finite:
+        return
+    xmin = min(p[0] for p in finite)
+    band = 1e-4
+    y_n = 0.0
+    z_n = 0.0
+    best_ay = float("inf")
+    for x, y, z in finite:
+        if x > xmin + band:
+            continue
+        ay = abs(y)
+        if ay < best_ay:
+            best_ay, y_n, z_n = ay, y, z
+    dy = 0.0 if half else y_n
+
+    def sh(p: Vec3) -> Vec3:
+        return (p[0] - xmin, p[1] - dy, p[2] - z_n)
+
+    if mesh is not None:
+        mesh.pos = [sh(p) for p in mesh.pos]
+    for g in grids:
+        g.xyz = [sh(p) for p in g.xyz]
+    project_half(grids, half)
+    if half and mesh is not None:
+        mesh.pos = [(p[0], 0.0 if abs(p[1]) < 1e-6 else p[1], p[2]) for p in mesh.pos]
 
 
 def scale_mesh(mesh: Mesh, s: float) -> None:
@@ -1385,7 +1499,7 @@ def write_iges(path: str, grids: List[Grid], name: str) -> None:
     gsec = [
         "1H,,1H;,8HWAVERIDE,7HIGES5.3,",
         "6HCuspis,6HCuspis,32,38,6,308,15,",
-        "6HCuspis,1.,2,1HM,32768,0.,15H20260101.000000,",
+        "6HCuspis,1.,5,1HM,32768,0.,15H20260101.000000,",
         "1.E-6,1000.,7HUnknown,7HUnknown,11,0,0;",
     ]
     for i, g in enumerate(gsec):
