@@ -171,7 +171,7 @@ function keepDenseU(g: SurfaceGrid): boolean {
   );
 }
 
-function gridToPoles(g: SurfaceGrid, capU = 16, capV = 16): Vec3[][] {
+function gridToPoles(g: SurfaceGrid, capU = 80, capV = 64): Vec3[][] {
   const nu = keepDenseU(g) ? g.ni : Math.min(g.ni, capU);
   const nv = Math.min(g.nj, capV);
   const poles: Vec3[][] = [];

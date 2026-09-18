@@ -122,6 +122,28 @@ function centroid(mesh: TriMesh): Vec3 {
 export function orientOutward(mesh: TriMesh) {
   const c = centroid(mesh);
   const nt = mesh.indices.length / 3;
+  let zUpper = 0;
+  let nUpper = 0;
+  let zLower = 0;
+  let nLower = 0;
+  for (let t = 0; t < nt; t++) {
+    const a = mesh.indices[t * 3];
+    const b = mesh.indices[t * 3 + 1];
+    const ic = mesh.indices[t * 3 + 2];
+    const mz =
+      (mesh.positions[a * 3 + 2] + mesh.positions[b * 3 + 2] + mesh.positions[ic * 3 + 2]) / 3;
+    if (mesh.surfaces[t] === SURFACE_ID.upper) {
+      zUpper += mz;
+      nUpper++;
+    } else if (mesh.surfaces[t] === SURFACE_ID.lower) {
+      zLower += mz;
+      nLower++;
+    }
+  }
+  const meanU = nUpper ? zUpper / nUpper : 1;
+  const meanL = nLower ? zLower / nLower : -1;
+  const lowerIsDown = meanL <= meanU;
+
   for (let t = 0; t < nt; t++) {
     const a = mesh.indices[t * 3];
     const b = mesh.indices[t * 3 + 1];
@@ -147,7 +169,13 @@ export function orientOutward(mesh: TriMesh) {
     const mx = (ax + bx + cx) / 3 - c[0];
     const my = (ay + by + cy) / 3 - c[1];
     const mz = (az + bz + cz) / 3 - c[2];
-    if (nx * mx + ny * my + nz * mz < 0) {
+    const surf = mesh.surfaces[t] ?? 0;
+    let flip = nx * mx + ny * my + nz * mz < 0;
+    if (surf === SURFACE_ID.base || surf === SURFACE_ID.nozzle) flip = nx < 0;
+    else if (surf === SURFACE_ID.leading || surf === SURFACE_ID.inlet) flip = nx > 0;
+    else if (surf === SURFACE_ID.lower) flip = lowerIsDown ? nz > 0 : nz < 0;
+    else if (surf === SURFACE_ID.upper) flip = lowerIsDown ? nz < 0 : nz > 0;
+    if (flip) {
       mesh.indices[t * 3 + 1] = ic;
       mesh.indices[t * 3 + 2] = b;
     }
@@ -338,6 +366,68 @@ export function compactMesh(mesh: TriMesh): TriMesh {
   return { positions, indices, surfaces: mesh.surfaces };
 }
 
+/** Merge aft vertices closer than `tol`. Closes micro TE-tip slits without eating the LE fillet. */
+export function weldAft(mesh: TriMesh, length: number, tol?: number): TriMesh {
+  const L = Math.max(length, 1e-6);
+  const t = tol ?? 8e-4 * L;
+  const t2 = t * t;
+  const nv = mesh.positions.length / 3;
+  let yMax = 0;
+  let xMax = 0;
+  for (let i = 0; i < nv; i++) {
+    const ax = Math.abs(mesh.positions[i * 3]);
+    const ay = Math.abs(mesh.positions[i * 3 + 1]);
+    if (ay > yMax) yMax = ay;
+    if (ax > xMax) xMax = ax;
+  }
+  const xCut = xMax - Math.max(4e-3 * L, t * 4);
+  const yCut = yMax * 0.9;
+  const remap = new Int32Array(nv);
+  for (let i = 0; i < nv; i++) remap[i] = i;
+  const aft: number[] = [];
+  for (let i = 0; i < nv; i++) {
+    if (mesh.positions[i * 3] >= xCut && Math.abs(mesh.positions[i * 3 + 1]) >= yCut) aft.push(i);
+  }
+  for (let a = 0; a < aft.length; a++) {
+    const i = aft[a];
+    if (remap[i] !== i) continue;
+    const ix = mesh.positions[i * 3];
+    const iy = mesh.positions[i * 3 + 1];
+    const iz = mesh.positions[i * 3 + 2];
+    for (let b = a + 1; b < aft.length; b++) {
+      const j = aft[b];
+      if (remap[j] !== j) continue;
+      const dx = mesh.positions[j * 3] - ix;
+      const dy = mesh.positions[j * 3 + 1] - iy;
+      const dz = mesh.positions[j * 3 + 2] - iz;
+      if (dx * dx + dy * dy + dz * dz <= t2) remap[j] = i;
+    }
+  }
+  const idx = new Uint32Array(mesh.indices.length);
+  for (let k = 0; k < mesh.indices.length; k++) {
+    let i = mesh.indices[k];
+    while (remap[i] !== i) i = remap[i];
+    idx[k] = i;
+  }
+  const keep: number[] = [];
+  const keepS: number[] = [];
+  const nt = idx.length / 3;
+  for (let t = 0; t < nt; t++) {
+    const a = idx[t * 3];
+    const b = idx[t * 3 + 1];
+    const c = idx[t * 3 + 2];
+    if (a === b || b === c || c === a) continue;
+    keep.push(a, b, c);
+    keepS.push(mesh.surfaces[t] ?? 0);
+  }
+  const out: TriMesh = {
+    positions: mesh.positions,
+    indices: Uint32Array.from(keep),
+    surfaces: Uint8Array.from(keepS),
+  };
+  return compactMesh(out);
+}
+
 export function scaleMesh(mesh: TriMesh, s: number): TriMesh {
   if (s === 1) return mesh;
   const positions = new Float64Array(mesh.positions.length);
@@ -353,3 +443,143 @@ export function scaleGrids(grids: SurfaceGrid[], s: number): SurfaceGrid[] {
     return { ...g, xyz };
   });
 }
+
+/** Share TE (x, y) between the two sheets and spanwise-smooth the edge — kills nicks. */
+export function matchTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length: number) {
+  const niU = upper.ni;
+  const niL = lower.ni;
+  const nj = Math.min(upper.nj, lower.nj);
+  if (niU < 2 || niL < 2 || nj < 2) return;
+  const xs = new Float64Array(nj);
+  const ys = new Float64Array(nj);
+  const zU = new Float64Array(nj);
+  const zL = new Float64Array(nj);
+  for (let j = 0; j < nj; j++) {
+    const u = gridPoint(upper, niU - 1, j);
+    const l = gridPoint(lower, niL - 1, j);
+    xs[j] = 0.5 * (u[0] + l[0]);
+    ys[j] = 0.5 * (u[1] + l[1]);
+    zU[j] = u[2];
+    zL[j] = l[2];
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    const x2 = xs.slice();
+    const y2 = ys.slice();
+    for (let j = 1; j < nj - 1; j++) {
+      x2[j] = 0.15 * xs[j - 1] + 0.7 * xs[j] + 0.15 * xs[j + 1];
+      y2[j] = 0.15 * ys[j - 1] + 0.7 * ys[j] + 0.15 * ys[j + 1];
+    }
+    xs.set(x2);
+    ys.set(y2);
+  }
+  for (let j = 0; j < nj; j++) {
+    setGridPoint(upper, niU - 1, j, [xs[j], ys[j], zU[j]]);
+    setGridPoint(lower, niL - 1, j, [xs[j], ys[j], zL[j]]);
+  }
+}
+
+/**
+ * Fair the trailing edge as a G0 curve, clamp x ≤ L, collapse only the tip
+ * vertices. Stops the aft spike / indent that a min-chord pad used to leave.
+ */
+export function fairTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length: number) {
+  const niU = upper.ni;
+  const niL = lower.ni;
+  const nj = Math.min(upper.nj, lower.nj);
+  if (niU < 3 || niL < 3 || nj < 3) return;
+  const L = Math.max(length, 1e-6);
+  const xs = new Float64Array(nj);
+  const ys = new Float64Array(nj);
+  const zU = new Float64Array(nj);
+  const zL = new Float64Array(nj);
+  for (let j = 0; j < nj; j++) {
+    const u = gridPoint(upper, niU - 1, j);
+    const l = gridPoint(lower, niL - 1, j);
+    xs[j] = 0.5 * (u[0] + l[0]);
+    ys[j] = 0.5 * (u[1] + l[1]);
+    zU[j] = u[2];
+    zL[j] = l[2];
+  }
+  for (let pass = 0; pass < 2; pass++) {
+    const x2 = xs.slice();
+    for (let j = 1; j < nj - 1; j++) x2[j] = 0.2 * xs[j - 1] + 0.6 * xs[j] + 0.2 * xs[j + 1];
+    xs.set(x2);
+  }
+  for (let j = 0; j < nj; j++) {
+    const prevU = gridPoint(upper, niU - 2, j);
+    xs[j] = clampF(xs[j], prevU[0] + 2e-6 * L, L);
+    setGridPoint(upper, niU - 1, j, [xs[j], ys[j], zU[j]]);
+    setGridPoint(lower, niL - 1, j, [xs[j], ys[j], zL[j]]);
+  }
+  for (const j of [0, nj - 1]) {
+    const u = gridPoint(upper, niU - 1, j);
+    const l = gridPoint(lower, niL - 1, j);
+    const m: Vec3 = [0.5 * (u[0] + l[0]), 0.5 * (u[1] + l[1]), 0.5 * (u[2] + l[2])];
+    m[0] = Math.min(m[0], L);
+    setGridPoint(upper, niU - 1, j, m);
+    setGridPoint(lower, niL - 1, j, m);
+  }
+}
+
+/** Keep streamwise x monotone so TE quads cannot fold back on themselves. */
+export function enforceMonotoneChord(g: SurfaceGrid) {
+  for (let j = 0; j < g.nj; j++) {
+    for (let i = 1; i < g.ni; i++) {
+      const a = gridPoint(g, i - 1, j);
+      const b = gridPoint(g, i, j);
+      if (b[0] + 1e-12 < a[0]) setGridPoint(g, i, j, [a[0], b[1], b[2]]);
+    }
+  }
+}
+
+function lerp3(a: Vec3, b: Vec3, t: number): Vec3 {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
+function bilerp(g: SurfaceGrid, u: number, v: number): Vec3 {
+  const iu = clampF(u, 0, g.ni - 1);
+  const jv = clampF(v, 0, g.nj - 1);
+  const i0 = Math.min(Math.floor(iu), g.ni - 2);
+  const j0 = Math.min(Math.floor(jv), g.nj - 2);
+  const su = smooth01(iu - i0);
+  const sv = smooth01(jv - j0);
+  const p00 = gridPoint(g, i0, j0);
+  const p10 = gridPoint(g, i0 + 1, j0);
+  const p01 = gridPoint(g, i0, j0 + 1);
+  const p11 = gridPoint(g, i0 + 1, j0 + 1);
+  const a = lerp3(p00, p10, su);
+  const b = lerp3(p01, p11, su);
+  return lerp3(a, b, sv);
+}
+
+function clampF(v: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function smooth01(t: number) {
+  const u = clampF(t, 0, 1);
+  return u * u * (3 - 2 * u);
+}
+
+/** Smoothstep-bilinear upsample. Use before IGES / STEP / Plot3D so Pointwise sees dense patches. */
+export function refineGrid(g: SurfaceGrid, fi = 2, fj = 2): SurfaceGrid {
+  const ni = (g.ni - 1) * Math.max(1, fi) + 1;
+  const nj = (g.nj - 1) * Math.max(1, fj) + 1;
+  if (ni === g.ni && nj === g.nj) return g;
+  return makeGrid(g.name, ni, nj, (i, j) => {
+    const u = (i / Math.max(ni - 1, 1)) * (g.ni - 1);
+    const v = (j / Math.max(nj - 1, 1)) * (g.nj - 1);
+    return bilerp(g, u, v);
+  });
+}
+
+export function refineGrids(grids: SurfaceGrid[], fi = 2, fj = 2): SurfaceGrid[] {
+  return grids.map((g) => {
+    if (g.ni < 2 || g.nj < 2) return g;
+    if (g.name === "leading" || g.name === "cowl_lip" || g.name.startsWith("tip") || g.name === "base") {
+      return refineGrid(g, Math.max(1, fi), Math.max(1, fj));
+    }
+    return refineGrid(g, fi, fj);
+  });
+}
+

@@ -1,4 +1,5 @@
 import { Slider } from "@/components/ui/slider";
+import { useState } from "react";
 
 export function NumberField({
   label,
@@ -9,6 +10,8 @@ export function NumberField({
   step,
   unit,
   digits = 2,
+  onDragStart,
+  onDragEnd,
 }: {
   label: string;
   value: number;
@@ -18,17 +21,54 @@ export function NumberField({
   step: number;
   unit?: string;
   digits?: number;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
 }) {
+  const [text, setText] = useState<string | null>(null);
+
+  const clampV = (v: number) => Math.max(min, Math.min(max, v));
+  const commit = (raw: string) => {
+    const n = parseFloat(raw);
+    setText(null);
+    if (Number.isFinite(n)) onChange(clampV(n));
+  };
+
   return (
     <label className="block">
-      <span className="mb-1 flex items-baseline justify-between">
+      <span className="mb-1 flex items-center justify-between gap-2">
         <span className="text-xs font-medium tracking-wide text-muted">{label}</span>
-        <span className="font-mono text-xs tabular-nums text-fg">
-          {value.toFixed(digits)}
-          {unit ? <span className="ml-1 text-subtle">{unit}</span> : null}
+        <span className="flex items-center gap-1">
+          <input
+            type="number"
+            inputMode="decimal"
+            min={min}
+            max={max}
+            step={step}
+            value={text ?? value.toFixed(digits)}
+            onFocus={() => setText(String(value))}
+            onChange={(e) => {
+              setText(e.target.value);
+              const n = parseFloat(e.target.value);
+              if (Number.isFinite(n)) onChange(clampV(n));
+            }}
+            onBlur={(e) => commit(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            className="h-7 w-[4.6rem] rounded-sm border-0 bg-surface-2 px-1.5 text-right font-mono text-xs tabular-nums text-fg outline-none ring-0 focus:bg-surface"
+          />
+          {unit ? <span className="min-w-[1.6rem] text-[10px] text-subtle">{unit}</span> : null}
         </span>
       </span>
-      <Slider min={min} max={max} step={step} value={[value]} onValueChange={(v) => onChange(v[0] ?? value)} />
+      <Slider
+        min={min}
+        max={max}
+        step={step}
+        value={[value]}
+        onPointerDown={() => onDragStart?.()}
+        onValueChange={(v) => onChange(v[0] ?? value)}
+        onValueCommit={() => onDragEnd?.()}
+      />
     </label>
   );
 }

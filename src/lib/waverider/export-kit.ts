@@ -3,7 +3,7 @@ import { meshToAsciiStl, meshToBinaryStl } from "./export-stl";
 import { gridsToNurbsStep, meshToFacetedStep, meshToTessellatedStep } from "./export-step";
 import { gridsToIges } from "./export-iges";
 import { gridsToPlot3d, meshToAsciiStlRegions, meshToObj, meshToVtk, pointwiseGlyph } from "./export-plot3d";
-import { scaleGrids, scaleMesh } from "./mesh";
+import { refineGrids, scaleGrids, scaleMesh } from "./mesh";
 import { unitScale } from "./math";
 import { designJson, pythonRunner, readmeFor } from "./kit-text";
 import { buildZip, utf8 } from "./zip";
@@ -19,9 +19,21 @@ export function scaledClone(built: BuiltVehicle) {
   };
 }
 
-export function fileBlobs(built: BuiltVehicle, analysis?: { cp?: Float32Array; heat?: Float32Array; twEq?: Float32Array }) {
+export function fileBlobs(
+  built: BuiltVehicle,
+  analysis?: {
+    cp?: Float32Array;
+    heat?: Float32Array;
+    twEq?: Float32Array;
+    stanton?: Float32Array;
+    machE?: Float32Array;
+    cf?: Float32Array;
+    impact?: Float32Array;
+  },
+) {
   const { mesh, grids, name, unit } = scaledClone(built);
-  const hasNurbs = grids.some((g) => g.ni >= 2 && g.nj >= 2);
+  const dense = refineGrids(grids, 3, 2);
+  const hasNurbs = dense.some((g) => g.ni >= 2 && g.nj >= 2);
   let faceted: string | undefined;
   const facet = () => (faceted ??= meshToFacetedStep(mesh, name, unit));
   return {
@@ -39,22 +51,32 @@ export function fileBlobs(built: BuiltVehicle, analysis?: { cp?: Float32Array; h
       return new Blob([facet()], { type: "application/step" });
     },
     get stepNurbs() {
-      return new Blob([hasNurbs ? gridsToNurbsStep(grids, name, unit) : facet()], { type: "application/step" });
+      return new Blob([hasNurbs ? gridsToNurbsStep(dense, name, unit) : facet()], { type: "application/step" });
     },
     get stepTess() {
       return new Blob([meshToTessellatedStep(mesh, name, unit)], { type: "application/step" });
     },
     get iges() {
-      return new Blob([gridsToIges(grids, name)], { type: "model/iges" });
+      return new Blob([gridsToIges(dense, name)], { type: "model/iges" });
     },
     get plot3d() {
-      return new Blob([gridsToPlot3d(grids)], { type: "text/plain" });
+      return new Blob([gridsToPlot3d(dense)], { type: "text/plain" });
     },
     get obj() {
       return new Blob([meshToObj(mesh)], { type: "model/obj" });
     },
     get vtk() {
-      return new Blob([meshToVtk(mesh, analysis?.cp, analysis?.heat, analysis?.twEq)], { type: "text/plain" });
+      return new Blob(
+        [
+          meshToVtk(mesh, analysis?.cp, analysis?.heat, analysis?.twEq, {
+            stanton: analysis?.stanton,
+            machE: analysis?.machE,
+            cf: analysis?.cf,
+            impact: analysis?.impact,
+          }),
+        ],
+        { type: "text/plain" },
+      );
     },
     get glyph() {
       return new Blob([pointwiseGlyph(name)], { type: "text/plain" });
@@ -77,7 +99,15 @@ export async function cfdZip(
   cSource = "",
   analysis = "",
   cppSource = "",
-  fields?: { cp?: Float32Array; heat?: Float32Array; twEq?: Float32Array },
+  fields?: {
+    cp?: Float32Array;
+    heat?: Float32Array;
+    twEq?: Float32Array;
+    stanton?: Float32Array;
+    machE?: Float32Array;
+    cf?: Float32Array;
+    impact?: Float32Array;
+  },
 ): Promise<Blob> {
   const f = fileBlobs(built, fields);
   const n = f.name;

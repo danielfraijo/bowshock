@@ -701,3 +701,98 @@ export function tauberSutton(rho: number, V: number, Rn: number): number {
   const RnE = Math.max(Rn, 0.01);
   return 4.736e8 * RnE ** 1.072 * rho ** 1.22 * (V / 10000) ** 8.5;
 }
+
+/**
+ * Invert isentropic p/p0 → Mach.
+ * p/p0 = [1 + ½(γ−1)M²]^(−γ/(γ−1))
+ */
+export function machFromPRatio(p_p0: number, gamma = 1.4): number {
+  const exp = -gamma / (gamma - 1);
+  const t = Math.pow(clamp(p_p0, 1e-10, 1), 1 / exp);
+  const M2 = Math.max(0, (t - 1) / (0.5 * (gamma - 1)));
+  return Math.sqrt(M2);
+}
+
+/**
+ * Dahlem–Buck (HABP / APAS). Newtonian above 22.5°, softer exponent below.
+ * Closest simple inclination method to Euler CFD on arbitrary bodies.
+ */
+export function dahlemBuckCp(theta: number, cpMax: number): number {
+  const th = Math.max(theta, 0);
+  const s = Math.sin(th);
+  const tc = 22.5 * DEG;
+  if (th >= tc) return cpMax * s * s;
+  const n = 1.8 + 0.2 * (th / tc);
+  const sc = Math.sin(tc);
+  return cpMax * Math.pow(Math.max(s, 1e-8), n) * Math.pow(sc, 2 - n);
+}
+
+/**
+ * 2-D Newton–Busemann centrifugal correction on a wedge-like panel.
+ * Cp_NB / Cp_max = sin²θ + ((3+γ)/(γ+1)) (θ cot θ − 1) cos²θ
+ * (Anderson, Hypersonic and High-Temperature Gas Dynamics).
+ */
+export function newtonBusemannCp(theta: number, cpMax: number, gamma = 1.4): number {
+  if (theta < 1e-5) return 0;
+  const s = Math.sin(theta);
+  const c = Math.cos(theta);
+  const tcot = theta / Math.tan(theta);
+  const nb = s * s + ((3 + gamma) / (gamma + 1)) * (tcot - 1) * c * c;
+  return cpMax * clamp(nb, 0, 1.25);
+}
+
+/**
+ * Eckert reference-enthalpy Stanton number (Zoby / MINIVER / CBAERO class).
+ * ReS uses edge values; T* from Eckert; Cf/2 ≈ St Pr^{2/3}.
+ */
+export function eckertStanton(
+  ReS: number,
+  Te: number,
+  Tw: number,
+  Me: number,
+  gamma = 1.4,
+  turbulent = false,
+): number {
+  const r = turbulent ? 0.89 : Math.sqrt(0.71);
+  const Tstar = eckertTstar(Te, Tw, Me, gamma, r);
+  const muE = airMu(Te);
+  const muS = airMu(Tstar);
+  const rhoRatio = Math.max(Te, 1) / Math.max(Tstar, 1);
+  const ReStar = Math.max(ReS, 10) * rhoRatio * (muE / Math.max(muS, 1e-12));
+  const Pr = 0.71;
+  if (turbulent) return 0.0296 * Math.pow(ReStar, -0.2) * Math.pow(Pr, -2 / 3);
+  return 0.332 * Math.pow(ReStar, -0.5) * Math.pow(Pr, -2 / 3);
+}
+
+/**
+ * Zoby–Moss–Sutton / Eckert running-length heat flux, W/cm².
+ * q = St ρe Ue (hr − hw). This is the engineering method that tracks
+ * Navier–Stokes heating on hypersonic vehicles when pe, Ue, Te are taken
+ * from a shock-expansion / Euler edge (NASA TP-1374, MINIVER, CBAERO).
+ */
+export function zobyHeatWcm2(
+  rhoE: number,
+  Ue: number,
+  Te: number,
+  Tw: number,
+  s: number,
+  Me: number,
+  gamma = 1.4,
+  turbulent = false,
+): number {
+  const mu = airMu(Te);
+  const ReS = (Math.max(rhoE, 1e-12) * Math.max(Ue, 1) * Math.max(s, 1e-6)) / Math.max(mu, 1e-10);
+  const St = eckertStanton(ReS, Te, Tw, Me, gamma, turbulent);
+  const r = turbulent ? 0.89 : Math.sqrt(0.71);
+  const Tr = Te * (1 + r * 0.5 * (gamma - 1) * Me * Me);
+  const q = St * Math.max(rhoE, 0) * Math.max(Ue, 0) * 1004.7 * Math.max(Tr - Tw, 0);
+  return q / 1e4;
+}
+
+/** Skin friction from Reynolds analogy: Cf = 2 St Pr^{2/3}. */
+export function stantonToCf(St: number, turbulent = false): number {
+  const Pr = 0.71;
+  const n = turbulent ? 1 / 3 : 2 / 3;
+  return 2 * St * Math.pow(Pr, n);
+}
+

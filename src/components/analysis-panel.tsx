@@ -21,6 +21,8 @@ export function AeroBlock({ study }: { study: StudyResult }) {
       <Stat k="L/D" v={fmt(a.ld, 2)} />
       <Stat k="Cm (pitch)" v={fmt(a.cm, 4)} />
       <Stat k="Cn (yaw)" v={fmt(a.cn, 4)} />
+      <Stat k="CoP x/L" v={fmt(a.xCp / Math.max(a.lRef, 1e-8), 3)} />
+      <Stat k="CG x/L" v={fmt(a.cg[0] / Math.max(a.lRef, 1e-8), 3)} />
       <Stat k="cot θ (wedge)" v={fmt(b.wedgeCot, 2)} />
       <Stat k="L/D / cot θ" v={fmt(b.ratio, 2)} ok={b.ratio > 0.35 && b.ratio < 1.15} />
       <Stat k="Method" v={a.method} />
@@ -44,9 +46,9 @@ export function AeroBlock({ study }: { study: StudyResult }) {
         />
         <Formula name="Prandtl–Meyer (leeward)" expr="ν(M) = √((γ+1)/(γ−1)) tan⁻¹√[…] − tan⁻¹√(M²−1)" />
         <Formula
-          name="Mixed panel"
-          expr="attached: tangent-wedge / cone Cp    detached: Cp_max sin²θ    leeward: PM"
-          note="CBAERO-class. Base Love Cp = −1/M² (NACA TN 3819 high-M)."
+          name="CBAERO / HABP"
+          expr="windward: 0.55 tangent + 0.25 Dahlem–Buck + 0.20 Newton–Busemann    leeward: PM    base: −1/M²"
+          note="Closest inviscid panel method to Euler CFD. Pick CBAERO on the Flight tab."
         />
         <Formula name="Skin friction" expr="Cf = Cfi / Fc     van Driest II, Cfi = 0.455/(log₁₀ Re)²" note="Hopkins–Inouye. Compressibility via Taw, Tw." />
       </div>
@@ -68,17 +70,20 @@ export function HeatBlock({ study }: { study: StudyResult }) {
       <Stat k="Radiative" v={`${fmt(a.qRad, 3)} W/cm²`} />
       <Stat k="Peak panel" v={`${fmt(a.qMax, 3)} W/cm²`} />
       <Stat k="Mean windward" v={`${fmt(a.qMeanWind, 3)} W/cm²`} />
+      <Stat k="Mean belly" v={`${fmt(a.qMeanLower, 3)} W/cm²`} />
+      <Stat k="Mean lid" v={`${fmt(a.qMeanUpper, 3)} W/cm²`} />
       <Stat k="Tw eq (peak)" v={`${fmt(a.twMax, 0)} K`} />
       <Stat k="Rn used" v="LE radius or 0.15% L" />
       <p className="mt-3 text-xs leading-relaxed text-subtle">
-        Sutton–Graves stagnation (TR R-802) is the Earth engineering form of Fay–Riddell. Tauber
-        laminar/turbulent along running length (TP-2914), Tauber–Sutton radiative (JSR 1991). Detra–Kemp–Riddell
-        is a second stagnation check. Leading-edge strip uses Fay–Riddell × Beckwith–Gallagher sweep.
-        Wall temperature is radiation equilibrium σ ε T⁴ = q, ε=0.8. Color the view by Heat — rainbow is
-        log(q) over the panel range so the nose is hot and the aft body is cool.
+        Heating is Eckert–Zoby (NASA TP-1374 / MINIVER / CBAERO) on the post-shock edge state, blended with
+        Tauber running-length and Lees p/p_s. That is the engineering method that tracks Navier–Stokes heat
+        flux. +α (nose up) raises belly q̇; −α raises lid q̇. Stagnation is Fay–Riddell with Billig standoff,
+        plus Sutton–Graves and Detra–Kemp–Riddell checks. Color the view by Heat, q/qs, p/p∞, Tw, Me, St, Cf or θ.
+        Running length is s = x − x_LE(y) so the swept leading edge stays hot.
       </p>
       <div className="mt-3 space-y-2">
         <Formula name="Fay–Riddell" expr="q = 0.763 Pr⁻⁰·⁶ (ρeμe)⁰·⁴ (ρwμw)⁰·¹ √(due/ds) (h0−hw)" note="Sphere stagnation, Lewis=1. due/ds = Rn⁻¹ √(2(pe−p∞)/ρe)." />
+        <Formula name="Zoby / Eckert" expr="q = St ρe Ue (hr − hw)    St from T* reference enthalpy" note="Edge (pe, Ue, Te) from the local shock or Prandtl–Meyer expansion. Closest panel heating to CFD." />
         <Formula name="Sutton–Graves" expr="q_s = 1.83×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-802; Tauber TP-2914 units." />
         <Formula name="Detra–Kemp–Riddell" expr="q = 5.21×10⁴ √(ρ/Rn) (V/10⁴)^3.15    W/m²" note="DKR stagnation; reported as Tw_eq from the SG flux." />
         <Formula name="Radiation equilibrium" expr="σ ε Tw⁴ = q_conv    ε = 0.8" />
@@ -384,6 +389,7 @@ export function TrajBlock({ study }: { study: StudyResult }) {
   return (
     <div>
       <Stat k="Range" v={`${fmt(t.rangeKm, 1)} km`} />
+      <Stat k="Eq-glide range" v={`${fmt(t.rangeEqKm, 1)} km`} />
       <Stat k="Time" v={`${fmt(t.timeS, 0)} s`} />
       <Stat k="Max q" v={`${fmt(t.maxQ / 1000, 2)} kPa`} />
       <Stat k="Max-q alt" v={`${fmt(t.maxQAltKm, 1)} km`} />

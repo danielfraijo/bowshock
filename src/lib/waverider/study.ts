@@ -100,7 +100,7 @@ export function flightMachOf(p: DesignParams) {
   return p.lockFlight ? p.mach : p.flightMach;
 }
 
-export function studyVehicle(built: BuiltVehicle): StudyResult {
+export function studyVehicle(built: BuiltVehicle, opts?: { quick?: boolean }): StudyResult {
   const t0 = performance.now?.() ?? Date.now();
   const p = built.params;
   const domain = domainOf(p.family);
@@ -108,7 +108,7 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
   const atm = atmosphere(p.altKm, Mf, p.gamma);
   const sRef = Math.max(built.aero.planformArea, 1e-6);
   const lRef = p.length;
-  const full = domain === "external" || p.family === "integrated";
+  const full = (domain === "external" || p.family === "integrated") && !opts?.quick;
   const aero = panelAero(built.mesh, p, atm, p.alphaDeg, p.betaDeg, sRef, lRef);
   const mass = massProperties(built.mesh, p.rhoKgM3 || 160, p.massKg || 0);
   const six = solveSixDof(built.mesh, p, atm, mass, sRef, lRef, full);
@@ -146,7 +146,10 @@ export function studyVehicle(built: BuiltVehicle): StudyResult {
         finalV: atm.V,
         finalH: p.altKm,
         skipped: true,
-        notes: ["Trajectory is an external-flow tool — switch to External to glide."],
+        rangeEqKm: 0,
+        notes: opts?.quick
+          ? ["Trajectory paused while dragging — release to integrate the 3DOF glide."]
+          : ["Trajectory is an external-flow tool — switch to External to glide."],
       };
   const lit = LIT[p.family] ?? LIT.caret;
   const ld = aero.ld;
@@ -218,6 +221,11 @@ export function studyJson(built: BuiltVehicle, study: StudyResult): string {
         chiBar: aero.chiBar,
         gammaEq: aero.gammaEq,
         regime: aero.regime,
+        method: aero.method,
+        xCp: aero.xCp,
+        qMeanLower: aero.qMeanLower,
+        qMeanUpper: aero.qMeanUpper,
+        notes: aero.notes,
       },
       stability: {
         cla: stab.cla,

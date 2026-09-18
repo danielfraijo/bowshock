@@ -26,39 +26,89 @@ function jetRamp(c: ThreeNS.Color, t: number) {
   c.setRGB(r, g, b);
 }
 
-function sortedFinite(src: Float32Array, positive = false): number[] {
-  const v: number[] = [];
-  for (let i = 0; i < src.length; i++) {
-    const x = src[i];
-    if (!Number.isFinite(x)) continue;
-    if (positive && !(x > 0)) continue;
-    v.push(x);
-  }
-  v.sort((a, b) => a - b);
-  return v;
-}
-
 function pct(v: number[], p: number) {
   if (!v.length) return 0;
   const i = Math.min(v.length - 1, Math.max(0, Math.floor(p * (v.length - 1))));
   return v[i];
 }
 
-export function fieldScale(study: StudyResult | null, color: ColorMode): { lo: number; hi: number; log: boolean; unit: string } {
+export function fieldScale(
+  study: StudyResult | null,
+  color: ColorMode,
+  surfaces?: Uint8Array,
+): { lo: number; hi: number; log: boolean; unit: string } {
   if (!study) return { lo: 0, hi: 1, log: false, unit: "" };
+  const srcOf = () => {
+    if (color === "heat" || color === "qhat") return study.aero.heat;
+    if (color === "cp" || color === "pratio") return study.aero.cp;
+    if (color === "temp") return study.aero.twEq;
+    if (color === "mach") return study.aero.machE;
+    if (color === "stanton") return study.aero.stanton;
+    if (color === "cf") return study.aero.cf;
+    if (color === "impact") return study.aero.impact;
+    return null;
+  };
+  const raw = srcOf();
+  if (!raw) return { lo: 0, hi: 1, log: false, unit: "" };
+  const skipBase = (i: number) =>
+    surfaces != null && (surfaces[i] === SURFACE_ID.base || surfaces[i] === SURFACE_ID.nozzle);
+  const pick = (positive: boolean) => {
+    const v: number[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (skipBase(i)) continue;
+      const x = raw[i];
+      if (!Number.isFinite(x)) continue;
+      if (positive && !(x > 0)) continue;
+      v.push(x);
+    }
+    v.sort((a, b) => a - b);
+    return v;
+  };
   if (color === "heat") {
-    const hv = sortedFinite(study.aero.heat, true);
+    const hv = pick(true);
     const hi = Math.max(pct(hv, 0.99), 1e-8);
-    const lo = Math.max(pct(hv, 0.1), hi * 1e-3);
+    const lo = Math.max(pct(hv, 0.05), hi * 1e-4);
     return { lo, hi, log: true, unit: "W/cm²" };
   }
-  if (color === "cp") {
-    const cv = sortedFinite(study.aero.cp);
-    const lo = pct(cv, 0.02);
-    const hi = Math.max(pct(cv, 0.98), lo + 1e-3);
-    return { lo, hi, log: false, unit: "Cp" };
+  if (color === "qhat") {
+    const qs = Math.max(study.aero.qStag, 1e-8);
+    const hv = pick(true).map((q) => q / qs);
+    const hi = Math.max(pct(hv, 0.99), 1e-6);
+    return { lo: Math.max(pct(hv, 0.05), hi * 1e-3), hi, log: false, unit: "q/qs" };
   }
-  return { lo: 0, hi: 1, log: false, unit: "" };
+  if (color === "pratio") {
+    const M = Math.max(1.05, study.flightMach);
+    const g = 1.4;
+    const q = 0.5 * g * M * M;
+    const hv = pick(false).map((cp) => 1 + cp * q);
+    return { lo: Math.max(pct(hv, 0.02), 0), hi: Math.max(pct(hv, 0.98), 1.05), log: false, unit: "p/p∞" };
+  }
+  if (color === "temp") {
+    const hv = pick(true);
+    return { lo: Math.max(pct(hv, 0.02), 200), hi: Math.max(pct(hv, 0.99), 400), log: false, unit: "K" };
+  }
+  if (color === "mach") {
+    const hv = pick(true);
+    return { lo: 0, hi: Math.max(pct(hv, 0.99), 1), log: false, unit: "Me" };
+  }
+  if (color === "stanton") {
+    const hv = pick(true);
+    const hi = Math.max(pct(hv, 0.99), 1e-8);
+    return { lo: Math.max(pct(hv, 0.05), hi * 1e-3), hi, log: true, unit: "St" };
+  }
+  if (color === "cf") {
+    const hv = pick(true);
+    const hi = Math.max(pct(hv, 0.99), 1e-6);
+    return { lo: Math.max(pct(hv, 0.05), hi * 1e-3), hi, log: true, unit: "Cf" };
+  }
+  if (color === "impact") {
+    const hv = pick(false);
+    return { lo: pct(hv, 0.02), hi: Math.max(pct(hv, 0.98), 0.05), log: false, unit: "sinθ" };
+  }
+  const cv = pick(false);
+  const lo = pct(cv, 0.02);
+  const hi = Math.max(pct(cv, 0.98), lo + 1e-3);
+  return { lo, hi, log: false, unit: "Cp" };
 }
 
 function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, color: ColorMode) {
@@ -66,25 +116,34 @@ function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, 
   const tris: number[] = [];
   const cols: number[] = [];
   const nt = mesh.indices.length / 3;
-  const nv = mesh.positions.length / 3;
   const c = new THREE.Color();
-  const cp = study?.aero.cp;
-  const heat = study?.aero.heat;
-  const scale = fieldScale(study, color);
-  const vertVal = new Float32Array(nv);
-  const vertN = new Float32Array(nv);
-  if ((color === "heat" && heat) || (color === "cp" && cp)) {
-    const src = color === "heat" ? heat! : cp!;
-    for (let t = 0; t < nt; t++) {
-      const v = src[t] ?? 0;
-      for (let k = 0; k < 3; k++) {
-        const i = mesh.indices[t * 3 + k];
-        vertVal[i] += v;
-        vertN[i] += 1;
-      }
-    }
-    for (let i = 0; i < nv; i++) if (vertN[i] > 0) vertVal[i] /= vertN[i];
-  }
+  const scale = fieldScale(study, color, mesh.surfaces);
+  const src =
+    color === "heat" || color === "qhat"
+      ? study?.aero.heat
+      : color === "cp" || color === "pratio"
+        ? study?.aero.cp
+        : color === "temp"
+          ? study?.aero.twEq
+          : color === "mach"
+            ? study?.aero.machE
+            : color === "stanton"
+              ? study?.aero.stanton
+              : color === "cf"
+                ? study?.aero.cf
+                : color === "impact"
+                  ? study?.aero.impact
+                  : null;
+  const M = Math.max(1.05, study?.flightMach ?? built.params.mach);
+  const g = built.params.gamma || 1.4;
+  const qInf = 0.5 * g * M * M;
+  const qs = Math.max(study?.aero.qStag ?? 1, 1e-8);
+  const valueAt = (t: number) => {
+    const v = src ? (src[t] ?? 0) : 0;
+    if (color === "pratio") return 1 + v * qInf;
+    if (color === "qhat") return v / qs;
+    return v;
+  };
   const mapT = (v: number) => {
     if (scale.log) {
       const lo = Math.log10(scale.lo);
@@ -95,20 +154,19 @@ function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, 
   };
   for (let t = 0; t < nt; t++) {
     const s = mesh.surfaces[t] ?? 0;
+    if (src) jetRamp(c, mapT(valueAt(t)));
+    else c.setHex(SURFACE_GREY[s] ?? 0x888888);
     for (let k = 0; k < 3; k++) {
       const i = mesh.indices[t * 3 + k];
       tris.push(mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]);
-      if (color === "heat" && heat) jetRamp(c, mapT(vertVal[i]));
-      else if (color === "cp" && cp) jetRamp(c, mapT(vertVal[i]));
-      else c.setHex(SURFACE_GREY[s] ?? 0x888888);
       cols.push(c.r, c.g, c.b);
     }
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(tris, 3));
-  g.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
-  g.computeVertexNormals();
-  return g;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(tris, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  geo.computeVertexNormals();
+  return geo;
 }
 
 function shockGeom(THREE: Three, built: BuiltVehicle) {
@@ -273,6 +331,7 @@ export function WaveriderViewer({
       let shock: ThreeNS.LineSegments | null = null;
       let gridHelper: ThreeNS.GridHelper | null = null;
       let originGroup: ThreeNS.Group | null = null;
+      let markerGroup: ThreeNS.Group | null = null;
 
       function disposeObj(obj: ThreeNS.Object3D | null) {
         if (!obj) return;
@@ -300,6 +359,43 @@ export function WaveriderViewer({
         );
         g.add(sph);
         originGroup = g;
+        scene.add(g);
+      }
+
+      function makeMarkers(b: BuiltVehicle, st: StudyResult | null) {
+        disposeObj(markerGroup);
+        const g = new THREE.Group();
+        const L = Math.max(b.params.length, 0.2);
+        const r = Math.max(0.014, 0.011 * L);
+        const cg = st?.aero.cg ?? [b.params.cgFrac * L, 0, 0];
+        const xCp = st?.aero.xCp ?? cg[0];
+        const cgMesh = new THREE.Mesh(
+          new THREE.OctahedronGeometry(r * 0.85, 0),
+          new THREE.MeshBasicMaterial({ color: 0xb8b8b8 }),
+        );
+        cgMesh.position.set(cg[0], cg[1], cg[2]);
+        g.add(cgMesh);
+        const copMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(r * 1.15, 14, 10),
+          new THREE.MeshBasicMaterial({ color: 0xf4f4f4 }),
+        );
+        copMesh.position.set(xCp, 0, 0);
+        g.add(copMesh);
+        const copLine = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(cg[0], cg[1], cg[2]),
+          new THREE.Vector3(xCp, 0, 0),
+        ]);
+        g.add(new THREE.Line(copLine, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 })));
+        const a = (b.params.alphaDeg || 0) * (Math.PI / 180);
+        const be = (b.params.betaDeg || 0) * (Math.PI / 180);
+        const vx = Math.cos(a) * Math.cos(be);
+        const vy = Math.sin(be);
+        const vz = Math.sin(a) * Math.cos(be);
+        const len = 0.38 * L;
+        const origin = new THREE.Vector3(-0.08 * L - vx * len, -vy * len, -vz * len);
+        const arrow = new THREE.ArrowHelper(new THREE.Vector3(vx, vy, vz).normalize(), origin, len, 0xf0f0f0, 0.07 * L, 0.035 * L);
+        g.add(arrow);
+        markerGroup = g;
         scene.add(g);
       }
 
@@ -350,6 +446,7 @@ export function WaveriderViewer({
         sg.dispose();
         shock = new THREE.LineSegments(shockEdges, shockMat);
         scene.add(shock);
+        makeMarkers(b, studyRef.current);
         const key = `${b.params.family}|${b.params.length}|${b.params.span}|${b.quality.vertices}`;
         if (key !== framedKey) {
           framedKey = key;
@@ -363,6 +460,7 @@ export function WaveriderViewer({
         if (shock) shock.visible = o.shock;
         if (gridHelper) gridHelper.visible = o.grid;
         if (originGroup) originGroup.visible = o.origin !== false;
+        if (markerGroup) markerGroup.visible = o.origin !== false;
         if (features) features.visible = o.color === "surface";
       }
 
@@ -393,6 +491,7 @@ export function WaveriderViewer({
         seams?.geometry.dispose();
         wires?.geometry.dispose();
         shock?.geometry.dispose();
+        disposeObj(markerGroup);
         bodyMat.dispose();
         fieldMat.dispose();
         featureMat.dispose();
@@ -416,7 +515,7 @@ export function WaveriderViewer({
     rebuildFn.current();
   }, [built, study, opts.color]);
 
-  const scale = opts.color !== "surface" && study ? fieldScale(study, opts.color) : null;
+  const scale = opts.color !== "surface" && study ? fieldScale(study, opts.color, built.mesh.surfaces) : null;
   const fmtScale = (v: number) => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
 
   return (

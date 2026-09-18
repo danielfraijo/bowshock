@@ -4,7 +4,6 @@ import {
   RAD,
   betaFromThetaM,
   clamp,
-  cluster,
   cosineSpace,
   lerp,
   maxTheta,
@@ -12,15 +11,15 @@ import {
   solveConeShock,
   thetaFromBetaM,
 } from "./math";
-import { MeshBuilder, analyzeMesh, compactMesh, gridPoint, makeGrid, orientOutward, setGridPoint, stitchGrid, zipperSharpEdges } from "./mesh";
+import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, fairTrailingEdge, gridPoint, makeGrid, matchTrailingEdge, orientOutward, setGridPoint, stitchGrid, weldAft, zipperSharpEdges } from "./mesh";
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 
 function spanStations(ny: number, s: number, half: boolean): number[] {
-  // Never sit on y = ±s (zero-chord delta pole) and always include y = 0
-  // so Pointwise can pick a planar symmetry / centerline.
+  // Stay off y = ±s (zero-chord pole) but keep the tip close to the planform
+  // edge so the TE does not look chopped. Always include y = 0 for Pointwise.
   if (half) {
     const n = Math.max(6, Math.ceil(ny / 2));
-    const yMax = s * (1 - 0.4 / n);
+    const yMax = s * (1 - 0.12 / n);
     const ys: number[] = [];
     for (let j = 0; j < n; j++) ys.push(yMax * cosineSpace(j, n));
     ys[0] = 0;
@@ -29,7 +28,7 @@ function spanStations(ny: number, s: number, half: boolean): number[] {
   }
   let n = Math.max(7, ny);
   if (n % 2 === 0) n += 1;
-  const yMax = s * (1 - 0.4 / n);
+  const yMax = s * (1 - 0.12 / n);
   const ys: number[] = [];
   for (let j = 0; j < n; j++) ys.push(-yMax + 2 * yMax * cosineSpace(j, n));
   ys[0] = -yMax;
@@ -66,8 +65,11 @@ function xLeading(
 }
 
 function xTrailing(y: number, L: number, teTan: number, xl: number) {
+  // Tiny finite chord at the tip so the grid is not a pole — never long enough
+  // to push the TE past x = L (that was the aft spike / indent).
+  const minC = 0.0045 * L;
   const xt = L - Math.abs(y) * teTan;
-  return xt > xl ? xt : xl;
+  return clamp(Math.max(xt, xl + minC), xl + 1e-6 * L, L);
 }
 
 function superZ(y: number, s: number, h: number, n: number) {
@@ -76,7 +78,7 @@ function superZ(y: number, s: number, h: number, n: number) {
 }
 
 function chordCluster(i: number, nx: number) {
-  return cluster(i, nx, 1.35);
+  return cosineSpace(i, nx);
 }
 
 function closeVehicle(
@@ -459,32 +461,67 @@ function buildLiftbody(params: DesignParams) {
   const L = params.length;
   const s = params.span / 2;
   const h = params.height;
-  const nx = Math.max(8, params.nx);
+  const nx = Math.max(16, params.nx);
   const ys = spanStations(params.ny, 1, params.halfModel);
   const nj = ys.length;
-  const pow = params.planform === "delta" ? 1 : clamp(params.planformPower, 0.55, 1.6);
+  const pow = params.planform === "delta" ? 0.62 : clamp(params.planformPower * 0.62, 0.48, 1.15);
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
-  const upper = makeGrid("upper", nx, nj, (i, j) => {
-    const t = chordCluster(i, nx);
-    const x = t * L;
-    const a = s * Math.max(t, 0.04) ** (pow === 1 ? 0.85 : pow * 0.7);
-    const b = 0.5 * h * Math.max(t, 0.06) ** 0.55;
-    const y = ys[j] * a;
-    const yn = clamp(Math.abs(ys[j]), 0, 1);
-    const z = b * Math.sqrt(Math.max(0, 1 - yn * yn));
-    return [x, y, z + Math.abs(y) * dih];
-  });
-  const lower = makeGrid("lower", nx, nj, (i, j) => {
-    const t = chordCluster(i, nx);
-    const x = t * L;
-    const a = s * Math.max(t, 0.04) ** (pow === 1 ? 0.85 : pow * 0.7);
-    const b = 0.55 * h * Math.max(t, 0.06) ** 0.55;
-    const y = ys[j] * a;
-    const yn = clamp(Math.abs(ys[j]), 0, 1);
-    const z = -b * Math.sqrt(Math.max(0, 1 - yn * yn));
-    return [x, y, z + Math.abs(y) * dih];
-  });
+  const cam = (params.camber || 0) * h;
+  const teTan = Math.tan((params.teSweepDeg || 0) * DEG);
+  const Rn = Math.max(effectiveLeRadius(params), 0.018 * L);
+  // First structured ring sits ON the nose sphere, never a flat D-disk at x = 0.
+  const x0 = 0.055 * Rn;
+  const sample = (i: number, j: number, isLower: boolean): Vec3 => {
+    const u = cosineSpace(i, nx);
+    const x = x0 + (L - x0) * u;
+    const xi = clamp(x / L, 0, 1);
+    const rSph = Math.sqrt(Math.max(1e-16, 2 * Rn * Math.min(x, 2 * Rn) - Math.min(x, 2 * Rn) ** 2));
+    const aFuse = s * Math.pow(Math.max(xi, 1e-4), pow) * (1 - 0.07 * xi * xi);
+    const bU = 0.58 * h * Math.pow(Math.max(xi, 1e-4), 0.4) * (1 - 0.07 * xi);
+    const bL = 0.42 * h * Math.pow(Math.max(xi, 1e-4), 0.4) * (1 - 0.04 * xi);
+    const w = clamp((x - x0) / Math.max(2.6 * Rn - x0, 1e-9), 0, 1);
+    const w2 = w * w * (3 - 2 * w);
+    const a = (1 - w2) * rSph + w2 * Math.max(aFuse, rSph);
+    const bF = isLower ? bL : bU;
+    const bSph = rSph * (isLower ? 0.82 : 1.05);
+    const b = (1 - w2) * bSph + w2 * Math.max(bF, 0.2 * rSph);
+    const yn = ys[j];
+    const y = yn * a;
+    const zEll = Math.sqrt(Math.max(0, 1 - yn * yn));
+    const z = (isLower ? -1 : 1) * b * zEll + 4 * cam * xi * (1 - xi) + Math.abs(y) * dih;
+    const xOut = i === nx - 1 ? Math.max(x - Math.abs(y) * teTan, 0.42 * L) : x;
+    return [xOut, y, z];
+  };
+  const upper = makeGrid("upper", nx, nj, (i, j) => sample(i, j, false));
+  const lower = makeGrid("lower", nx, nj, (i, j) => sample(i, j, true));
+  snapLiftbodyNose(upper, Rn, x0);
+  snapLiftbodyNose(lower, Rn, x0);
   return { upper, lower, shock: [] as SurfaceGrid[] };
+}
+
+function snapLiftbodyNose(g: SurfaceGrid, Rn: number, x0: number) {
+  const C = Rn;
+  const iMax = Math.min(g.ni - 1, Math.max(4, Math.round(g.ni * 0.14)));
+  for (let i = 0; i <= iMax; i++) {
+    const blend = 1 - i / Math.max(iMax, 1);
+    const b2 = blend * blend * (3 - 2 * blend);
+    for (let j = 0; j < g.nj; j++) {
+      const p = gridPoint(g, i, j);
+      const dx = p[0] - C;
+      const r = Math.hypot(dx, p[1], p[2]);
+      if (r < 1e-14) {
+        setGridPoint(g, i, j, [x0, 0, 0]);
+        continue;
+      }
+      const k = Rn / r;
+      const xS = Math.max(x0 * 0.4, C + dx * k);
+      setGridPoint(g, i, j, [
+        xS * b2 + p[0] * (1 - b2),
+        p[1] * k * b2 + p[1] * (1 - b2),
+        p[2] * k * b2 + p[2] * (1 - b2),
+      ]);
+    }
+  }
 }
 
 /**
@@ -640,6 +677,25 @@ function sharpenTips(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGri
       for (let k = 0; k < leading.ni; k++) setGridPoint(leading, k, j, p);
     }
   }
+}
+
+/** Rounded nose cap when the rolling-ball fillet cannot sit on a fat opening. */
+function fallbackRoundNose(upper: SurfaceGrid, lower: SurfaceGrid, Rn: number): SurfaceGrid {
+  const nj = Math.min(upper.nj, lower.nj);
+  const nArc = 13;
+  const R = Math.max(Rn, 1e-6);
+  return makeGrid("leading", nArc, nj, (k, j) => {
+    const u = gridPoint(upper, 0, j);
+    const l = gridPoint(lower, 0, j);
+    const t = nArc <= 1 ? 0 : k / (nArc - 1);
+    const mx = 0.5 * (u[0] + l[0]);
+    const my = 0.5 * (u[1] + l[1]);
+    const mz = 0.5 * (u[2] + l[2]);
+    const opening = Math.hypot(u[0] - l[0], u[1] - l[1], u[2] - l[2]);
+    const rad = Math.max(0.5 * opening, 0.35 * R);
+    const bulge = Math.sin(Math.PI * t) * rad;
+    return [mx - bulge, my, l[2] + (u[2] - l[2]) * t];
+  });
 }
 
 function applyFins(lid: SurfaceGrid, params: DesignParams, zSign: number) {
@@ -902,6 +958,9 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const tips: SurfaceGrid[] = [];
     if (!isDuct) {
       if (R > 0) leading = applyLeadingFillet(built.upper, built.lower, R, params.length);
+      if (!leading && params.family === "liftbody") {
+        leading = fallbackRoundNose(built.upper, built.lower, R || 0.02 * params.length);
+      }
       if (params.family !== "liftbody") {
         sharpenTips(built.upper, built.lower, leading, params.halfModel);
       }
@@ -922,6 +981,12 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const zSign = params.lid === "bottom" ? -1 : 1;
     if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
+    if (!isDuct) {
+      matchTrailingEdge(built.upper, built.lower, params.length);
+      fairTrailingEdge(built.upper, built.lower, params.length);
+      enforceMonotoneChord(built.upper);
+      enforceMonotoneChord(built.lower);
+    }
     grids = [built.upper, built.lower];
     const extra = (built as { extra?: SurfaceGrid[] }).extra;
     if (extra) grids.push(...extra);
@@ -956,6 +1021,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   }
 
   mesh = compactMesh(mesh);
+  mesh = weldAft(mesh, params.length);
   orientOutward(mesh);
   lockFrame(mesh, grids, shock, params.halfModel);
   const usedX = (() => {

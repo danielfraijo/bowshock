@@ -255,7 +255,7 @@ def cluster(i: int, n: int, power: float = 1.35) -> float:
 def half_span_list(ny: int, s: float, half: bool) -> List[float]:
     if half:
         n = max(6, math.ceil(ny / 2))
-        y_max = s * (1.0 - 0.4 / n)
+        y_max = s * (1.0 - 0.12 / n)
         ys = [y_max * cosine_space(j, n) for j in range(n)]
         ys[0] = 0.0
         ys[-1] = y_max
@@ -263,7 +263,7 @@ def half_span_list(ny: int, s: float, half: bool) -> List[float]:
     n = max(7, ny)
     if n % 2 == 0:
         n += 1
-    y_max = s * (1.0 - 0.4 / n)
+    y_max = s * (1.0 - 0.12 / n)
     ys = [-y_max + 2.0 * y_max * cosine_space(j, n) for j in range(n)]
     ys[0] = -y_max
     ys[-1] = y_max
@@ -293,8 +293,9 @@ def x_leading(y: float, L: float, s: float, planform: str, p: float, spatular: f
 
 
 def x_trailing(y: float, L: float, te_tan: float, xl: float) -> float:
+    min_c = 0.0045 * L
     xt = L - abs(y) * te_tan
-    return xt if xt > xl else xl
+    return clamp(max(xt, xl + min_c), xl + 1e-6 * L, L)
 
 
 def super_z(y: float, s: float, h: float, n: float) -> float:

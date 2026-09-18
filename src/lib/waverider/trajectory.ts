@@ -36,6 +36,7 @@ export interface TrajResult {
   finalV: number;
   finalH: number;
   skipped: boolean;
+  rangeEqKm: number;
   notes: string[];
 }
 
@@ -176,15 +177,28 @@ export function integrateGlide(
       });
     }
     if (h < 400 && gam < 0) break;
-    if (h > 92000) {
-      skipped = true;
-      notes.push("Trajectory skipped out of the atmosphere (γ>0 after pull-up).");
-      break;
+    if (h > 88000 && gam > 0) {
+      // Skip: loft, then let gravity pull γ back. Don't abort the glide.
+      gam = Math.min(gam, 4 * DEG);
+    }
+    if (h > 98000) {
+      h = 98000;
+      if (gam > 0) gam *= 0.6;
     }
     if (v < 180) break;
   }
+  const polar0 = lerpPolar(polar, alpha);
+  const ld0 = polar0.cd > 1e-8 ? polar0.cl / polar0.cd : 0;
+  const vCirc = Math.sqrt(g0 * Re);
+  const v0 = Math.max(400, (params.lockFlight ? params.mach : params.flightMach) * atm0.a);
+  const num = 1 - (v / vCirc) ** 2;
+  const den = 1 - (v0 / vCirc) ** 2;
+  const rangeEqKm =
+    ld0 > 0.2 && den > 1e-6 && num > 0
+      ? (0.5 * Re * ld0 * Math.log(Math.max(num / den, 1.001))) / 1000
+      : 0;
   notes.push(
-    "3DOF point-mass adaptive RK4 (step doubling, Richardson). CL/CD from the panel polar, scaled by Cp_max(M)/Cp_max(M_ref) (Lees). CD grows with Knudsen bridging at altitude. Heating is Fay–Riddell + Tauber–Sutton; Tw from a 3 mm C/C lump (ρcδ). Spherical Earth, US76. No bank.",
+    "3DOF point-mass adaptive RK4 (step doubling). CL/CD from the panel polar, Mach-scaled by Cp_max (Lees). CD grows with Knudsen at altitude. Heating is Fay–Riddell + Tauber–Sutton; Tw from a 3 mm C/C lump. Spherical Earth, US76. Skips are integrated, not aborted. Eq-glide range is Sänger / Eggers: ½ Re (L/D) ln[(1−Vf²/Vc²)/(1−V0²/Vc²)].",
   );
   const last = samples[samples.length - 1];
   return {
@@ -201,6 +215,7 @@ export function integrateGlide(
     finalV: last ? last.v : v,
     finalH: last ? last.hKm : h / 1000,
     skipped,
+    rangeEqKm,
     notes,
   };
 }

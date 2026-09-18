@@ -18,7 +18,7 @@ function sideAt(g: SurfaceGrid, j: number): Vec3[] {
   return out;
 }
 
-function ruledGrid(name: string, a: Vec3[], b: Vec3[]): SurfaceGrid | null {
+function ruledGrid(name: string, a: Vec3[], b: Vec3[], ni = 8): SurfaceGrid | null {
   const nj = Math.min(a.length, b.length);
   if (nj < 2) return null;
   let maxd = 0;
@@ -26,7 +26,12 @@ function ruledGrid(name: string, a: Vec3[], b: Vec3[]): SurfaceGrid | null {
     maxd = Math.max(maxd, Math.hypot(a[j][0] - b[j][0], a[j][1] - b[j][1], a[j][2] - b[j][2]));
   }
   if (maxd < 1e-9) return null;
-  return makeGrid(name, 2, nj, (i, j) => (i === 0 ? a[j] : b[j]));
+  return makeGrid(name, ni, nj, (i, j) => {
+    const t = ni <= 1 ? 0 : i / (ni - 1);
+    const p = a[j];
+    const q = b[j];
+    return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
+  });
 }
 
 /** Named 2-D patches Pointwise can import as database surfaces. */
@@ -151,6 +156,7 @@ export function meshToVtk(
   cp?: Float32Array,
   heat?: Float32Array,
   tw?: Float32Array,
+  extra?: { stanton?: Float32Array; machE?: Float32Array; cf?: Float32Array; impact?: Float32Array },
 ): string {
   const nv = mesh.positions.length / 3;
   const nt = mesh.indices.length / 3;
@@ -189,6 +195,16 @@ export function meshToVtk(
     lines.push("LOOKUP_TABLE default");
     for (let t = 0; t < nt; t++) lines.push(fmt(tw[t]));
   }
+  const dump = (name: string, arr?: Float32Array) => {
+    if (!arr || arr.length < nt) return;
+    lines.push(`SCALARS ${name} float 1`);
+    lines.push("LOOKUP_TABLE default");
+    for (let t = 0; t < nt; t++) lines.push(fmt(arr[t]));
+  };
+  dump("Stanton", extra?.stanton);
+  dump("Mach_e", extra?.machE);
+  dump("Cf", extra?.cf);
+  dump("impact_sinth", extra?.impact);
   return lines.join("\n") + "\n";
 }
 

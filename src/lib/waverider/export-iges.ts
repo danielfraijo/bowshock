@@ -39,8 +39,8 @@ function knotsFor(nPoles: number, degree: number): number[] {
   return knots;
 }
 
-function downsample(g: SurfaceGrid, capU = 16, capV = 16): Vec3[][] {
-  const cap = g.name === "leading" || g.name === "cowl_lip" || g.name.startsWith("tip") || g.ni <= 4 ? g.ni : capU;
+function downsample(g: SurfaceGrid, capU = 80, capV = 64): Vec3[][] {
+  const cap = g.name === "leading" || g.name === "cowl_lip" || g.name.startsWith("tip") || g.ni <= 8 ? g.ni : capU;
   const du = Math.max(1, Math.floor((g.ni - 1) / Math.min(cap, g.ni - 1)));
   const dv = Math.max(1, Math.floor((g.nj - 1) / Math.min(capV, g.nj - 1)));
   const poles: Vec3[][] = [];
@@ -70,7 +70,7 @@ export function gridsToIges(grids: SurfaceGrid[], name: string): string {
   ];
   globals.forEach((line, i) => s.push(pad80(line + " ".repeat(Math.max(0, 72 - line.length)) + "G" + String(i + 1).padStart(7))));
 
-  const surfaces = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2).slice(0, 16);
+  const surfaces = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2).slice(0, 48);
   const dLines: string[] = [];
   const pLines: string[] = [];
   let pCursor = 1;

@@ -21,11 +21,12 @@ export type PlanformKind = "delta" | "power" | "spatular" | "rect" | "double";
 
 export type LidFace = "top" | "bottom";
 
-export type AeroMethod = "newtonian" | "tangent" | "mixed";
+/** CBAERO is the closest engineering method to inviscid CFD (HABP / MINIVER class). */
+export type AeroMethod = "newtonian" | "tangent" | "mixed" | "cbaero";
 
 export type FuelKind = "H2" | "JP";
 
-export type ColorMode = "surface" | "cp" | "heat";
+export type ColorMode = "surface" | "cp" | "heat" | "temp" | "mach" | "stanton" | "cf" | "impact" | "pratio" | "qhat";
 
 export type CowlSide = "belly" | "dorsal";
 
@@ -117,7 +118,7 @@ export const DEFAULT_PARAMS: DesignParams = {
   gammaDeg: 0,
   altKm: 30,
   cgFrac: 0.58,
-  aeroMethod: "mixed",
+  aeroMethod: "cbaero",
   twK: 800,
   inletHeight: 0.14,
   cowlFrac: 0.38,
@@ -308,4 +309,17 @@ export function domainOf(family: WaveriderFamily): FlowDomain {
 export const FAMILY_GROUPS: { id: FlowDomain; label: string; families: WaveriderFamily[] }[] = [
   { id: "external", label: "External", families: EXTERNAL_FAMILIES },
   { id: "internal", label: "Internal", families: INTERNAL_FAMILIES },
+];
+
+export const COLOR_MODES: { id: ColorMode; label: string }[] = [
+  { id: "surface", label: "Surf" },
+  { id: "cp", label: "Cp" },
+  { id: "heat", label: "Heat" },
+  { id: "qhat", label: "q/qs" },
+  { id: "pratio", label: "p" },
+  { id: "temp", label: "Tw" },
+  { id: "mach", label: "Me" },
+  { id: "stanton", label: "St" },
+  { id: "cf", label: "Cf" },
+  { id: "impact", label: "θ" },
 ];

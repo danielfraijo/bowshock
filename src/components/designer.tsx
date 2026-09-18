@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Check,
@@ -21,12 +21,12 @@ import { fmt } from "@/lib/waverider/math";
 import { studyJson, studyVehicle } from "@/lib/waverider/study";
 import { loadSavedParams, PRESETS, saveParams } from "@/lib/waverider/presets";
 import {
+  COLOR_MODES,
   DEFAULT_PARAMS,
   FAMILY_GROUPS,
   FAMILY_META,
   domainOf,
   type AeroMethod,
-  type ColorMode,
   type CowlSide,
   type DesignParams,
   type FlowDomain,
@@ -39,6 +39,15 @@ import {
 import { downloadBlob } from "@/lib/utils";
 
 type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "cad";
+
+function LiveField(
+  props: Omit<React.ComponentProps<typeof NumberField>, "onDragStart" | "onDragEnd"> & {
+    setDragging: (v: boolean) => void;
+  },
+) {
+  const { setDragging, ...rest } = props;
+  return <NumberField {...rest} onDragStart={() => setDragging(true)} onDragEnd={() => setDragging(false)} />;
+}
 
 function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
   if (domain === "internal") {
@@ -115,6 +124,9 @@ export function Designer() {
   const [cppSrc, setCppSrc] = useState<string>("");
   const [presetOpen, setPresetOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("geom");
+  const [dragging, setDragging] = useState(false);
+  const pending = useRef<Partial<DesignParams> | null>(null);
+  const raf = useRef(0);
 
   useEffect(() => {
     const saved = loadSavedParams();
@@ -143,12 +155,21 @@ export function Designer() {
     if (!ids.includes(tab)) setTab("geom");
   }, [params.family, tab]);
 
-  const patch = (p: Partial<DesignParams>) => setParams((prev) => ({ ...prev, ...p }));
+  const patch = (p: Partial<DesignParams>) => {
+    pending.current = { ...pending.current, ...p };
+    if (raf.current) return;
+    raf.current = requestAnimationFrame(() => {
+      raf.current = 0;
+      const next = pending.current;
+      pending.current = null;
+      if (next) setParams((prev) => ({ ...prev, ...next }));
+    });
+  };
 
   const gKey = geomKey(params);
   const built = useMemo(() => buildVehicle(params), [gKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const study = useMemo(
-    () => studyVehicle(built),
+    () => studyVehicle(built, { quick: dragging || !hydrated }),
     [
       built,
       params.flightMach,
@@ -164,6 +185,8 @@ export function Designer() {
       params.gammaDeg,
       params.rhoKgM3,
       params.massKg,
+      dragging,
+      hydrated,
     ],
   );
   const q = built.quality;
@@ -196,7 +219,21 @@ export function Designer() {
   async function save(kind: string) {
     setBusy(kind);
     try {
-      const files = fileBlobs(built, { cp: study.aero.cp, heat: study.aero.heat, twEq: study.aero.twEq });
+      const cadKinds = new Set(["stl", "stl-ascii", "stl-regions", "step", "step-nurbs", "step-tess", "step-facet", "iges", "plot3d", "obj", "kit"]);
+      const src =
+        cadKinds.has(kind)
+          ? buildVehicle({ ...params, nx: Math.max(params.nx, 96), ny: Math.max(params.ny, 72) })
+          : built;
+      const aero = cadKinds.has(kind) && src !== built ? studyVehicle(src, { quick: true }).aero : study.aero;
+      const files = fileBlobs(src, {
+        cp: aero.cp,
+        heat: aero.heat,
+        twEq: aero.twEq,
+        stanton: aero.stanton,
+        machE: aero.machE,
+        cf: aero.cf,
+        impact: aero.impact,
+      });
       const n = files.name;
       if (kind === "stl") downloadBlob(files.stlBin, `${n}.stl`);
       else if (kind === "stl-ascii") downloadBlob(files.stlAscii, `${n}_ascii.stl`);
@@ -218,10 +255,14 @@ export function Designer() {
         if (cSrc) downloadBlob(new Blob([cSrc], { type: "text/x-csrc" }), "bowshock_aero.c");
         if (cppSrc) downloadBlob(new Blob([cppSrc], { type: "text/x-c++src" }), "bowshock.cpp");
       } else if (kind === "kit") {
-        const zip = await cfdZip(built, python, cSrc, studyJson(built, study), cppSrc, {
-          cp: study.aero.cp,
-          heat: study.aero.heat,
-          twEq: study.aero.twEq,
+        const zip = await cfdZip(src, python, cSrc, studyJson(src, studyVehicle(src, { quick: true })), cppSrc, {
+          cp: aero.cp,
+          heat: aero.heat,
+          twEq: aero.twEq,
+          stanton: aero.stanton,
+          machE: aero.machE,
+          cf: aero.cf,
+          impact: aero.impact,
         });
         downloadBlob(zip, `${n}_cfd_kit.zip`);
       }
@@ -349,17 +390,17 @@ export function Designer() {
               ))}
             </div>
             <div className="absolute bottom-3 left-3 flex flex-col gap-1.5">
-              <div className="flex gap-1">
-                {(["surface", "cp", "heat"] as ColorMode[]).map((c) => (
+              <div className="flex max-w-[26rem] flex-wrap gap-1">
+                {COLOR_MODES.map((c) => (
                   <button
-                    key={c}
+                    key={c.id}
                     type="button"
-                    onClick={() => setOpts((o) => ({ ...o, color: c }))}
-                    className={`h-9 rounded-sm px-2.5 text-[11px] font-medium uppercase ${
-                      opts.color === c ? "bg-accent text-accent-fg" : "bg-bg/70 text-muted backdrop-blur-sm"
+                    onClick={() => setOpts((o) => ({ ...o, color: c.id }))}
+                    className={`h-8 rounded-sm px-2 text-[10px] font-medium uppercase ${
+                      opts.color === c.id ? "bg-accent text-accent-fg" : "bg-bg/70 text-muted backdrop-blur-sm"
                     }`}
                   >
-                    {c === "cp" ? "Cp" : c}
+                    {c.label}
                   </button>
                 ))}
               </div>
@@ -371,6 +412,8 @@ export function Designer() {
             </div>
             <div className="absolute right-3 bottom-3 font-mono text-[10px] tracking-wider text-subtle">
               {hydrated ? `${fmt(study.elapsedMs, 0)} ms · ` : null}L/D {fmt(study.aero.ld, 2)}
+              <span className="mx-1.5 text-subtle">·</span>
+              CoP {fmt(study.aero.xCp / Math.max(params.length, 1e-8), 2)}L
             </div>
           </div>
         </section>
@@ -398,10 +441,10 @@ export function Designer() {
             {tab === "geom" ? (
               <div className="space-y-4">
                 <p className="hidden text-sm leading-relaxed text-muted lg:block">{fam.blurb}</p>
-                <NumberField label="Design Mach" value={params.mach} min={3} max={16} step={0.1} onChange={(mach) => patch({ mach })} digits={1} />
-                <NumberField label="Length" value={params.length} min={0.4} max={20} step={0.1} unit="m" onChange={(length) => patch({ length })} />
-                <NumberField label="Span" value={params.span} min={0.15} max={12} step={0.05} unit="m" onChange={(span) => patch({ span })} />
-                <NumberField label="Height" value={params.height} min={0.05} max={4} step={0.01} unit="m" onChange={(height) => patch({ height })} />
+                <LiveField setDragging={setDragging} label="Design Mach" value={params.mach} min={3} max={16} step={0.1} onChange={(mach) => patch({ mach })} digits={1} />
+                <LiveField setDragging={setDragging} label="Length" value={params.length} min={0.4} max={20} step={0.1} unit="m" onChange={(length) => patch({ length })} />
+                <LiveField setDragging={setDragging} label="Span" value={params.span} min={0.15} max={12} step={0.05} unit="m" onChange={(span) => patch({ span })} />
+                <LiveField setDragging={setDragging} label="Height" value={params.height} min={0.05} max={4} step={0.01} unit="m" onChange={(height) => patch({ height })} />
                 {domain === "external" || params.family === "integrated" || params.family === "inward" || params.family === "busemann" ? (
                   <>
                 <div>
@@ -415,7 +458,7 @@ export function Designer() {
                     ]}
                   />
                 </div>
-                <NumberField
+                <LiveField setDragging={setDragging}
                   label="Dihedral"
                   value={params.dihedralDeg}
                   min={-8}
@@ -425,7 +468,7 @@ export function Designer() {
                   digits={1}
                   onChange={(dihedralDeg) => patch({ dihedralDeg })}
                 />
-                <NumberField
+                <LiveField setDragging={setDragging}
                   label="Lid camber"
                   value={params.camber}
                   min={-0.25}
@@ -433,7 +476,7 @@ export function Designer() {
                   step={0.01}
                   onChange={(camber) => patch({ camber })}
                 />
-                <NumberField
+                <LiveField setDragging={setDragging}
                   label="TE sweep"
                   value={params.teSweepDeg}
                   min={-5}
@@ -443,7 +486,7 @@ export function Designer() {
                   digits={1}
                   onChange={(teSweepDeg) => patch({ teSweepDeg })}
                 />
-                <NumberField
+                <LiveField setDragging={setDragging}
                   label="Elevon"
                   value={params.elevonDeg}
                   min={-12}
@@ -453,7 +496,7 @@ export function Designer() {
                   digits={1}
                   onChange={(elevonDeg) => patch({ elevonDeg })}
                 />
-                <NumberField
+                <LiveField setDragging={setDragging}
                   label="Vert. fins h/H"
                   value={params.finHeight}
                   min={0}
@@ -463,14 +506,14 @@ export function Designer() {
                 />
                   </>
                 ) : null}
-                <NumberField label="γ gas" value={params.gamma} min={1.2} max={1.67} step={0.01} onChange={(gamma) => patch({ gamma })} />
+                <LiveField setDragging={setDragging} label="γ gas" value={params.gamma} min={1.2} max={1.67} step={0.01} onChange={(gamma) => patch({ gamma })} />
                 {params.family === "caret" || params.family === "star" ? (
-                  <NumberField label="Shock β" value={params.shockDeg} min={8} max={40} step={0.1} unit="deg" onChange={(shockDeg) => patch({ shockDeg })} digits={1} />
+                  <LiveField setDragging={setDragging} label="Shock β" value={params.shockDeg} min={8} max={40} step={0.1} unit="deg" onChange={(shockDeg) => patch({ shockDeg })} digits={1} />
                 ) : null}
                 {params.family === "cone" ? (
                   <>
-                    <NumberField label="Cone half-angle" value={params.coneDeg} min={3} max={20} step={0.1} unit="deg" onChange={(coneDeg) => patch({ coneDeg })} digits={1} />
-                    <NumberField label="Capture cut" value={params.captureFrac} min={0.15} max={0.8} step={0.01} onChange={(captureFrac) => patch({ captureFrac })} />
+                    <LiveField setDragging={setDragging} label="Cone half-angle" value={params.coneDeg} min={3} max={20} step={0.1} unit="deg" onChange={(coneDeg) => patch({ coneDeg })} digits={1} />
+                    <LiveField setDragging={setDragging} label="Capture cut" value={params.captureFrac} min={0.15} max={0.8} step={0.01} onChange={(captureFrac) => patch({ captureFrac })} />
                   </>
                 ) : null}
                 {params.family === "osculating" ||
@@ -482,7 +525,7 @@ export function Designer() {
                 params.family === "liftbody" ? (
                   <>
                     {params.family !== "liftbody" && params.family !== "elliptic" ? (
-                      <NumberField label="Superellipse n" value={params.superN} min={1} max={6} step={0.05} onChange={(superN) => patch({ superN })} />
+                      <LiveField setDragging={setDragging} label="Superellipse n" value={params.superN} min={1} max={6} step={0.05} onChange={(superN) => patch({ superN })} />
                     ) : null}
                     <div>
                       <span className="mb-2 block text-xs font-medium text-muted">Planform</span>
@@ -500,21 +543,21 @@ export function Designer() {
                       </div>
                     </div>
                     {params.planform === "power" || params.planform === "double" || params.family === "viscopt" ? (
-                      <NumberField label="LE / stream power" value={params.planformPower} min={0.7} max={2.2} step={0.05} onChange={(planformPower) => patch({ planformPower })} />
+                      <LiveField setDragging={setDragging} label="LE / stream power" value={params.planformPower} min={0.7} max={2.2} step={0.05} onChange={(planformPower) => patch({ planformPower })} />
                     ) : null}
                   </>
                 ) : null}
                 {params.family === "wedgecone" || params.family === "inward" || params.family === "integrated" ? (
-                  <NumberField label="Center width" value={params.wedgeFrac} min={0.1} max={0.85} step={0.01} onChange={(wedgeFrac) => patch({ wedgeFrac })} />
+                  <LiveField setDragging={setDragging} label="Center width" value={params.wedgeFrac} min={0.1} max={0.85} step={0.01} onChange={(wedgeFrac) => patch({ wedgeFrac })} />
                 ) : null}
                 {params.family === "star" ? (
-                  <NumberField label="Fins" value={params.fins} min={3} max={8} step={1} digits={0} onChange={(fins) => patch({ fins: Math.round(fins) })} />
+                  <LiveField setDragging={setDragging} label="Fins" value={params.fins} min={3} max={8} step={1} digits={0} onChange={(fins) => patch({ fins: Math.round(fins) })} />
                 ) : null}
                 {params.family === "ramjet" || params.family === "scramjet" || params.family === "integrated" ? (
                   <>
-                    <NumberField label="Inlet height" value={params.inletHeight} min={0.04} max={0.6} step={0.01} unit="m" onChange={(inletHeight) => patch({ inletHeight })} />
-                    <NumberField label="Ramp" value={params.rampDeg} min={4} max={18} step={0.5} unit="deg" digits={1} onChange={(rampDeg) => patch({ rampDeg })} />
-                    <NumberField
+                    <LiveField setDragging={setDragging} label="Inlet height" value={params.inletHeight} min={0.04} max={0.6} step={0.01} unit="m" onChange={(inletHeight) => patch({ inletHeight })} />
+                    <LiveField setDragging={setDragging} label="Ramp" value={params.rampDeg} min={4} max={18} step={0.5} unit="deg" digits={1} onChange={(rampDeg) => patch({ rampDeg })} />
+                    <LiveField setDragging={setDragging}
                       label="Ramps"
                       value={params.nRamps}
                       min={1}
@@ -523,9 +566,9 @@ export function Designer() {
                       digits={0}
                       onChange={(nRamps) => patch({ nRamps: Math.round(nRamps) })}
                     />
-                    <NumberField label="Cowl x/L" value={params.cowlFrac} min={0.2} max={0.7} step={0.01} onChange={(cowlFrac) => patch({ cowlFrac })} />
-                    <NumberField label="Combustor L/L" value={params.combustorFrac} min={0.1} max={0.45} step={0.01} onChange={(combustorFrac) => patch({ combustorFrac })} />
-                    <NumberField label="Nozzle ER" value={params.nozzleER} min={1.5} max={12} step={0.1} onChange={(nozzleER) => patch({ nozzleER })} digits={1} />
+                    <LiveField setDragging={setDragging} label="Cowl x/L" value={params.cowlFrac} min={0.2} max={0.7} step={0.01} onChange={(cowlFrac) => patch({ cowlFrac })} />
+                    <LiveField setDragging={setDragging} label="Combustor L/L" value={params.combustorFrac} min={0.1} max={0.45} step={0.01} onChange={(combustorFrac) => patch({ combustorFrac })} />
+                    <LiveField setDragging={setDragging} label="Nozzle ER" value={params.nozzleER} min={1.5} max={12} step={0.1} onChange={(nozzleER) => patch({ nozzleER })} digits={1} />
                     {params.family === "integrated" ? (
                       <div>
                         <span className="mb-2 block text-xs font-medium text-muted">Cowl</span>
@@ -547,21 +590,23 @@ export function Designer() {
                     ) : null}
                   </>
                 ) : null}
-                <NumberField label="Streamwise pts" value={params.nx} min={12} max={80} step={1} digits={0} onChange={(nx) => patch({ nx: Math.round(nx) })} />
-                <NumberField label="Spanwise pts" value={params.ny} min={10} max={64} step={1} digits={0} onChange={(ny) => patch({ ny: Math.round(ny) })} />
+                <LiveField setDragging={setDragging} label="Streamwise pts" value={params.nx} min={12} max={160} step={1} digits={0} onChange={(nx) => patch({ nx: Math.round(nx) })} />
+                <LiveField setDragging={setDragging} label="Spanwise pts" value={params.ny} min={10} max={120} step={1} digits={0} onChange={(ny) => patch({ ny: Math.round(ny) })} />
                 <div>
                   <span className="mb-2 block text-xs font-medium text-muted">Resolution</span>
                   <Seg
-                    value={params.nx >= 56 ? "hi" : params.nx <= 24 ? "fast" : "std"}
-                    onChange={(r: "fast" | "std" | "hi") => {
+                    value={params.nx >= 90 ? "cad" : params.nx >= 56 ? "hi" : params.nx <= 24 ? "fast" : "std"}
+                    onChange={(r: "fast" | "std" | "hi" | "cad") => {
                       if (r === "fast") patch({ nx: 20, ny: 14 });
                       else if (r === "hi") patch({ nx: 64, ny: 48 });
+                      else if (r === "cad") patch({ nx: 96, ny: 72 });
                       else patch({ nx: 40, ny: 28 });
                     }}
                     options={[
                       { id: "fast", label: "Fast" },
                       { id: "std", label: "Std" },
                       { id: "hi", label: "Hi" },
+                      { id: "cad", label: "CAD" },
                     ]}
                   />
                 </div>
@@ -578,7 +623,7 @@ export function Designer() {
                   />
                 </div>
                 {params.leBlunt !== false ? (
-                  <NumberField
+                  <LiveField setDragging={setDragging}
                     label="Nose / LE radius"
                     value={params.leRadius}
                     min={0.001 * params.length}
@@ -604,7 +649,7 @@ export function Designer() {
                   <span className="text-xs font-medium text-muted">Lock flight Mach = design</span>
                   <Switch checked={params.lockFlight} onCheckedChange={(lockFlight) => patch({ lockFlight })} />
                 </div>
-                <NumberField
+                <LiveField setDragging={setDragging}
                   label="Flight Mach"
                   value={params.lockFlight ? params.mach : params.flightMach}
                   min={2}
@@ -613,10 +658,10 @@ export function Designer() {
                   digits={1}
                   onChange={(flightMach) => patch({ flightMach, lockFlight: false })}
                 />
-                <NumberField label="α" value={params.alphaDeg} min={-8} max={20} step={0.25} unit="deg" digits={2} onChange={(alphaDeg) => patch({ alphaDeg })} />
-                <NumberField label="β" value={params.betaDeg} min={-8} max={8} step={0.25} unit="deg" digits={2} onChange={(betaDeg) => patch({ betaDeg })} />
-                <NumberField label="Altitude" value={params.altKm} min={0} max={80} step={0.5} unit="km" digits={1} onChange={(altKm) => patch({ altKm })} />
-                <NumberField
+                <LiveField setDragging={setDragging} label="α" value={params.alphaDeg} min={-12} max={22} step={0.05} unit="deg" digits={2} onChange={(alphaDeg) => patch({ alphaDeg })} />
+                <LiveField setDragging={setDragging} label="β" value={params.betaDeg} min={-8} max={8} step={0.05} unit="deg" digits={2} onChange={(betaDeg) => patch({ betaDeg })} />
+                <LiveField setDragging={setDragging} label="Altitude" value={params.altKm} min={0} max={80} step={0.5} unit="km" digits={1} onChange={(altKm) => patch({ altKm })} />
+                <LiveField setDragging={setDragging}
                   label="Flight path γ"
                   value={params.gammaDeg}
                   min={-8}
@@ -626,24 +671,27 @@ export function Designer() {
                   digits={1}
                   onChange={(gammaDeg) => patch({ gammaDeg })}
                 />
-                <NumberField label="CG x/L" value={params.cgFrac} min={0.3} max={0.8} step={0.005} onChange={(cgFrac) => patch({ cgFrac })} digits={3} />
-                <NumberField label="Wall T" value={params.twK} min={250} max={1800} step={10} unit="K" digits={0} onChange={(twK) => patch({ twK })} />
-                <NumberField label="ρ structure" value={params.rhoKgM3} min={40} max={400} step={5} unit="kg/m³" digits={0} onChange={(rhoKgM3) => patch({ rhoKgM3 })} />
-                <NumberField label="Mass override" value={params.massKg} min={0} max={8000} step={10} unit="kg" digits={0} onChange={(massKg) => patch({ massKg })} />
+                <LiveField setDragging={setDragging} label="CG x/L" value={params.cgFrac} min={0.3} max={0.8} step={0.005} onChange={(cgFrac) => patch({ cgFrac })} digits={3} />
+                <LiveField setDragging={setDragging} label="Wall T" value={params.twK} min={250} max={1800} step={10} unit="K" digits={0} onChange={(twK) => patch({ twK })} />
+                <LiveField setDragging={setDragging} label="ρ structure" value={params.rhoKgM3} min={40} max={400} step={5} unit="kg/m³" digits={0} onChange={(rhoKgM3) => patch({ rhoKgM3 })} />
+                <LiveField setDragging={setDragging} label="Mass override" value={params.massKg} min={0} max={8000} step={10} unit="kg" digits={0} onChange={(massKg) => patch({ massKg })} />
                 <div>
                   <span className="mb-2 block text-xs font-medium text-muted">Panel method</span>
                   <Seg
                     value={params.aeroMethod}
                     onChange={(aeroMethod: AeroMethod) => patch({ aeroMethod })}
                     options={[
-                      { id: "newtonian", label: "Newtonian" },
+                      { id: "newtonian", label: "Newton" },
                       { id: "tangent", label: "Tangent" },
                       { id: "mixed", label: "Mixed" },
+                      { id: "cbaero", label: "CBAERO" },
                     ]}
                   />
                 </div>
                 <p className="text-xs leading-relaxed text-subtle">
-                  1976 US Std. Atmosphere. Off-design: keep design Mach for the inverse shock, fly at a different M and α.
+                  CBAERO is the closest engineering method to Euler/NS CFD: Dahlem–Buck + Newton–Busemann +
+                  tangent-wedge/cone, Prandtl–Meyer leeward, Eckert–Zoby heating on the post-shock edge.
+                  +α heats the belly; −α heats the lid. Type a number or drag the slider.
                 </p>
               </div>
             ) : null}
@@ -667,8 +715,8 @@ export function Designer() {
                     ]}
                   />
                 </div>
-                <NumberField label="Equivalence φ" value={params.phi} min={0.3} max={1.3} step={0.05} onChange={(phi) => patch({ phi })} />
-                <NumberField
+                <LiveField setDragging={setDragging} label="Equivalence φ" value={params.phi} min={0.3} max={1.3} step={0.05} onChange={(phi) => patch({ phi })} />
+                <LiveField setDragging={setDragging}
                   label="Flight Mach"
                   value={params.lockFlight ? params.mach : params.flightMach}
                   min={2}
@@ -677,7 +725,7 @@ export function Designer() {
                   digits={1}
                   onChange={(flightMach) => patch({ flightMach, lockFlight: false })}
                 />
-                <NumberField label="Altitude" value={params.altKm} min={0} max={80} step={0.5} unit="km" digits={1} onChange={(altKm) => patch({ altKm })} />
+                <LiveField setDragging={setDragging} label="Altitude" value={params.altKm} min={0} max={80} step={0.5} unit="km" digits={1} onChange={(altKm) => patch({ altKm })} />
                 <CycleBlock study={study} />
               </div>
             ) : null}
@@ -756,7 +804,12 @@ export function Designer() {
                   {busy === "kit" ? "Packing…" : "Download full CFD kit (.zip)"}
                 </Button>
                 <p className="mt-3 text-[11px] leading-relaxed text-subtle">
-                  <span className="font-medium text-fg">Pointwise:</span> import the <span className="text-fg">binary STL</span> (File → Import → STL) and run automatic unstructured mesh — the nose is a circular fillet, not a knife-edge. For NURBS: <span className="text-fg">IGES</span> type-128 (metres), or the <span className="text-fg">NURBS STEP</span> (sewn CLOSED_SHELL, degree-3, shared edges). Plot3D <span className="text-fg">.x</span> is 3-D formatted, IBLANK off. Do not import STEP as XYZ points (that is the cyan cloud). The most-forward point of the solid is <span className="text-fg">(0, 0, 0)</span>. Half-model: Y = 0 is an exact planar symmetry face — set that as the symmetry BC. Toggle <span className="text-fg">Rounded leading edge</span> and set the radius before you export.
+                  <span className="font-medium text-fg">Pointwise:</span> export uses a dense CAD grid (at least 96×72)
+                  with healed trailing edges. Import the <span className="text-fg">binary STL</span> (File → Import → STL)
+                  or <span className="text-fg">IGES</span> type-128 / <span className="text-fg">NURBS STEP</span> /
+                  Plot3D <span className="text-fg">.x</span>. Nose is a circular fillet. Do not import STEP as XYZ
+                  points. Frame: most-forward point at <span className="text-fg">(0, 0, 0)</span>. Half-model: Y = 0 is
+                  the symmetry face. Use the CAD resolution preset before you mesh if you want even denser poles.
                   {params.family === "ramjet" || params.family === "scramjet"
                     ? " Ramjet: rectangular inlet at x=0 and nozzle at x=L. Flow-through leaves both OPEN."
                     : ""}
