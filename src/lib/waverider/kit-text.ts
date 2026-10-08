@@ -116,8 +116,12 @@ Python (batch / parametric)
   python waverider_cad.py --type ${p.family} --mach ${p.mach} --length ${p.length} \\
       --span ${p.span} --height ${p.height} --stl ${p.name}.stl --step ${p.name}.step
 
-C kernel (wedge L/D + atmosphere + ramjet + heat + 3DOF)
---------------------------------------------------------
+C kernel (gasdynamics, strip shock-expansion, 2D HLLC wedge)
+----------------------------------------------------------
+  gcc -O3 -std=c11 bowshock_kernel.c -lm -o bowshock_kernel
+  ./bowshock_kernel --check
+
+bowshock_aero.c is the older Newtonian / cycle checker:
   gcc -O2 -std=c11 bowshock_aero.c -lm -o bowshock_aero
   ./bowshock_aero --check
   ./bowshock_aero --wedge --mach ${p.mach} --theta ${fmt(a.thetaDeg, 2)}
@@ -128,11 +132,15 @@ C kernel (wedge L/D + atmosphere + ramjet + heat + 3DOF)
 
 Zero third-party dependencies (Python 3.9+). C is optional verification.
 
-Panel aero (CBAERO-class, not a Navier–Stokes substitute)
---------------------------------------------------------
-Mixed method: attached tangent-wedge (θ-β-M) or tangent-cone (Taylor–Maccoll /
-Sims) on the windward face; Modified Newtonian (Lees) if the shock detaches;
-Prandtl–Meyer leeward; Love base Cp = −1/M²; van Driest II Cf (Hopkins–Inouye).
+Panel aero (engineering methods, not a Navier–Stokes substitute)
+----------------------------------------------------------------
+Mixed: shock-expansion along each loft strip. Oblique shock or Taylor–Maccoll
+at the nose, Prandtl–Meyer on later turns. Tangent-wedge / tangent-cone
+recomputes every panel from freestream and misses the pressure a nose shock
+leaves on a face that turns back. Modified Newtonian (Lees) if the shock
+detaches. Love base Cp = −1/M². van Driest II Cf (Hopkins–Inouye).
+The 2D HLLC wedge in bowshock_kernel.c is an Euler anchor for that shock.
+It is not a 3D Cart3D run.
 Heating: Sutton–Graves stagnation (TR R-802, q in W/cm² with k=1.83e-8) +
 Tauber running-length (TP-2914) + Tauber–Sutton radiative (JSR 1991).
 Stability: finite-difference CLα, Cmα, Cnβ, Clβ, static margin about CG x/L.

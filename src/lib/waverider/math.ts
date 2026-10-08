@@ -343,7 +343,6 @@ export function tauberTurbulent(rho: number, V: number, x: number, recov: number
 }
 
 const _coneBeta = new Map<string, number>();
-const _coneCp = new Map<string, number>();
 
 function coneKey(M: number, cone: number, gamma: number) {
   return `${M.toFixed(2)}:${(cone * RAD).toFixed(1)}:${gamma}`;
@@ -359,34 +358,52 @@ export function solveConeShockCached(M: number, cone: number, gamma = 1.4): numb
   return b;
 }
 
+export interface ConeState {
+  cp: number;
+  /** p_cone / p_∞ */
+  pRatio: number;
+  /** Mach number on the cone surface */
+  M: number;
+}
+
+const _coneState = new Map<string, ConeState>();
+
 /**
- * Inviscid cone surface Cp from Taylor–Maccoll (Sims NASA SP-3004 method).
- * Used as the tangent-cone pressure on axisymmetric generating flows.
+ * Inviscid cone surface state from Taylor–Maccoll (Sims NASA SP-3004).
+ * Velocities in the integrator are V / Vmax. Surface Mach follows from
+ * a² = ((γ−1)/2) Vmax² (1 − v²).
  */
-export function coneSurfaceCp(M: number, cone: number, gamma = 1.4): number {
-  if (cone <= 1e-5) return 0;
+export function coneSurfaceState(M: number, cone: number, gamma = 1.4): ConeState {
+  if (cone <= 1e-5) return { cp: 0, pRatio: 1, M };
   const k = coneKey(M, cone, gamma);
-  const hit = _coneCp.get(k);
-  if (hit !== undefined) return hit;
+  const hit = _coneState.get(k);
+  if (hit) return hit;
+  const q = 0.5 * gamma * M * M;
   const beta = solveConeShockCached(M, cone, gamma);
   const tm = taylorMaccoll(M, beta, gamma);
-  const q = 0.5 * gamma * M * M;
   if (!tm) {
     const cp = newtonianCpMax(M, gamma) * Math.sin(cone) ** 2;
-    _coneCp.set(k, cp);
-    return cp;
+    const st = { cp, pRatio: 1 + cp * q, M: Math.max(1.05, M * 0.6) };
+    _coneState.set(k, st);
+    return st;
   }
   const sh = obliqueShock(M, beta, gamma);
   const v2 = tm.vr[0] ** 2 + tm.vt[0] ** 2;
   const T2T0 = Math.max(1e-6, 1 - v2);
-  const p2 = sh.p2p1;
-  const p02 = p2 * T2T0 ** (-gamma / (gamma - 1));
+  const p02 = sh.p2p1 * T2T0 ** (-gamma / (gamma - 1));
   const { vr } = interpTable(tm, tm.cone);
   const TcT0 = Math.max(1e-6, 1 - vr * vr);
   const pc = p02 * TcT0 ** (gamma / (gamma - 1));
   const cp = (pc - 1) / q;
-  _coneCp.set(k, cp);
-  return cp;
+  const Msurf = vr / Math.sqrt(Math.max(1e-12, 0.5 * (gamma - 1) * (1 - vr * vr)));
+  const st = { cp, pRatio: pc, M: Math.max(1.01, Msurf) };
+  _coneState.set(k, st);
+  return st;
+}
+
+/** Inviscid cone surface Cp. Tangent-cone pressure for axisymmetric generating flows. */
+export function coneSurfaceCp(M: number, cone: number, gamma = 1.4): number {
+  return coneSurfaceState(M, cone, gamma).cp;
 }
 
 

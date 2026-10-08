@@ -14,6 +14,7 @@ export class MeshBuilder {
   private pos: number[] = [];
   private idx: number[] = [];
   private surf: number[] = [];
+  private tags: number[] = [];
   skipped = 0;
   private q: number;
   private areaMin: number;
@@ -39,7 +40,7 @@ export class MeshBuilder {
     return this.vert(p[0], p[1], p[2]);
   }
 
-  tri(a: number, b: number, c: number, surface: SurfaceKind) {
+  tri(a: number, b: number, c: number, surface: SurfaceKind, tag = -1) {
     if (a === b || b === c || c === a) {
       this.skipped++;
       return;
@@ -69,10 +70,11 @@ export class MeshBuilder {
     }
     this.idx.push(a, b, c);
     this.surf.push(SURFACE_ID[surface]);
+    this.tags.push(tag);
   }
 
   /** Split on the shorter diagonal so sliver quads do not fan into hanging spikes. */
-  quad(a: number, b: number, c: number, d: number, surface: SurfaceKind) {
+  quad(a: number, b: number, c: number, d: number, surface: SurfaceKind, tag = -1) {
     if (a === b && b === c && c === d) {
       this.skipped++;
       return;
@@ -80,11 +82,11 @@ export class MeshBuilder {
     const ac = dist2(this.pos, a, c);
     const bd = dist2(this.pos, b, d);
     if (ac <= bd) {
-      this.tri(a, b, c, surface);
-      this.tri(a, c, d, surface);
+      this.tri(a, b, c, surface, tag);
+      this.tri(a, c, d, surface, tag);
     } else {
-      this.tri(a, b, d, surface);
-      this.tri(b, c, d, surface);
+      this.tri(a, b, d, surface, tag);
+      this.tri(b, c, d, surface, tag);
     }
   }
 
@@ -100,6 +102,7 @@ export class MeshBuilder {
       positions: Float64Array.from(this.pos),
       indices: Uint32Array.from(this.idx),
       surfaces: Uint8Array.from(this.surf),
+      tags: Int32Array.from(this.tags),
     };
     orientOutward(mesh);
     return mesh;
@@ -208,15 +211,16 @@ export function makeGrid(name: string, ni: number, nj: number, sample: (i: numbe
   return { name, ni, nj, xyz };
 }
 
-export function stitchGrid(b: MeshBuilder, g: SurfaceGrid, surface: SurfaceKind, flip = false) {
+export function stitchGrid(b: MeshBuilder, g: SurfaceGrid, surface: SurfaceKind, flip = false, gridId = -1) {
   for (let i = 0; i < g.ni - 1; i++) {
     for (let j = 0; j < g.nj - 1; j++) {
       const a = b.vertP(gridPoint(g, i, j));
       const c1 = b.vertP(gridPoint(g, i + 1, j));
       const c2 = b.vertP(gridPoint(g, i + 1, j + 1));
       const d = b.vertP(gridPoint(g, i, j + 1));
-      if (flip) b.quad(a, d, c2, c1, surface);
-      else b.quad(a, c1, c2, d, surface);
+      const tag = gridId < 0 ? -1 : ((gridId & 255) << 24) | ((i & 4095) << 12) | (j & 4095);
+      if (flip) b.quad(a, d, c2, c1, surface, tag);
+      else b.quad(a, c1, c2, d, surface, tag);
     }
   }
 }
@@ -363,7 +367,7 @@ export function compactMesh(mesh: TriMesh): TriMesh {
   }
   const indices = new Uint32Array(mesh.indices.length);
   for (let t = 0; t < mesh.indices.length; t++) indices[t] = remap[mesh.indices[t]];
-  return { positions, indices, surfaces: mesh.surfaces };
+  return { positions, indices, surfaces: mesh.surfaces, ...(mesh.tags ? { tags: mesh.tags } : {}) };
 }
 
 /** Merge aft vertices closer than `tol`. Closes micro TE-tip slits without eating the LE fillet. */
@@ -411,6 +415,8 @@ export function weldAft(mesh: TriMesh, length: number, tol?: number): TriMesh {
   }
   const keep: number[] = [];
   const keepS: number[] = [];
+  const keepT: number[] = [];
+  const tags = mesh.tags;
   const nt = idx.length / 3;
   for (let t = 0; t < nt; t++) {
     const a = idx[t * 3];
@@ -419,11 +425,13 @@ export function weldAft(mesh: TriMesh, length: number, tol?: number): TriMesh {
     if (a === b || b === c || c === a) continue;
     keep.push(a, b, c);
     keepS.push(mesh.surfaces[t] ?? 0);
+    if (tags) keepT.push(tags[t] ?? -1);
   }
   const out: TriMesh = {
     positions: mesh.positions,
     indices: Uint32Array.from(keep),
     surfaces: Uint8Array.from(keepS),
+    ...(tags ? { tags: Int32Array.from(keepT) } : {}),
   };
   return compactMesh(out);
 }
@@ -432,7 +440,7 @@ export function scaleMesh(mesh: TriMesh, s: number): TriMesh {
   if (s === 1) return mesh;
   const positions = new Float64Array(mesh.positions.length);
   for (let i = 0; i < mesh.positions.length; i++) positions[i] = mesh.positions[i] * s;
-  return { positions, indices: mesh.indices, surfaces: mesh.surfaces };
+  return { positions, indices: mesh.indices, surfaces: mesh.surfaces, ...(mesh.tags ? { tags: mesh.tags } : {}) };
 }
 
 export function scaleGrids(grids: SurfaceGrid[], s: number): SurfaceGrid[] {

@@ -40,6 +40,7 @@ import {
   zobyHeatWcm2,
 } from "./math";
 import type { Atmosphere } from "./atmosphere";
+import { integrateShockExpansion } from "./shockexp";
 
 export interface PanelAero {
   cl: number;
@@ -227,6 +228,9 @@ export function panelAero(
   const M = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
   const g = params.gamma;
   const method = params.aeroMethod;
+  if (method === "mixed") {
+    return integrateShockExpansion(mesh, params, atm, alphaDeg, betaDeg, sRef, lRef, rates);
+  }
   const alpha = alphaDeg * DEG;
   const beta = betaDeg * DEG;
   const vhat = flowDir(alpha, beta);
@@ -458,12 +462,6 @@ export function panelAero(
   if (method === "cbaero") {
     notes.push(
       "CBAERO-class: Dahlem–Buck + Newton–Busemann + tangent-wedge/cone windward; Prandtl–Meyer leeward; Love base. Heating is Eckert–Zoby (NASA TP-1374) on the post-shock edge state, so +α lights the belly and −α the lid.",
-    );
-  } else if (method === "mixed") {
-    notes.push(
-      useCone
-        ? "Mixed: tangent-cone (Taylor–Maccoll) windward if attached, Modified Newtonian if detached; Prandtl–Meyer leeward; Love base; van Driest II Cf."
-        : "Mixed: tangent-wedge (θ-β-M) windward if attached, Modified Newtonian if detached; Prandtl–Meyer leeward; Love base; van Driest II / Blasius Cf.",
     );
   } else if (method === "tangent") {
     notes.push(useCone ? "Tangent-cone (Sims / Taylor–Maccoll) on windward panels." : "Tangent-wedge (exact oblique shock) on windward panels.");

@@ -89,8 +89,8 @@ function closeVehicle(
   flowThrough = false,
   leading?: SurfaceGrid | null,
 ) {
-  stitchGrid(b, upper, "upper", false);
-  stitchGrid(b, lower, "lower", true);
+  stitchGrid(b, upper, "upper", false, 0);
+  stitchGrid(b, lower, "lower", true, 1);
   if (leading && leading.ni >= 2 && leading.nj >= 2) stitchGrid(b, leading, "leading", false);
   if (leading && leading.ni >= 3) {
     const lead = leading;
@@ -164,8 +164,8 @@ function closeDuct(
   half: boolean,
   flowThrough: boolean,
 ) {
-  stitchGrid(b, cowl, "cowl", false);
-  stitchGrid(b, floor, "lower", true);
+  stitchGrid(b, cowl, "cowl", false, 0);
+  stitchGrid(b, floor, "lower", true, 1);
   const nj = Math.min(cowl.nj, floor.nj);
   const ni = Math.min(cowl.ni, floor.ni);
   const sideJs = half ? [nj - 1] : [0, nj - 1];
@@ -781,8 +781,8 @@ function buildStar(params: DesignParams): {
   const Rn = effectiveLeRadius(params);
   if (Rn > 0) bluntStarNose(grids, Rn, L);
   for (let f = 0; f < fins; f++) {
-    stitchGrid(b, grids[2 * f], "upper", false);
-    stitchGrid(b, grids[2 * f + 1], "lower", false);
+    stitchGrid(b, grids[2 * f], "upper", false, f * 2);
+    stitchGrid(b, grids[2 * f + 1], "lower", false, f * 2 + 1);
   }
 
   const outline: number[] = [];

@@ -108,6 +108,7 @@ export async function cfdZip(
     cf?: Float32Array;
     impact?: Float32Array;
   },
+  kernelSource = "",
 ): Promise<Blob> {
   const f = fileBlobs(built, fields);
   const n = f.name;
@@ -132,6 +133,7 @@ export async function cfdZip(
     { name: `${n}/waverider_cad.py`, data: enc.encode(pythonSource) },
   ];
   if (cSource) files.push({ name: `${n}/bowshock_aero.c`, data: enc.encode(cSource) });
+  if (kernelSource) files.push({ name: `${n}/bowshock_kernel.c`, data: enc.encode(kernelSource) });
   if (cppSource) files.push({ name: `${n}/bowshock.cpp`, data: enc.encode(cppSource) });
   if (analysis) files.push({ name: `${n}/analysis.json`, data: utf8(analysis) });
   return buildZip(files);

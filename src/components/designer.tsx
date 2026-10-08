@@ -17,6 +17,7 @@ import { NumberField, Seg, Stat } from "@/components/fields";
 import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
 import { buildVehicle } from "@/lib/waverider/generate";
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
+import kernelSource from "../../native/bowshock_kernel.c?raw";
 import { fmt } from "@/lib/waverider/math";
 import { studyJson, studyVehicle } from "@/lib/waverider/study";
 import { loadSavedParams, PRESETS, saveParams } from "@/lib/waverider/presets";
@@ -253,17 +254,26 @@ export function Designer() {
         downloadBlob(files.runner, `run_case.py`);
         if (python) downloadBlob(new Blob([python], { type: "text/x-python" }), "waverider_cad.py");
         if (cSrc) downloadBlob(new Blob([cSrc], { type: "text/x-csrc" }), "bowshock_aero.c");
+        if (kernelSource) downloadBlob(new Blob([kernelSource], { type: "text/x-csrc" }), "bowshock_kernel.c");
         if (cppSrc) downloadBlob(new Blob([cppSrc], { type: "text/x-c++src" }), "bowshock.cpp");
       } else if (kind === "kit") {
-        const zip = await cfdZip(src, python, cSrc, studyJson(src, studyVehicle(src, { quick: true })), cppSrc, {
-          cp: aero.cp,
-          heat: aero.heat,
-          twEq: aero.twEq,
-          stanton: aero.stanton,
-          machE: aero.machE,
-          cf: aero.cf,
-          impact: aero.impact,
-        });
+        const zip = await cfdZip(
+          src,
+          python,
+          cSrc,
+          studyJson(src, studyVehicle(src, { quick: true })),
+          cppSrc,
+          {
+            cp: aero.cp,
+            heat: aero.heat,
+            twEq: aero.twEq,
+            stanton: aero.stanton,
+            machE: aero.machE,
+            cf: aero.cf,
+            impact: aero.impact,
+          },
+          kernelSource,
+        );
         downloadBlob(zip, `${n}_cfd_kit.zip`);
       }
     } finally {
@@ -272,8 +282,8 @@ export function Designer() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col bg-bg text-fg">
-      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-6">
+    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-bg text-fg">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-6">
         <div className="min-w-0">
           <p className="font-display text-xl font-semibold tracking-[0.22em] text-fg">CUSPIS</p>
           <p className="truncate text-xs text-muted">
@@ -292,8 +302,8 @@ export function Designer() {
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-[1680px] flex-1 grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)_320px]">
-        <aside className="order-2 border-b border-border lg:order-none lg:border-r lg:border-b-0">
+      <div className="grid min-h-0 w-full flex-1 grid-cols-1 grid-rows-[minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,1fr)] overflow-hidden lg:grid-cols-[272px_minmax(0,1fr)_360px] lg:grid-rows-1">
+        <aside className="order-2 min-h-0 overflow-y-auto overscroll-contain border-t border-border lg:order-1 lg:border-t-0 lg:border-r">
           <div className="p-4 sm:p-5">
             <p className="mb-2 text-[11px] font-medium tracking-[0.16em] text-subtle uppercase">Toolkit</p>
             <Seg
@@ -355,8 +365,8 @@ export function Designer() {
           </div>
         </aside>
 
-        <section className="relative order-1 flex min-h-[280px] flex-col lg:order-none lg:min-h-0">
-          <div className="relative h-[46vh] min-h-[280px] flex-1 lg:h-auto lg:min-h-[420px]">
+        <section className="relative order-1 min-h-0 overflow-hidden lg:order-2">
+          <div className="absolute inset-0">
             <WaveriderViewer built={built} study={study} opts={opts} />
             <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-bg/70 to-transparent" />
             <div className="absolute top-3 left-3 rounded-md bg-bg/70 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur-sm">
@@ -418,7 +428,7 @@ export function Designer() {
           </div>
         </section>
 
-        <aside className="order-3 flex flex-col border-t border-border lg:order-none lg:border-t-0 lg:border-l">
+        <aside className="order-3 flex min-h-0 flex-col overflow-hidden border-t border-border lg:border-t-0 lg:border-l">
           <div className="flex gap-px overflow-x-auto border-b border-border bg-surface-2 p-1">
             {TABS.map((t) => (
               <button
@@ -433,7 +443,7 @@ export function Designer() {
               </button>
             ))}
           </div>
-          <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5">
             {!hydrated ? (
               <p className="text-sm leading-relaxed text-muted">{fam.blurb}</p>
             ) : (
@@ -810,6 +820,7 @@ export function Designer() {
                   Plot3D <span className="text-fg">.x</span>. Nose is a circular fillet. Do not import STEP as XYZ
                   points. Frame: most-forward point at <span className="text-fg">(0, 0, 0)</span>. Half-model: Y = 0 is
                   the symmetry face. Use the CAD resolution preset before you mesh if you want even denser poles.
+                  The kit also includes bowshock_kernel.c.
                   {params.family === "ramjet" || params.family === "scramjet"
                     ? " Ramjet: rectangular inlet at x=0 and nozzle at x=L. Flow-through leaves both OPEN."
                     : ""}
@@ -822,7 +833,7 @@ export function Designer() {
         </aside>
       </div>
 
-      <footer className="hidden items-center justify-between border-t border-border px-6 py-2 text-[11px] text-subtle sm:flex">
+      <footer className="hidden shrink-0 items-center justify-between border-t border-border px-6 py-2 text-[11px] text-subtle sm:flex">
         <span className="inline-flex items-center gap-1.5">
           {q.watertight || ((params.family === "ramjet" || params.family === "scramjet") && params.flowThrough) ? (
             <Check className="size-3 text-fg" />

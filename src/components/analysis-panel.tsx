@@ -48,7 +48,12 @@ export function AeroBlock({ study }: { study: StudyResult }) {
         <Formula
           name="CBAERO / HABP"
           expr="windward: 0.55 tangent + 0.25 Dahlem–Buck + 0.20 Newton–Busemann    leeward: PM    base: −1/M²"
-          note="Closest inviscid panel method to Euler CFD. Pick CBAERO on the Flight tab."
+          note="Pick CBAERO on the Flight tab. Tangent-wedge recomputes every panel from freestream."
+        />
+        <Formula
+          name="Shock-expansion strip"
+          expr="nose: oblique shock or Taylor–Maccoll    later turns: Prandtl–Meyer"
+          note="Mixed marches strips. Base Love Cp = −1/M²."
         />
         <Formula name="Skin friction" expr="Cf = Cfi / Fc     van Driest II, Cfi = 0.455/(log₁₀ Re)²" note="Hopkins–Inouye. Compressibility via Taw, Tw." />
       </div>
@@ -183,7 +188,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
     <div>
       <p className="mb-3 text-xs leading-relaxed text-muted">
         Flight at M {fmt(study.flightMach, 2)}, {fmt(atm.h / 1000, 1)} km, {fmt(atm.V, 0)} m/s, q∞{" "}
-        {fmt(atm.q / 1000, 2)} kPa. Linear 6DOF from mixed-panel derivatives; RK4 from a +2° α pulse.
+        {fmt(atm.q / 1000, 2)} kPa. Linear 6DOF from shock-expansion derivatives; RK4 from a +2° α pulse.
       </p>
       <p className="mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Static /rad</p>
       <Stat k="CLα" v={fmt(d.cla, 3)} />
@@ -248,7 +253,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
         <Formula
           name="Rotary incidence"
           expr="V_panel = V∞ î − ω × r_cg     q̂ = q L / 2V"
-          note="Local velocity perturbation on every facet. Same mixed Cp as the static polar."
+          note="Local velocity perturbation on every facet. Same strip Cp as the static polar."
         />
         <Formula
           name="RK4"
@@ -345,8 +350,8 @@ export function ChecksBlock({ study }: { study: StudyResult }) {
     <div>
       <Stat k="Kernel" v={`${pass}/${n} pass`} ok={pass === n} />
       <p className="mt-2 mb-3 text-xs leading-relaxed text-muted">
-        Closed-form identities and published tables (Anderson, NACA 1135, Sims, US76, Kantrowitz). These
-        do not use the mesh — they test the same solvers the vehicle uses.
+        Gas identities (Anderson, NACA 1135, Sims, US76, Kantrowitz), an 8° wedge strip, a turning ramp
+        against analytic shock-expansion, and a 2D HLLC Euler shock. The percent is |got − expected| / |expected|.
       </p>
       {shown.map((c) => (
         <div key={c.id} className="border-b border-border/80 py-2 last:border-0">
@@ -356,7 +361,7 @@ export function ChecksBlock({ study }: { study: StudyResult }) {
           </div>
           <p className="mt-1 font-mono text-[10px] leading-snug text-subtle">{c.formula}</p>
           <p className="mt-0.5 font-mono text-[10px] text-muted">
-            got {fmt(c.got, 4)} · expect {fmt(c.expected, 4)} · {c.source}
+            got {fmt(c.got, 4)} · expect {fmt(c.expected, 4)} · err {(c.relErr * 100).toFixed(2)}% · {c.source}
           </p>
         </div>
       ))}

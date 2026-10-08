@@ -36,7 +36,8 @@
   #app {
     background: var(--color-bg);
     color: var(--color-fg);
-    min-height: 100%;
+    height: 100%;
+    overflow: hidden;
   }
 
   button:not(:disabled),

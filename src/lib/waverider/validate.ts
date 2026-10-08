@@ -1,6 +1,7 @@
 /**
- * Closed-form + published-table checks for the gas-dynamic kernel.
- * These do not use the mesh. They run in well under a millisecond.
+ * Closed-form checks, plus three anchors that use the mesh or the 2D Euler
+ * scheme: an 8° wedge, a 30° nose that turns back to the freestream, and an
+ * HLLC ramp. The Euler march is about two seconds and is cached.
  *
  * Sources: Anderson, Modern Compressible Flow; NACA 1135; Sims NASA SP-3004
  * conical-flow tables; US Standard Atmosphere 1976; Heiser & Pratt; Lees
@@ -35,7 +36,9 @@ import {
   vanDriestII,
   waltrupBillig,
 } from "./math";
+import { expansionAnchor, flatWedgeAnchor } from "./anchors";
 import { atmosphere } from "./atmosphere";
+import { eulerWedge } from "./euler2d";
 
 export interface Check {
   id: string;
@@ -63,7 +66,10 @@ function chk(
   return { id, domain, name, formula, expected, got, relErr, pass: relErr <= tol || Math.abs(got - expected) < 1e-4, source };
 }
 
+let validationCache: Check[] | null = null;
+
 export function runValidation(): Check[] {
+  if (validationCache) return validationCache;
   const out: Check[] = [];
 
   const ns2 = normalShock(2, 1.4);
@@ -322,6 +328,63 @@ export function runValidation(): Check[] {
     ),
   );
 
+  const wedge = flatWedgeAnchor();
+  out.push(
+    chk(
+      "wedge-cp",
+      "external",
+      "Strip Cp on an 8° wedge, M=8",
+      "Cp = (p₂/p₁ − 1) / (½ γ M²)",
+      wedge.exactCp,
+      wedge.cp,
+      "oblique shock on the extruded strip",
+      0.08,
+    ),
+  );
+  out.push(
+    chk(
+      "wedge-ld",
+      "external",
+      "Inviscid strip L/D on an 8° wedge",
+      "L/D_wave = cot θ",
+      wedge.cot,
+      wedge.ldWave,
+      "force ratio on a flat wedge, p_upper = p∞",
+      0.08,
+    ),
+  );
+
+  const ramp = expansionAnchor();
+  const q8 = 0.5 * 1.4 * 64;
+  const rampErr = Math.abs(ramp.aftCp - ramp.exactAft);
+  const twErr = Math.abs(ramp.tangentAft - ramp.exactAft);
+  out.push({
+    id: "ramp-se",
+    domain: "external",
+    name: "Face after a 30° nose turns back, M=8",
+    formula: `shock-expansion Cp ${ramp.aftCp.toFixed(4)} (p/p∞ ${(1 + ramp.aftCp * q8).toFixed(2)}); tangent-wedge Cp ${ramp.tangentAft.toFixed(4)} (p/p∞ ${(1 + ramp.tangentAft * q8).toFixed(2)})`,
+    expected: ramp.exactAft,
+    got: ramp.aftCp,
+    relErr: rampErr / Math.max(Math.abs(ramp.exactAft), 1e-6),
+    pass: rampErr < 0.012 && twErr > rampErr + 0.008,
+    source: "Oblique shock + Prandtl–Meyer. Tangent-wedge recomputes that face from freestream.",
+  });
+
+  const euler = eulerWedge(2, 10, 1.4);
+  out.push(
+    chk(
+      "euler-p",
+      "external",
+      "2D HLLC Euler p₂/p₁, M=2 θ=10°",
+      "body-fitted first-order HLLC, 72×24, 280 steps",
+      euler.exactP,
+      euler.p2p1,
+      "same scheme as native/bowshock_kernel.c",
+      0.08,
+    ),
+  );
+
+  validationCache = out;
   return out;
 }
 

@@ -159,6 +159,11 @@ export interface TriMesh {
   positions: Float64Array;
   indices: Uint32Array;
   surfaces: Uint8Array;
+  /**
+   * Per triangle. (gridId << 24) | (i << 12) | j for a loft quad, or -1 for a cap.
+   * Shock-expansion marches triangles that share (gridId, j) in order of i.
+   */
+  tags?: Int32Array;
 }
 
 export interface MeshQuality {

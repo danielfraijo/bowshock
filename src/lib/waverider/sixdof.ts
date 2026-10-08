@@ -298,7 +298,7 @@ export function solveSixDof(
   ];
 
   notes.push(
-    "Static derivatives: 4th-order Richardson on α and β (±1°, ±2°). Mixed panel (CBAERO-class).",
+    "Static derivatives: 4th-order Richardson on α and β (±1°, ±2°). Mixed marches shock-expansion strips.",
   );
   notes.push(
     "Rotary derivatives: local velocity V∞ − ω × r_cg on every panel (Etkin). Nondim. q̂ = q L / 2V, p̂,r̂ = (p,r) b / 2V.",

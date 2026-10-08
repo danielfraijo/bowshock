@@ -113,9 +113,12 @@ export function fieldScale(
 
 function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, color: ColorMode) {
   const { mesh } = built;
-  const tris: number[] = [];
-  const cols: number[] = [];
+  const nv = mesh.positions.length / 3;
   const nt = mesh.indices.length / 3;
+  const pos = new Float32Array(nv * 3);
+  for (let i = 0; i < mesh.positions.length; i++) pos[i] = mesh.positions[i];
+  const col = new Float32Array(nv * 3);
+  const w = new Float32Array(nv);
   const c = new THREE.Color();
   const scale = fieldScale(study, color, mesh.surfaces);
   const src =
@@ -158,13 +161,22 @@ function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, 
     else c.setHex(SURFACE_GREY[s] ?? 0x888888);
     for (let k = 0; k < 3; k++) {
       const i = mesh.indices[t * 3 + k];
-      tris.push(mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]);
-      cols.push(c.r, c.g, c.b);
+      col[i * 3] += c.r;
+      col[i * 3 + 1] += c.g;
+      col[i * 3 + 2] += c.b;
+      w[i] += 1;
     }
   }
+  for (let i = 0; i < nv; i++) {
+    const s = w[i] || 1;
+    col[i * 3] /= s;
+    col[i * 3 + 1] /= s;
+    col[i * 3 + 2] /= s;
+  }
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(tris, 3));
-  geo.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  geo.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
   geo.computeVertexNormals();
   return geo;
 }
@@ -186,43 +198,6 @@ function shockGeom(THREE: Three, built: BuiltVehicle) {
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   g.computeVertexNormals();
   return g;
-}
-
-function seamPositions(built: BuiltVehicle): number[] {
-  const { positions, indices, surfaces } = built.mesh;
-  const nt = indices.length / 3;
-  const map = new Map<string, { a: number; b: number; s: number[] }>();
-  const add = (u: number, v: number, s: number) => {
-    const lo = u < v ? u : v;
-    const hi = u < v ? v : u;
-    const k = lo * 1e7 + hi;
-    const rec = map.get(String(k));
-    if (!rec) map.set(String(k), { a: lo, b: hi, s: [s] });
-    else rec.s.push(s);
-  };
-  for (let t = 0; t < nt; t++) {
-    const i0 = indices[t * 3];
-    const i1 = indices[t * 3 + 1];
-    const i2 = indices[t * 3 + 2];
-    const s = surfaces[t] ?? 0;
-    add(i0, i1, s);
-    add(i1, i2, s);
-    add(i2, i0, s);
-  }
-  const pos: number[] = [];
-  for (const rec of map.values()) {
-    const seam = rec.s.length === 1 || rec.s[0] !== rec.s[1];
-    if (!seam) continue;
-    pos.push(
-      positions[rec.a * 3],
-      positions[rec.a * 3 + 1],
-      positions[rec.a * 3 + 2],
-      positions[rec.b * 3],
-      positions[rec.b * 3 + 1],
-      positions[rec.b * 3 + 2],
-    );
-  }
-  return pos;
 }
 
 export interface ViewerOpts {
@@ -307,6 +282,7 @@ export function WaveriderViewer({
         vertexColors: true,
         metalness: 0.04,
         roughness: 0.62,
+        flatShading: true,
         side: THREE.DoubleSide,
         polygonOffset: true,
         polygonOffsetFactor: 1,
@@ -320,13 +296,11 @@ export function WaveriderViewer({
         polygonOffsetUnits: 1,
       });
       const featureMat = new THREE.LineBasicMaterial({ color: 0xf0f0f0, transparent: true, opacity: 0.55 });
-      const seamMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92 });
       const wireMat = new THREE.LineBasicMaterial({ color: 0xc8c8c8, transparent: true, opacity: 0.22 });
       const shockMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.28 });
 
       let body: ThreeNS.Mesh | null = null;
       let features: ThreeNS.LineSegments | null = null;
-      let seams: ThreeNS.LineSegments | null = null;
       let wires: ThreeNS.LineSegments | null = null;
       let shock: ThreeNS.LineSegments | null = null;
       let gridHelper: ThreeNS.GridHelper | null = null;
@@ -424,20 +398,15 @@ export function WaveriderViewer({
         const b = builtRef.current;
         disposeObj(body);
         disposeObj(features);
-        disposeObj(seams);
         disposeObj(wires);
         disposeObj(shock);
         const g = geomFrom(THREE, b, studyRef.current, optsRef.current.color);
         const field = optsRef.current.color !== "surface";
         body = new THREE.Mesh(g, field ? fieldMat : bodyMat);
         scene.add(body);
-        const feat = new THREE.EdgesGeometry(g, 16);
+        const feat = new THREE.EdgesGeometry(g, 32);
         features = new THREE.LineSegments(feat, featureMat);
         scene.add(features);
-        const seamG = new THREE.BufferGeometry();
-        seamG.setAttribute("position", new THREE.Float32BufferAttribute(seamPositions(b), 3));
-        seams = new THREE.LineSegments(seamG, seamMat);
-        scene.add(seams);
         const allEdges = new THREE.EdgesGeometry(g, 1);
         wires = new THREE.LineSegments(allEdges, wireMat);
         scene.add(wires);
@@ -488,14 +457,12 @@ export function WaveriderViewer({
         controls.dispose();
         body?.geometry.dispose();
         features?.geometry.dispose();
-        seams?.geometry.dispose();
         wires?.geometry.dispose();
         shock?.geometry.dispose();
         disposeObj(markerGroup);
         bodyMat.dispose();
         fieldMat.dispose();
         featureMat.dispose();
-        seamMat.dispose();
         wireMat.dispose();
         shockMat.dispose();
         renderer.dispose();

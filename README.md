@@ -55,7 +55,7 @@ Stop the server with `Ctrl+C`.
 5. **Checks** — closed-form kernel tests (Rankine–Hugoniot, isentropic A/A*, Prandtl–Meyer, θ-β-M, Taylor–Maccoll, US76, Kantrowitz, γ_vib, mean free path, Fay–Riddell, Billig, Lees, Millikan–White, Waltrup–Billig). All should read PASS.
 6. **CAD** — download binary STL (Pointwise auto-mesh), Plot3D `.x` (3-D formatted), IGES, sewn NURBS STEP (SolidWorks / FreeCAD / Pointwise Database), or the **full CFD kit (.zip)**.
 
-The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py`, `bowshock_aero.c`, and `bowshock.cpp`.
+The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py`, `bowshock_aero.c`, `bowshock_kernel.c`, and `bowshock.cpp`.
 
 The leading edge is a circular G1 fillet in the local osculating plane. Tips keep a minimum chord so they do not collapse to a pole. Closed families should read **watertight / manifold** on the CAD tab.
 
@@ -116,6 +116,9 @@ Ramjet / scramjet: both surfaces run from x=0 to x=L. The capture plane (rectang
 Laptop-cheap verification of the same gas-dynamic relations used in the UI.
 
 ```bash
+gcc -O3 -std=c11 native/bowshock_kernel.c -lm -o bowshock_kernel
+./bowshock_kernel --check
+
 gcc -O2 -std=c11 public/bowshock_aero.c -lm -o bowshock_aero
 ./bowshock_aero --check
 ./bowshock_aero --wedge --mach 8 --theta 8
@@ -130,17 +133,19 @@ g++ -O2 -std=c++17 public/bowshock.cpp -o bowshock
 ./bowshock --json --mach 8 --alt 30
 ```
 
-`--check` must print **PASS** (normal-shock \(p_2/p_1 = 4.5\) at M=2, isentropic \(T_0/T = 6\) at M=5, Sutton–Graves units, US76). The C++ binary integrates the Etkin linear 6DOF (short period, phugoid, dutch roll, roll, spiral) with RK4.
+`bowshock_kernel --check` must print **PASS**. It checks the normal shock \(p_2/p_1 = 4.5\) at M=2, isentropic \(T_0/T = 6\) at M=5, the M=2 θ=10° shock angle, an 8° wedge \(C_p\), a 30° nose that turns back to the freestream, and the 2D HLLC wedge against the exact oblique shock (same grid as the Checks tab). `bowshock_aero --check` still covers Sutton–Graves and US76. The C++ binary integrates the Etkin linear 6DOF (short period, phugoid, dutch roll, roll, spiral) with RK4.
 
 ---
 
 ## Physics (what this is / is not)
 
-CBAERO-class **engineering** methods. Fast enough to iterate on a laptop. Not a Navier–Stokes substitute.
+Engineering methods for a laptop. Not a Navier–Stokes substitute, and not a 3D Cart3D replacement. On a wedge, shock-expansion matches the oblique shock, and a 2D HLLC Euler scheme recovers that same shock to a couple of percent. Tangent-wedge (the impact method) does not: after a 30° nose turns back to the freestream it predicts \(p/p_\infty = 1\), while the expansion leaves \(p/p_\infty \approx 2.19\).
 
 - **Shocks:** θ-β-M, Rankine–Hugoniot oblique + normal, Taylor–Maccoll RK4 (Sims NASA SP-3004), Billig 1967 sphere standoff
 - **Expansion:** Prandtl–Meyer
 - **Panel aero:** attached tangent-wedge (2-D families) or tangent-cone (axisymmetric families); Modified Newtonian (Lees) if the shock detaches; Prandtl–Meyer leeward; Love base \(C_p = -1/M^2\); van Driest II \(C_f\) (Hopkins & Inouye 1971) or Blasius if laminar; Hayes–Probstein viscous interaction on windward \(p\); Schaaf–Chambre rarefaction bridging
+- **Shock-expansion:** Mixed marches each loft strip — oblique shock or Taylor–Maccoll at the nose, Prandtl–Meyer on later turns. A 30° nose that turns back to the freestream leaves \(p/p_\infty \approx 2.19\); tangent-wedge on that face is \(p/p_\infty = 1\)
+- **Euler anchor:** first-order body-fitted HLLC, 72×24×280, same scheme in `native/bowshock_kernel.c`, scored against the exact oblique shock
 - **Heating:** Fay–Riddell 1958 (Billig-corrected \(du_e/ds\)), Sutton–Graves (NASA TR R-802), Detra–Kemp–Riddell, Tauber running-length (NASA TP-2914) mixed with Lees 1956 \(q/q_s = (p/p_s)^{1/2}(R_n/(R_n+s))^{1/2}\), Tauber–Sutton radiative (JSR 1991), Beckwith swept-cylinder LE, Edney Type-IV bound at cowls; Reshotko / Mack \(Re_\theta/M_e\) transition
 - **Real gas:** vibrational-equilibrium \(\gamma(T)\) (Hansen / SHO O₂–N₂); Millikan–White / Park 1990 \(\tau_v\) and Damköhler freeze/eq blend; Lighthill ideal-dissociating gas \(\alpha_{O_2},\alpha_{N_2}\); Gupta–Yos-class \(\mu(T)\) above 1500 K. Inverse-design shocks stay at the input \(\gamma\).
 - **Stability:** 4th-order Richardson \(C_{L\alpha}\), \(C_{m\alpha}\), \(C_{n\beta}\), \(C_{l\beta}\); static margin
@@ -150,7 +155,7 @@ CBAERO-class **engineering** methods. Fast enough to iterate on a laptop. Not a 
 - **Inlets / engines:** multi-ramp θ-β-M, Fanno isolator, Waltrup–Billig shock-train \(L/H\), Rayleigh heat addition, isentropic nozzle, Kantrowitz start, Heiser–Pratt 1-D cycle
 - **Atmosphere:** 1976 US Standard Atmosphere + kinetic mean free path / Knudsen
 - **Geometry:** inverse-design lofts with a circular LE fillet (G1, osculating-plane rolling ball). Tips cropped to a minimum chord. Closed manifold solid for STL; sewn NURBS CLOSED_SHELL for STEP
-- **Checks tab:** Anderson / NACA 1135 / Sims / US76 / Kantrowitz / γ_vib / λ / Fay–Riddell / Billig / Lees / Millikan–White / Waltrup–Billig identities — same solvers the vehicle uses
+- **Checks tab:** Anderson / NACA 1135 / Sims / US76 / Kantrowitz / γ_vib / λ / Fay–Riddell / Billig / Lees / Millikan–White / Waltrup–Billig identities, plus the 8° wedge strip, the turning-ramp residual pressure, and the HLLC shock error
 
 **Frontier tab** reports regime, Kn, \(\gamma_\mathrm{vib}(T_2)\), \(\gamma_\mathrm{eff}(Da)\), Lighthill \(\alpha\), \(\rho L\), Billig \(\Delta/R_n\), Van Dyke \(K=M\tau\), \(\bar\chi\), Fay–Riddell vs Sutton–Graves vs DKR, sweep factor, Edney bound, isolator \(L/H\), and equilibrium-glide CL.
 

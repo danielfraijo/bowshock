@@ -163,7 +163,7 @@ export function studyVehicle(built: BuiltVehicle, opts?: { quick?: boolean }): S
     inLitBand: inBand,
     note:
       p.family === "caret"
-        ? `Exact inviscid 2-D wedge L/D = cot θ = ${cot.toFixed(2)}. Mixed panel with friction should sit at ~0.5–0.8 of that (Bowcutt).`
+        ? `Exact inviscid 2-D wedge L/D = cot θ = ${cot.toFixed(2)}. Shock-expansion with friction sits below that.`
         : `Generating-wedge cot θ = ${cot.toFixed(2)} is a ceiling, not a target, for this family.`,
   };
   const checks = runValidation();
