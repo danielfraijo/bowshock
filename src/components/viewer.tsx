@@ -177,7 +177,6 @@ function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, 
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
   geo.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
-  geo.computeVertexNormals();
   return geo;
 }
 
@@ -196,7 +195,6 @@ function shockGeom(THREE: Three, built: BuiltVehicle) {
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  g.computeVertexNormals();
   return g;
 }
 
@@ -407,9 +405,7 @@ export function WaveriderViewer({
         const feat = new THREE.EdgesGeometry(g, 32);
         features = new THREE.LineSegments(feat, featureMat);
         scene.add(features);
-        const allEdges = new THREE.EdgesGeometry(g, 1);
-        wires = new THREE.LineSegments(allEdges, wireMat);
-        scene.add(wires);
+        wires = null;
         const sg = shockGeom(THREE, b);
         const shockEdges = new THREE.EdgesGeometry(sg, 12);
         sg.dispose();
@@ -423,8 +419,16 @@ export function WaveriderViewer({
         }
       }
 
+      function ensureWires() {
+        if (wires || !body) return;
+        const allEdges = new THREE.EdgesGeometry(body.geometry, 1);
+        wires = new THREE.LineSegments(allEdges, wireMat);
+        scene.add(wires);
+      }
+
       function applyOpts() {
         const o = optsRef.current;
+        if (o.wireframe) ensureWires();
         if (wires) wires.visible = o.wireframe;
         if (shock) shock.visible = o.shock;
         if (gridHelper) gridHelper.visible = o.grid;

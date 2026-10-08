@@ -111,7 +111,7 @@ export function studyVehicle(built: BuiltVehicle, opts?: { quick?: boolean }): S
   const full = (domain === "external" || p.family === "integrated") && !opts?.quick;
   const aero = panelAero(built.mesh, p, atm, p.alphaDeg, p.betaDeg, sRef, lRef);
   const mass = massProperties(built.mesh, p.rhoKgM3 || 160, p.massKg || 0);
-  const six = solveSixDof(built.mesh, p, atm, mass, sRef, lRef, full);
+  const six = solveSixDof(built.mesh, p, atm, mass, sRef, lRef, full, aero);
   const stab = {
     cla: six.derivs.cla,
     cma: six.derivs.cma,

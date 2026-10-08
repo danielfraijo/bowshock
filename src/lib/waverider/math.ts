@@ -56,6 +56,61 @@ export function cosineSpace(i: number, n: number) {
   return 0.5 * (1 - Math.cos((Math.PI * i) / (n - 1)));
 }
 
+/**
+ * Chordwise sample fractions in [0, 1].
+ * Cosine clustering is kept when its first gap is already at least `minGap`.
+ * Otherwise the gaps are a geometric series whose first interval is
+ * min(minGap, chord/(n-1)), so a swept tip cannot collapse into a sliver.
+ */
+export function chordFractions(n: number, chord: number, minGap: number): Float64Array {
+  const out = new Float64Array(Math.max(n, 1));
+  if (n <= 1) return out;
+  const k = n - 1;
+  const c = Math.max(chord, 0);
+  if (!(c > 1e-15)) {
+    out[k] = 1;
+    return out;
+  }
+  const cosGap = cosineSpace(1, n) * c;
+  if (cosGap >= minGap * 0.85) {
+    for (let i = 0; i < n; i++) out[i] = cosineSpace(i, n);
+    out[0] = 0;
+    out[k] = 1;
+    return out;
+  }
+  const uni = c / k;
+  const a = Math.min(Math.max(minGap, 0), uni);
+  if (!(a < uni * 0.98)) {
+    for (let i = 0; i < n; i++) out[i] = i / k;
+    return out;
+  }
+  const sum = (r: number) => (a * (r ** k - 1)) / (r - 1);
+  let lo = 1.0000001;
+  let hi = 1.2;
+  while (sum(hi) < c && hi < 4) hi = 1 + (hi - 1) * 2;
+  for (let it = 0; it < 48; it++) {
+    const mid = 0.5 * (lo + hi);
+    if (sum(mid) < c) lo = mid;
+    else hi = mid;
+  }
+  const r = 0.5 * (lo + hi);
+  out[0] = 0;
+  let s = 0;
+  let gap = a;
+  for (let i = 1; i < n; i++) {
+    s += gap;
+    gap *= r;
+    out[i] = s / c;
+  }
+  const last = out[k] > 1e-15 ? out[k] : 1;
+  for (let i = 0; i < n; i++) out[i] /= last;
+  out[0] = 0;
+  out[k] = 1;
+  for (let i = 1; i < n; i++) if (out[i] < out[i - 1]) out[i] = out[i - 1];
+  out[k] = 1;
+  return out;
+}
+
 /** θ-β-M relation. Returns flow deflection θ (rad) for shock angle β. */
 export function thetaFromBetaM(M: number, beta: number, gamma = 1.4): number {
   const s = Math.sin(beta);
@@ -83,10 +138,21 @@ export function maxTheta(M: number, gamma = 1.4): { theta: number; beta: number 
   return { theta: bestT, beta: bestB };
 }
 
+let thetaCapKey = "";
+let thetaCap: { theta: number; beta: number } | null = null;
+
+function cachedMaxTheta(M: number, gamma: number) {
+  const key = `${M}|${gamma}`;
+  if (thetaCap && key === thetaCapKey) return thetaCap;
+  thetaCapKey = key;
+  thetaCap = maxTheta(M, gamma);
+  return thetaCap;
+}
+
 /** Weak-shock β for given deflection. Returns NaN if detached. */
 export function betaFromThetaM(M: number, theta: number, gamma = 1.4): number {
   if (theta <= 1e-10) return Math.asin(clamp(1 / M, 0, 1));
-  const cap = maxTheta(M, gamma);
+  const cap = cachedMaxTheta(M, gamma);
   if (theta >= cap.theta * 0.999) return NaN;
   const mu = Math.asin(clamp(1 / M, 0, 1));
   let lo = mu + 1e-6;
@@ -98,6 +164,47 @@ export function betaFromThetaM(M: number, theta: number, gamma = 1.4): number {
     else hi = mid;
   }
   return 0.5 * (lo + hi);
+}
+
+type BetaTab = { key: string; capT: number; cut: number; n: number; b: Float64Array };
+let betaTab: BetaTab | null = null;
+
+/**
+ * Weak-shock β for the panel loop. A 321-point table is built once per (M, γ)
+ * from the same bisection as betaFromThetaM. Linear interpolation on
+ * [0, 0.96 θ_detach] stays well under 0.05°; nearer detachment the exact
+ * bisection is used. Anchors keep calling betaFromThetaM.
+ */
+export function fastBeta(M: number, theta: number, gamma = 1.4): number {
+  if (theta <= 1e-10) return Math.asin(clamp(1 / M, 0, 1));
+  const key = `${M}|${gamma}`;
+  if (!betaTab || betaTab.key !== key) {
+    const cap = cachedMaxTheta(M, gamma);
+    const n = 321;
+    const cut = cap.theta * 0.96;
+    const b = new Float64Array(n);
+    const mu = Math.asin(clamp(1 / M, 0, 1));
+    b[0] = mu;
+    for (let i = 1; i < n; i++) {
+      const th = (cut * i) / (n - 1);
+      let lo = mu + 1e-8;
+      let hi = cap.beta;
+      for (let k = 0; k < 40; k++) {
+        const mid = 0.5 * (lo + hi);
+        if (thetaFromBetaM(M, mid, gamma) < th) lo = mid;
+        else hi = mid;
+      }
+      b[i] = 0.5 * (lo + hi);
+    }
+    betaTab = { key, capT: cap.theta, cut, n, b };
+  }
+  const tab = betaTab;
+  if (theta >= tab.capT * 0.999) return NaN;
+  if (theta >= tab.cut) return betaFromThetaM(M, theta, gamma);
+  const u = (theta / tab.cut) * (tab.n - 1);
+  const i = Math.min(tab.n - 2, Math.floor(u));
+  const f = u - i;
+  return tab.b[i] * (1 - f) + tab.b[i + 1] * f;
 }
 
 export function obliqueShock(M: number, beta: number, gamma = 1.4) {
@@ -239,6 +346,43 @@ export function invPrandtlMeyer(nu: number, gamma = 1.4): number {
     M = Math.max(1.0001, M - f / (fp || 1));
   }
   return M;
+}
+
+type NuTab = { g: number; n: number; nu: Float64Array; m0: number; m1: number };
+let nuTab: NuTab | null = null;
+
+/** Log-spaced inverse of ν(M). Same function as invPrandtlMeyer, interpolated. */
+export function fastInvPrandtlMeyer(nu: number, gamma = 1.4): number {
+  if (nu <= 0) return 1;
+  if (!nuTab || nuTab.g !== gamma) {
+    const n = 257;
+    const m0 = 1.0001;
+    const m1 = 40;
+    const nuA = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const mach = m0 * (m1 / m0) ** (i / (n - 1));
+      nuA[i] = prandtlMeyer(mach, gamma);
+    }
+    nuTab = { g: gamma, n, nu: nuA, m0, m1 };
+  }
+  const tab = nuTab;
+  const last = tab.nu[tab.n - 1];
+  if (nu >= last) return invPrandtlMeyer(nu, gamma);
+  let lo = 0;
+  let hi = tab.n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (tab.nu[mid] < nu) lo = mid;
+    else hi = mid;
+  }
+  const n0 = tab.nu[lo];
+  const n1 = tab.nu[hi];
+  const f = n1 > n0 ? (nu - n0) / (n1 - n0) : 0;
+  const log0 = Math.log(tab.m0);
+  const log1 = Math.log(tab.m1);
+  const a = log0 + ((log1 - log0) * lo) / (tab.n - 1);
+  const b = log0 + ((log1 - log0) * hi) / (tab.n - 1);
+  return Math.exp(a + (b - a) * f);
 }
 
 export function isentropic(M: number, gamma = 1.4) {

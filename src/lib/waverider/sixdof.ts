@@ -120,11 +120,12 @@ export function solveSixDof(
   sRef: number,
   lRef: number,
   full: boolean,
+  baseline?: PanelAero,
 ): SixDofResult {
   const notes: string[] = [];
   const a0 = params.alphaDeg;
   const b0 = params.betaDeg;
-  const p0 = panelAero(mesh, params, atm, a0, b0, sRef, lRef);
+  const p0 = baseline ?? panelAero(mesh, params, atm, a0, b0, sRef, lRef);
   if (!full) {
     return {
       derivs: { ...emptyDerivs(), trimAlpha: a0, trimCm: p0.cm },

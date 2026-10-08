@@ -19,6 +19,8 @@ import { gridPoint, makeGrid, setGridPoint } from "./mesh";
 
 const N_ARC = 13;
 const ALPHA_MIN = 3.5 * (Math.PI / 180);
+/** Longest span edge a fillet quad may have, in units of the arc size. */
+const FILLET_ASPECT = 12;
 
 export function effectiveLeRadius(params: DesignParams): number {
   if (params.leBlunt === false) return 0;
@@ -215,9 +217,69 @@ function lerpStation(a: Station, b: Station, t: number): Station {
   return { ok: true, arc, tu, tl, uRow: uRow ?? null, lRow: lRow ?? null };
 }
 
+function arcMeasure(arc: Vec3[]) {
+  const a = arc[0];
+  const c = arc[arc.length - 1];
+  const chord = vlen(vsub(c, a));
+  let bow = 0;
+  let minSeg = Infinity;
+  for (let k = 0; k < arc.length; k++) {
+    const t = arc.length <= 1 ? 0 : k / (arc.length - 1);
+    const chx = a[0] + (c[0] - a[0]) * t;
+    const chy = a[1] + (c[1] - a[1]) * t;
+    const chz = a[2] + (c[2] - a[2]) * t;
+    const p = arc[k];
+    const bowK = Math.hypot(p[0] - chx, p[1] - chy, p[2] - chz);
+    if (bowK > bow) bow = bowK;
+    if (k > 0) {
+      const q = arc[k - 1];
+      const seg = Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+      if (seg < minSeg) minSeg = seg;
+    }
+  }
+  const seam: Vec3 = [(a[0] + c[0]) * 0.5, (a[1] + c[1]) * 0.5, (a[2] + c[2]) * 0.5];
+  return { chord, bow, minSeg: Number.isFinite(minSeg) ? minSeg : 0, seam };
+}
+
+function stationStep(stations: Station[], j: number): number {
+  const p = stations[j].tu;
+  let d = 0;
+  if (j > 0) d = Math.max(d, vlen(vsub(p, stations[j - 1].tu)));
+  if (j + 1 < stations.length) d = Math.max(d, vlen(vsub(p, stations[j + 1].tu)));
+  return d;
+}
+
+/** Pinch an unresolved arc to one seam point so the spanwise quads have zero area and drop. */
+function collapseToSeam(st: Station, seam: Vec3) {
+  const x = seam[0];
+  const y = seam[1];
+  const z = seam[2];
+  for (let k = 0; k < st.arc.length; k++) st.arc[k] = [x, y, z];
+  st.tu = [x, y, z];
+  st.tl = [x, y, z];
+  if (st.uRow) st.uRow[0] = [x, y, z];
+  if (st.lRow) st.lRow[0] = [x, y, z];
+  st.ok = false;
+}
+
+/**
+ * A circular section is resolved only when its chord and bow are a real
+ * fraction of the local span step. Below that, the strip is a sliver: the
+ * face normal swings by atan(δ/ℓ) and the corner draws as a fan.
+ */
+function arcResolved(st: Station, dy: number): boolean {
+  if (!st.ok) return false;
+  const m = arcMeasure(st.arc);
+  const scale = Math.max(m.chord, 2 * m.bow);
+  if (!(scale > 1e-9)) return false;
+  if (dy > FILLET_ASPECT * scale) return false;
+  return m.minSeg * (FILLET_ASPECT * 4) >= Math.max(dy, 1e-12);
+}
+
 /**
  * Per-span circular fillet. Returns a leading-edge surface
- * (i along the arc, j along span) or null if R = 0.
+ * (i along the arc, j along span) or null if R = 0 or the arc
+ * cannot be resolved on this span lattice.
  */
 export function applyLeadingFillet(
   upper: SurfaceGrid,
@@ -259,6 +321,15 @@ export function applyLeadingFillet(
     stations[j].lRow = keepL;
     if (keepU) keepU[0] = stations[j].tu;
     if (keepL) keepL[0] = stations[j].tl;
+  }
+
+  const live = stations.map((st, j) => arcResolved(st, stationStep(stations, j)));
+  let nLive = 0;
+  for (const ok of live) if (ok) nLive++;
+  if (nLive < 3) return null;
+  for (let j = 0; j < nj; j++) {
+    if (live[j]) continue;
+    collapseToSeam(stations[j], arcMeasure(stations[j].arc).seam);
   }
 
   const lead = makeGrid("leading", nArc, nj, (i, j) => stations[j].arc[i] ?? stations[j].tu);

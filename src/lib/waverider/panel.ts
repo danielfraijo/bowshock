@@ -4,15 +4,15 @@ import { effectiveLeRadius } from "./blunt";
 import {
   DEG,
   airMu,
-  betaFromThetaM,
   clamp,
   coneSurfaceCp,
   dahlemBuckCp,
   eckertStanton,
   fayRiddell,
+  fastBeta,
+  fastInvPrandtlMeyer,
   flowRegime,
   hypersonicTripped,
-  invPrandtlMeyer,
   isentropic,
   knudsen,
   leesHeatFactor,
@@ -32,11 +32,8 @@ import {
   twEquilibrium,
   vacuumCp,
   vanDriestII,
-  vcross,
-  vlen,
   viscousChi,
   viscousInteractionPressure,
-  vsub,
   zobyHeatWcm2,
 } from "./math";
 import type { Atmosphere } from "./atmosphere";
@@ -89,10 +86,6 @@ export interface PanelAero {
 
 const CONE_FAMILIES = new Set(["cone", "osculating", "elliptic", "viscopt", "star"]);
 
-function get(mesh: TriMesh, i: number): Vec3 {
-  return [mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]];
-}
-
 function flowDir(alpha: number, beta: number): Vec3 {
   const ca = Math.cos(alpha);
   const sa = Math.sin(alpha);
@@ -118,7 +111,7 @@ function rotateForce(F: Vec3, alpha: number, beta: number) {
 
 function tangentWedgeCp(M: number, theta: number, gamma: number, cpMax: number): number {
   if (theta <= 1e-5) return 0;
-  const beta = betaFromThetaM(M, theta, gamma);
+  const beta = fastBeta(M, theta, gamma);
   if (!Number.isFinite(beta)) return cpMax * Math.sin(theta) ** 2;
   const sh = obliqueShock(M, beta, gamma);
   const q = 0.5 * gamma * M * M;
@@ -135,7 +128,7 @@ function windwardCp(
 ): { cp: number; attached: boolean } {
   const sin2 = Math.sin(theta) ** 2;
   if (method === "newtonian") return { cp: cpMax * sin2, attached: true };
-  const beta = betaFromThetaM(M, theta, gamma);
+  const beta = fastBeta(M, theta, gamma);
   const attached = Number.isFinite(beta);
   if (method === "cbaero") {
     const db = dahlemBuckCp(theta, cpMax);
@@ -172,7 +165,7 @@ function leewardCp(M: number, theta: number, gamma: number): number {
   const nu2 = nu + theta;
   const nuMax = prandtlMeyer(20, gamma);
   if (nu2 >= nuMax * 0.98) return vacuumCp(M, gamma);
-  const Mm = invPrandtlMeyer(nu2, gamma);
+  const Mm = fastInvPrandtlMeyer(nu2, gamma);
   const iso2 = 1 + 0.5 * (gamma - 1) * Mm * Mm;
   const iso1 = 1 + 0.5 * (gamma - 1) * M * M;
   const p2 = iso2 ** (-gamma / (gamma - 1)) / iso1 ** (-gamma / (gamma - 1));
@@ -283,20 +276,39 @@ export function panelAero(
   let qUpper = 0;
   let aUpper = 0;
 
+  const pos = mesh.positions;
+  const ind = mesh.indices;
   for (let t = 0; t < nt; t++) {
-    const a = get(mesh, mesh.indices[t * 3]);
-    const b = get(mesh, mesh.indices[t * 3 + 1]);
-    const c = get(mesh, mesh.indices[t * 3 + 2]);
-    const ab = vsub(b, a);
-    const ac = vsub(c, a);
-    const nraw = vcross(ab, ac);
-    const mag = vlen(nraw);
+    const o3 = t * 3;
+    const ia = ind[o3] * 3;
+    const ib = ind[o3 + 1] * 3;
+    const ic = ind[o3 + 2] * 3;
+    const x1 = pos[ia];
+    const y1 = pos[ia + 1];
+    const z1 = pos[ia + 2];
+    const x2 = pos[ib];
+    const y2 = pos[ib + 1];
+    const z2 = pos[ib + 2];
+    const x3 = pos[ic];
+    const y3 = pos[ic + 1];
+    const z3 = pos[ic + 2];
+    const abx = x2 - x1;
+    const aby = y2 - y1;
+    const abz = z2 - z1;
+    const acx = x3 - x1;
+    const acy = y3 - y1;
+    const acz = z3 - z1;
+    const nx = aby * acz - abz * acy;
+    const ny = abz * acx - abx * acz;
+    const nz = abx * acy - aby * acx;
+    const mag = Math.hypot(nx, ny, nz);
     if (mag < 1e-16) continue;
     const area = 0.5 * mag;
-    const n: Vec3 = [nraw[0] / mag, nraw[1] / mag, nraw[2] / mag];
-    const cx = (a[0] + b[0] + c[0]) / 3;
-    const cy = (a[1] + b[1] + c[1]) / 3;
-    const cz = (a[2] + b[2] + c[2]) / 3;
+    const inv = 1 / mag;
+    const n: Vec3 = [nx * inv, ny * inv, nz * inv];
+    const cx = (x1 + x2 + x3) / 3;
+    const cy = (y1 + y2 + y3) / 3;
+    const cz = (z1 + z2 + z3) / 3;
     const rx = cx - cg[0];
     const ry = cy - cg[1];
     const rz = cz - cg[2];
@@ -360,7 +372,7 @@ export function panelAero(
     let Me = M;
     const thetaW = Math.asin(sinth);
     if (windward && thetaW > 1e-4 && surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle) {
-      const betaS = betaFromThetaM(M, thetaW, g);
+      const betaS = fastBeta(M, thetaW, g);
       if (Number.isFinite(betaS)) {
         const sh = obliqueShock(M, betaS, g);
         Te = atm.T * sh.t2t1;

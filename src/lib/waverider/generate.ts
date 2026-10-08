@@ -3,6 +3,7 @@ import {
   DEG,
   RAD,
   betaFromThetaM,
+  chordFractions,
   clamp,
   cosineSpace,
   lerp,
@@ -75,10 +76,6 @@ function xTrailing(y: number, L: number, teTan: number, xl: number) {
 function superZ(y: number, s: number, h: number, n: number) {
   const yn = clamp(Math.abs(y) / Math.max(s, 1e-12), 0, 1);
   return -h * (1 - yn ** n) ** (1 / n);
-}
-
-function chordCluster(i: number, nx: number) {
-  return cosineSpace(i, nx);
 }
 
 function closeVehicle(
@@ -300,6 +297,14 @@ function lofts(
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
   const cam = (params.camber || 0) * params.height;
   const teTan = Math.tan((params.teSweepDeg || 0) * DEG);
+  const fracs = ys.map((y, j) => {
+    const xl = xle(y);
+    const xt = xTrailing(y, L, teTan, xl);
+    let edge = 0;
+    if (j > 0) edge = Math.max(edge, Math.hypot(xle(ys[j]) - xle(ys[j - 1]), ys[j] - ys[j - 1]));
+    if (j + 1 < nj) edge = Math.max(edge, Math.hypot(xle(ys[j + 1]) - xle(ys[j]), ys[j + 1] - ys[j]));
+    return chordFractions(nx, xt - xl, edge / 12);
+  });
   const sample = (i: number, j: number, isLower: boolean): Vec3 => {
     const y = ys[j];
     const xl = xle(y);
@@ -307,7 +312,7 @@ function lofts(
     const chord = xt - xl;
     const zOff = Math.abs(y) * dih;
     if (chord <= 1e-12 * L) return [xl, y, zOff];
-    const frac = chordCluster(i, nx);
+    const frac = fracs[j][i];
     const x = lerp(xl, xt, frac);
     const zLid = 4 * cam * frac * (1 - frac);
     const z = isLower ? zBase(y) * frac ** zPow : 0;
@@ -658,23 +663,24 @@ function applyElevon(upper: SurfaceGrid, lower: SurfaceGrid, deg: number, L: num
   apply(lower);
 }
 
-/** Collapse the wingtip station to a seam so the planform edge is not a chopped slab. */
+/**
+ * Collapse the wingtip chord onto the mid-surface so the planform edge is
+ * not a chopped slab. Leave i = 0 alone when a fillet is attached: pinching
+ * that arc to one point in a single span step is the corner fan.
+ */
 function sharpenTips(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGrid | null, half: boolean) {
   const ni = Math.min(upper.ni, lower.ni);
   const nj = Math.min(upper.nj, lower.nj);
   if (nj < 3) return;
   const js = half ? [nj - 1] : [0, nj - 1];
+  const i0 = leading ? 1 : 0;
   for (const j of js) {
-    for (let i = 0; i < ni; i++) {
+    for (let i = i0; i < ni; i++) {
       const u = gridPoint(upper, i, j);
       const l = gridPoint(lower, i, j);
       const m: Vec3 = [(u[0] + l[0]) * 0.5, (u[1] + l[1]) * 0.5, (u[2] + l[2]) * 0.5];
       setGridPoint(upper, i, j, m);
       setGridPoint(lower, i, j, m);
-    }
-    if (leading) {
-      const p = gridPoint(upper, 0, j);
-      for (let k = 0; k < leading.ni; k++) setGridPoint(leading, k, j, p);
     }
   }
 }
@@ -1040,7 +1046,19 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   const quality = analyzeMesh(mesh, skipped);
   const ductOpen = (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough;
   const Rn = effectiveLeRadius(params);
-  if (Rn > 0) notes.push(`Leading-edge radius R = ${(Rn * 1000).toFixed(1)} mm (circular fillet, G1 to the wetted sheets).`);
+  if (Rn > 0 && (params.family === "ramjet" || params.family === "scramjet")) {
+    notes.push(`Lip radius R = ${(Rn * 1000).toFixed(1)} mm.`);
+  } else if (Rn > 0 && grids.some((g) => g.name === "leading" || g.name === "cowl_lip")) {
+    notes.push(
+      `Leading-edge radius R = ${(Rn * 1000).toFixed(1)} mm, tessellated where the arc is at least 1/12 of the local span step.`,
+    );
+  } else if (Rn > 0 && params.family !== "star") {
+    notes.push(
+      `Heating nose radius R = ${(Rn * 1000).toFixed(1)} mm. The fillet arc is shorter than the span step, so the mesh keeps the sharp seam.`,
+    );
+  } else if (Rn > 0) {
+    notes.push(`Nose radius R = ${(Rn * 1000).toFixed(1)} mm on the heating calculation.`);
+  }
   if (!quality.watertight && !ductOpen) notes.push(`Mesh has ${quality.openEdges} open edges — raise streamwise/spanwise points.`);
   if (!shockSolve.attached) notes.push(...shockSolve.notes);
   if (params.lid === "bottom") notes.push("Lid on the belly — compression surface is the upper face.");
