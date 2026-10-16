@@ -21,8 +21,8 @@ export type PlanformKind = "delta" | "power" | "spatular" | "rect" | "double";
 
 export type LidFace = "top" | "bottom";
 
-/** CBAERO is the closest engineering method to inviscid CFD (HABP / MINIVER class). */
-export type AeroMethod = "newtonian" | "tangent" | "mixed" | "cbaero";
+/** newtonian / tangent / mixed = CBAERO-class. euler = symmetry-plane HLLC, between CBAERO and Cart3D. */
+export type AeroMethod = "newtonian" | "tangent" | "mixed" | "cbaero" | "euler";
 
 export type FuelKind = "H2" | "JP";
 
@@ -118,7 +118,7 @@ export const DEFAULT_PARAMS: DesignParams = {
   gammaDeg: 0,
   altKm: 30,
   cgFrac: 0.58,
-  aeroMethod: "cbaero",
+  aeroMethod: "euler",
   twK: 800,
   inletHeight: 0.14,
   cowlFrac: 0.38,

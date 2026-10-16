@@ -1,6 +1,7 @@
 import type { AeroMethod, DesignParams, TriMesh, Vec3 } from "./types";
 import { SURFACE_ID } from "./types";
 import { effectiveLeRadius } from "./blunt";
+import { withSymmetryEuler } from "./sym-euler";
 import {
   DEG,
   airMu,
@@ -221,6 +222,10 @@ export function panelAero(
   const M = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
   const g = params.gamma;
   const method = params.aeroMethod;
+  if (method === "euler") {
+    const base = panelAero(mesh, { ...params, aeroMethod: "cbaero" }, atm, alphaDeg, betaDeg, sRef, lRef, rates);
+    return withSymmetryEuler(mesh, params, atm, base, alphaDeg, betaDeg);
+  }
   if (method === "mixed") {
     return integrateShockExpansion(mesh, params, atm, alphaDeg, betaDeg, sRef, lRef, rates);
   }

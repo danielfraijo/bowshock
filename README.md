@@ -10,6 +10,10 @@ The browser lab and the physics kernel run **on your machine**. Nothing is uploa
 
 **Leading edge:** always a circular fillet of finite radius (toggle + size on the Geom tab). Default \(R = 0.5\%\) of length. Pointwise automatic mesh needs this — a knife-edge is inviscid-theory only.
 
+**Lifting-body nose:** a hemisphere at the requested radius, matched into the ogive so the shoulder stays tangent. The pole is one welded vertex at the origin. A radius that would stick out past the OML is reduced — that overhang was the lip at the nose.
+
+**Euler (between CBAERO and Cart3D):** Newton, tangent-wedge/cone, shock-expansion, and CBAERO are the engineering methods. Euler runs a Rust HLLC kernel (`native/cuspis-euler`, wasm32) on the symmetry plane so the bow shock is captured, then blends into CBAERO off the centerline. It is not a 3-D volume mesh.
+
 ---
 
 ## Run the lab on your computer

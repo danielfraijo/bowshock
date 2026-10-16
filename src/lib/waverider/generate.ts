@@ -14,6 +14,27 @@ import {
 } from "./math";
 import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, fairTrailingEdge, gridPoint, makeGrid, matchTrailingEdge, orientOutward, setGridPoint, stitchGrid, weldAft, zipperSharpEdges } from "./mesh";
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
+import { bindCenterline } from "./sym-euler";
+
+function liftStations(ny: number, half: boolean): number[] {
+  // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
+  if (half) {
+    const n = Math.max(8, Math.ceil(ny / 2));
+    const ys: number[] = [];
+    for (let j = 0; j < n; j++) ys.push(Math.sin((j / Math.max(n - 1, 1)) * (Math.PI / 2)));
+    ys[0] = 0;
+    ys[n - 1] = 1;
+    return ys;
+  }
+  let n = Math.max(9, ny);
+  if (n % 2 === 0) n += 1;
+  const ys: number[] = [];
+  for (let j = 0; j < n; j++) ys.push(-Math.cos((j / (n - 1)) * Math.PI));
+  ys[0] = -1;
+  ys[n - 1] = 1;
+  ys[(n - 1) >> 1] = 0;
+  return ys;
+}
 
 function spanStations(ny: number, s: number, half: boolean): number[] {
   // Stay off y = ±s (zero-chord pole) but keep the tip close to the planform
@@ -462,71 +483,117 @@ function buildBusemann(params: DesignParams) {
   );
 }
 
+function numDeriv(f: (x: number) => number, x: number): number {
+  const h = Math.max(1e-6, 1e-4 * Math.abs(x));
+  return (f(x + h) - f(x - h)) / (2 * h);
+}
+
+/** Hemisphere of radius Rn, then a monotone cubic into the aft OML. Slope is continuous; the cap cannot neck down into a lip. */
+function semiAxis(x: number, Rn: number, xJoin: number, body: (x: number) => number, L: number): number {
+  if (x <= 1e-12) return 0;
+  const circ = (u: number) => Math.sqrt(Math.max(0, 2 * Rn * u - u * u));
+  if (x <= Rn) return circ(x);
+  if (x >= xJoin) return Math.max(circ(Rn), body(x));
+  const dx = Math.max(xJoin - Rn, 1e-9);
+  const p0 = Rn;
+  const p1 = Math.max(body(xJoin), p0);
+  let m1 = numDeriv(body, xJoin) * dx;
+  if (!(m1 > 0)) m1 = 0;
+  const evalH = (mm: number, t: number) => {
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    return h00 * p0 + h10 * 0 + h01 * p1 + h11 * mm;
+  };
+  let lo = 0;
+  let hi = Math.max(m1, 0);
+  let use = 0;
+  for (let it = 0; it < 12; it++) {
+    const mid = 0.5 * (lo + hi);
+    let prev = p0;
+    let ok = true;
+    for (let k = 1; k <= 10; k++) {
+      const a = evalH(mid, k / 10);
+      if (a + 1e-7 < prev) ok = false;
+      prev = a;
+    }
+    if (ok) {
+      use = mid;
+      lo = mid;
+    } else hi = mid;
+  }
+  const t = clamp((x - Rn) / dx, 0, 1);
+  return Math.max(0, evalH(use, t));
+}
+
 function buildLiftbody(params: DesignParams) {
   const L = params.length;
   const s = params.span / 2;
   const h = params.height;
-  const nx = Math.max(16, params.nx);
-  const ys = spanStations(params.ny, 1, params.halfModel);
+  const nx = Math.max(28, params.nx);
+  const ys = liftStations(params.ny, params.halfModel);
   const nj = ys.length;
   const pow = params.planform === "delta" ? 0.62 : clamp(params.planformPower * 0.62, 0.48, 1.15);
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
   const cam = (params.camber || 0) * h;
   const teTan = Math.tan((params.teSweepDeg || 0) * DEG);
-  const Rn = Math.max(effectiveLeRadius(params), 0.018 * L);
-  // First structured ring sits ON the nose sphere, never a flat D-disk at x = 0.
-  const x0 = 0.055 * Rn;
-  const sample = (i: number, j: number, isLower: boolean): Vec3 => {
-    const u = cosineSpace(i, nx);
-    const x = x0 + (L - x0) * u;
+  const requested = Math.max(effectiveLeRadius(params), 0.008 * L);
+  const bu = 0.58 * h;
+  const bl = 0.42 * h;
+  const Rn = clamp(requested, 0.006 * L, 0.9 * Math.min(s, bu, bl));
+  const fuseA = (x: number) => {
     const xi = clamp(x / L, 0, 1);
-    const rSph = Math.sqrt(Math.max(1e-16, 2 * Rn * Math.min(x, 2 * Rn) - Math.min(x, 2 * Rn) ** 2));
-    const aFuse = s * Math.pow(Math.max(xi, 1e-4), pow) * (1 - 0.07 * xi * xi);
-    const bU = 0.58 * h * Math.pow(Math.max(xi, 1e-4), 0.4) * (1 - 0.07 * xi);
-    const bL = 0.42 * h * Math.pow(Math.max(xi, 1e-4), 0.4) * (1 - 0.04 * xi);
-    const w = clamp((x - x0) / Math.max(2.6 * Rn - x0, 1e-9), 0, 1);
-    const w2 = w * w * (3 - 2 * w);
-    const a = (1 - w2) * rSph + w2 * Math.max(aFuse, rSph);
-    const bF = isLower ? bL : bU;
-    const bSph = rSph * (isLower ? 0.82 : 1.05);
-    const b = (1 - w2) * bSph + w2 * Math.max(bF, 0.2 * rSph);
+    return s * Math.pow(Math.max(xi, 1e-6), pow) * (1 - 0.07 * xi * xi);
+  };
+  const fuseU = (x: number) => {
+    const xi = clamp(x / L, 0, 1);
+    return bu * Math.pow(Math.max(xi, 1e-6), 0.55) * (1 - 0.06 * xi);
+  };
+  const fuseL = (x: number) => {
+    const xi = clamp(x / L, 0, 1);
+    return bl * Math.pow(Math.max(xi, 1e-6), 0.55) * (1 - 0.04 * xi);
+  };
+  let xJoin = Math.min(0.62 * L, Rn + Math.max(0.18 * L, 5 * Rn));
+  for (let k = 0; k < 12; k++) {
+    if (fuseA(xJoin) >= Rn && fuseU(xJoin) >= Rn && fuseL(xJoin) >= Rn) break;
+    xJoin = Math.min(0.8 * L, xJoin + 0.04 * L);
+  }
+  const nCap = Math.max(18, Math.round(nx * 0.45));
+  const xs: number[] = [];
+  for (let i = 0; i < nCap; i++) {
+    const phi = (Math.PI / 2) * (i / Math.max(nCap - 1, 1));
+    xs.push(Rn * (1 - Math.cos(phi)));
+  }
+  const nAft = Math.max(12, nx - nCap);
+  for (let i = 1; i <= nAft; i++) {
+    const t = i / nAft;
+    const u = t * t * (3 - 2 * t);
+    xs.push(Rn + (L - Rn) * u);
+  }
+  xs[0] = 0;
+  xs[xs.length - 1] = L;
+  for (let i = 1; i < xs.length; i++) if (xs[i] <= xs[i - 1]) xs[i] = xs[i - 1] + 1e-6 * L;
+  xs[xs.length - 1] = L;
+  const ni = xs.length;
+  const sample = (i: number, j: number, isLower: boolean): Vec3 => {
+    if (i === 0) return [0, 0, 0];
+    const x = xs[i];
+    const a = semiAxis(x, Rn, xJoin, fuseA, L);
+    const b = semiAxis(x, Rn, xJoin, isLower ? fuseL : fuseU, L);
     const yn = ys[j];
     const y = yn * a;
     const zEll = Math.sqrt(Math.max(0, 1 - yn * yn));
+    const xi = clamp(x / L, 0, 1);
     const z = (isLower ? -1 : 1) * b * zEll + 4 * cam * xi * (1 - xi) + Math.abs(y) * dih;
-    const xOut = i === nx - 1 ? Math.max(x - Math.abs(y) * teTan, 0.42 * L) : x;
+    const xOut = i === ni - 1 ? Math.max(x - Math.abs(y) * teTan, Rn) : x;
     return [xOut, y, z];
   };
-  const upper = makeGrid("upper", nx, nj, (i, j) => sample(i, j, false));
-  const lower = makeGrid("lower", nx, nj, (i, j) => sample(i, j, true));
-  snapLiftbodyNose(upper, Rn, x0);
-  snapLiftbodyNose(lower, Rn, x0);
-  return { upper, lower, shock: [] as SurfaceGrid[] };
-}
-
-function snapLiftbodyNose(g: SurfaceGrid, Rn: number, x0: number) {
-  const C = Rn;
-  const iMax = Math.min(g.ni - 1, Math.max(4, Math.round(g.ni * 0.14)));
-  for (let i = 0; i <= iMax; i++) {
-    const blend = 1 - i / Math.max(iMax, 1);
-    const b2 = blend * blend * (3 - 2 * blend);
-    for (let j = 0; j < g.nj; j++) {
-      const p = gridPoint(g, i, j);
-      const dx = p[0] - C;
-      const r = Math.hypot(dx, p[1], p[2]);
-      if (r < 1e-14) {
-        setGridPoint(g, i, j, [x0, 0, 0]);
-        continue;
-      }
-      const k = Rn / r;
-      const xS = Math.max(x0 * 0.4, C + dx * k);
-      setGridPoint(g, i, j, [
-        xS * b2 + p[0] * (1 - b2),
-        p[1] * k * b2 + p[1] * (1 - b2),
-        p[2] * k * b2 + p[2] * (1 - b2),
-      ]);
-    }
-  }
+  const upper = makeGrid("upper", ni, nj, (i, j) => sample(i, j, false));
+  const lower = makeGrid("lower", ni, nj, (i, j) => sample(i, j, true));
+  return { upper, lower, shock: [] as SurfaceGrid[], noseR: Rn, noseReq: requested };
 }
 
 /**
@@ -683,25 +750,6 @@ function sharpenTips(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGri
       setGridPoint(lower, i, j, m);
     }
   }
-}
-
-/** Rounded nose cap when the rolling-ball fillet cannot sit on a fat opening. */
-function fallbackRoundNose(upper: SurfaceGrid, lower: SurfaceGrid, Rn: number): SurfaceGrid {
-  const nj = Math.min(upper.nj, lower.nj);
-  const nArc = 13;
-  const R = Math.max(Rn, 1e-6);
-  return makeGrid("leading", nArc, nj, (k, j) => {
-    const u = gridPoint(upper, 0, j);
-    const l = gridPoint(lower, 0, j);
-    const t = nArc <= 1 ? 0 : k / (nArc - 1);
-    const mx = 0.5 * (u[0] + l[0]);
-    const my = 0.5 * (u[1] + l[1]);
-    const mz = 0.5 * (u[2] + l[2]);
-    const opening = Math.hypot(u[0] - l[0], u[1] - l[1], u[2] - l[2]);
-    const rad = Math.max(0.5 * opening, 0.35 * R);
-    const bulge = Math.sin(Math.PI * t) * rad;
-    return [mx - bulge, my, l[2] + (u[2] - l[2]) * t];
-  });
 }
 
 function applyFins(lid: SurfaceGrid, params: DesignParams, zSign: number) {
@@ -918,6 +966,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   let skipped = 0;
   let grids: SurfaceGrid[] = [];
   let shock: SurfaceGrid[] = [];
+  let noseMeta: { noseR?: number; noseReq?: number } | null = null;
 
   if (params.family === "star") {
     const star = buildStar(params);
@@ -955,18 +1004,20 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
                           : params.family === "integrated"
                             ? buildIntegrated(params)
                             : buildOsculating(params);
+    if (params.family === "liftbody") {
+      const meta = built as { noseR?: number; noseReq?: number };
+      noseMeta = { noseR: meta.noseR, noseReq: meta.noseReq };
+    }
     if (params.lid === "bottom") {
       flipGridsZ([built.upper, built.lower, ...built.shock]);
     }
     const isDuct = params.family === "ramjet" || params.family === "scramjet";
+    const isLift = params.family === "liftbody";
     const R = effectiveLeRadius(params);
     let leading: SurfaceGrid | null = null;
     const tips: SurfaceGrid[] = [];
-    if (!isDuct) {
+    if (!isDuct && !isLift) {
       if (R > 0) leading = applyLeadingFillet(built.upper, built.lower, R, params.length);
-      if (!leading && params.family === "liftbody") {
-        leading = fallbackRoundNose(built.upper, built.lower, R || 0.02 * params.length);
-      }
       if (params.family !== "liftbody") {
         sharpenTips(built.upper, built.lower, leading, params.halfModel);
       }
@@ -976,8 +1027,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
         if (a) tips.push(a);
         if (c) tips.push(c);
       }
-      applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
-    } else if (R > 0 && params.flowThrough) {
+    } else if (isDuct && R > 0 && params.flowThrough) {
       const lip = applyCowlLip(built.upper, R, params.length);
       if (lip) {
         const extra = ((built as { extra?: SurfaceGrid[] }).extra ??= []);
@@ -985,6 +1035,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
       }
     }
     const zSign = params.lid === "bottom" ? -1 : 1;
+    if (!isDuct) applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
     if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     if (!isDuct) {
@@ -1048,6 +1099,16 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   const Rn = effectiveLeRadius(params);
   if (Rn > 0 && (params.family === "ramjet" || params.family === "scramjet")) {
     notes.push(`Lip radius R = ${(Rn * 1000).toFixed(1)} mm.`);
+  } else if (Rn > 0 && params.family === "liftbody") {
+    const geo = noseMeta?.noseR;
+    const req = noseMeta?.noseReq;
+    if (geo && req && geo < req * 0.92) {
+      notes.push(
+        `Nose cap is a tangent elliptic ogive, R = ${(geo * 1000).toFixed(1)} mm (requested ${(req * 1000).toFixed(1)} mm does not fit this OML without a lip). Pole is at the origin.`,
+      );
+    } else if (geo) {
+      notes.push(`Nose cap is a tangent elliptic ogive, R = ${(geo * 1000).toFixed(1)} mm, pole welded at the origin.`);
+    }
   } else if (Rn > 0 && grids.some((g) => g.name === "leading" || g.name === "cowl_lip")) {
     notes.push(
       `Leading-edge radius R = ${(Rn * 1000).toFixed(1)} mm, tessellated where the arc is at least 1/12 of the local span step.`,
@@ -1083,6 +1144,10 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const betaC = solveConeShock(params.mach, params.coneDeg * DEG, params.gamma);
     if (Number.isFinite(betaC)) aero.betaDeg = betaC * RAD;
   }
+
+  const upperG = grids.find((g) => g.name === "upper" || g.name === "cowl");
+  const lowerG = grids.find((g) => g.name === "lower");
+  if (upperG && lowerG) bindCenterline(mesh, upperG, lowerG, params.span);
 
   return { params, mesh, grids, shockGrids: shock, quality, aero };
 }

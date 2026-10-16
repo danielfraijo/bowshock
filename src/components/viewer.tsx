@@ -326,7 +326,7 @@ export function WaveriderViewer({
         add([0, s, 0], 0x8a8a8a);
         add([0, 0, s], 0xc8c8c8);
         const sph = new THREE.Mesh(
-          new THREE.SphereGeometry(Math.max(0.012, 0.01 * L), 10, 8),
+          new THREE.SphereGeometry(Math.max(0.0035, 0.0032 * L), 12, 8),
           new THREE.MeshBasicMaterial({ color: 0xf4f4f4 }),
         );
         g.add(sph);

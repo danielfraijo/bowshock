@@ -695,13 +695,15 @@ export function Designer() {
                       { id: "tangent", label: "Tangent" },
                       { id: "mixed", label: "Mixed" },
                       { id: "cbaero", label: "CBAERO" },
+                      { id: "euler", label: "Euler" },
                     ]}
                   />
                 </div>
                 <p className="text-xs leading-relaxed text-subtle">
-                  CBAERO is the closest engineering method to Euler/NS CFD: Dahlem–Buck + Newton–Busemann +
-                  tangent-wedge/cone, Prandtl–Meyer leeward, Eckert–Zoby heating on the post-shock edge.
-                  +α heats the belly; −α heats the lid. Type a number or drag the slider.
+                  Euler is the step between CBAERO and Cart3D: a Rust HLLC solve on the symmetry plane
+                  captures the bow shock and the expansions tangent-wedge misses, then blends back to
+                  CBAERO off the centerline. It is not a 3-D volume mesh. CBAERO stays the fast
+                  engineering method (Dahlem–Buck, Newton–Busemann, tangent-wedge/cone).
                 </p>
               </div>
             ) : null}

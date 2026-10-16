@@ -112,6 +112,57 @@ assert.equal(caret.quality.nonManifoldEdges, 0, "default caret non-manifold");
 assert.equal(lead, false, "default caret fillet must not tessellate a sub-span arc");
 assert.ok(caretAspect < 80, `default caret aspect ${caretAspect.toFixed(1)}`);
 
+const lbParams: DesignParams = { ...DEFAULT_PARAMS, family: "liftbody", nx: 36, ny: 24 };
+const lb = buildVehicle(lbParams);
+const lbQ = analyzeMesh(lb.mesh);
+console.log(
+  `liftbody nose open=${lbQ.openEdges} nonMan=${lbQ.nonManifoldEdges} tris=${lbQ.triangles} watertight=${lbQ.watertight}`,
+);
+assert.equal(lbQ.openEdges, 0, "liftbody nose has open edges");
+assert.equal(lbQ.nonManifoldEdges, 0, "liftbody nose is non-manifold");
+let tipX = Infinity;
+let tipY = 0;
+let tipZ = 0;
+{
+  const p = lb.mesh.positions;
+  const idx = lb.mesh.indices;
+  for (let t = 0; t < idx.length; t++) {
+    const x = p[idx[t] * 3];
+    if (x < tipX) {
+      tipX = x;
+      tipY = p[idx[t] * 3 + 1];
+      tipZ = p[idx[t] * 3 + 2];
+    }
+  }
+}
+console.log(`liftbody tip (${tipX.toExponential(2)}, ${tipY.toExponential(2)}, ${tipZ.toExponential(2)})`);
+assert.ok(Math.abs(tipX) < 1e-6 && Math.abs(tipY) < 1e-4 && Math.abs(tipZ) < 1e-4, "liftbody pole is not at the origin");
+{
+  const g = lb.grids.find((s) => s.name === "upper");
+  assert.ok(g, "liftbody upper grid");
+  const mid = (g!.nj - 1) >> 1;
+  const slopes: { x: number; s: number }[] = [];
+  let px = 0;
+  let pz = 0;
+  for (let i = 0; i < g!.ni; i++) {
+    const x = g!.xyz[(i * g!.nj + mid) * 3];
+    const z = g!.xyz[(i * g!.nj + mid) * 3 + 2];
+    if (i > 0) {
+      const dx = x - px;
+      if (dx > 1e-8) slopes.push({ x, s: (z - pz) / dx });
+    }
+    px = x;
+    pz = z;
+  }
+  let worst = 0;
+  for (let i = 1; i < slopes.length; i++) {
+    if (slopes[i].x < 0.02) continue;
+    worst = Math.max(worst, Math.abs(slopes[i].s - slopes[i - 1].s));
+  }
+  console.log(`liftbody centerline max Δ(dz/dx) aft of the pole=${worst.toFixed(3)}`);
+  assert.ok(worst < 0.45, `liftbody nose lip Δslope ${worst.toFixed(2)}`);
+}
+
 let betaErr = 0;
 for (let i = 1; i <= 24; i++) {
   const th = (i / 24) * 28 * (Math.PI / 180);
@@ -124,9 +175,10 @@ assert.ok(betaErr < (0.05 * Math.PI) / 180, `fastBeta err ${betaErr}`);
 
 const tStudy = performance.now();
 const quick = studyVehicle(caret, { quick: true });
-const full = studyVehicle(caret, { quick: false });
 console.log(
-  `caret study quick=${(performance.now() - tStudy).toFixed(0)} ms incl full ${(full.elapsedMs).toFixed(0)} ms L/D=${full.aero.ld.toFixed(3)} quickL/D=${quick.aero.ld.toFixed(3)}`,
+  `caret study quick=${(performance.now() - tStudy).toFixed(0)} ms method=${quick.aero.method} L/D=${quick.aero.ld.toFixed(3)}`,
 );
+assert.equal(quick.aero.method, "euler");
+assert.ok(quick.aero.notes.some((n) => n.includes("Strip Euler")), "euler note missing");
 
 console.log("fidelity assertions passed");
