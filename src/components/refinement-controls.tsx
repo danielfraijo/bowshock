@@ -1,8 +1,9 @@
 /**
- * Mesh refinement selector for the Geom tab: coarse / medium / fine / custom.
+ * Mesh refinement selector for the Geom tab: coarse / medium / fine / custom, plus Legacy (the unconverged
+ * 88x28x42 wasm run of b5fdccc, kept for reproducibility).
  * Surface counts are the existing Streamwise / Spanwise sliders (params.nx / params.ny);
  * this adds LE clustering, the Euler volume grid, clustering strengths and a cost readout.
- * `medium` is the legacy behaviour (40x28 surface, 72x24x280 Euler).
+ * `medium` is the default: the same 40x28 surface and 88x28 symmetry-plane cells as legacy, but run to convergence.
  */
 import { NumberField, Seg } from "@/components/fields";
 import { Switch } from "@/components/ui/switch";
@@ -80,6 +81,7 @@ export function RefinementControls({
           value={preset}
           onChange={pick}
           options={[
+            { id: "legacy", label: "Legacy" },
             { id: "coarse", label: "Coarse" },
             { id: "medium", label: "Medium" },
             { id: "fine", label: "Fine" },
@@ -105,6 +107,16 @@ export function RefinementControls({
             digits={2}
             {...drag}
             onChange={(leClustering) => setCustom({}, { leClustering })}
+          />
+          <NumberField
+            label="Surface curvature adaptation"
+            value={cur.surface.curvature ?? 0}
+            min={L.surface.curvature[0]}
+            max={L.surface.curvature[1]}
+            step={0.05}
+            digits={2}
+            {...drag}
+            onChange={(curvature) => setCustom({}, { curvature })}
           />
           <NumberField
             label="Euler cells streamwise"
@@ -136,6 +148,37 @@ export function RefinementControls({
             {...drag}
             onChange={(iters) => setCustom({ iters: Math.round(iters) })}
           />
+          <NumberField
+            label="Convergence tolerance (0 = fixed sweeps)"
+            value={cur.volume.tol ?? 0}
+            min={0}
+            max={L.volume.tol[1]}
+            step={0.0005}
+            digits={4}
+            {...drag}
+            onChange={(tol) => setCustom({ tol })}
+          />
+          <NumberField
+            label="Grid sequencing levels"
+            value={cur.volume.sequence ?? 0}
+            min={L.volume.sequence[0]}
+            max={L.volume.sequence[1]}
+            step={1}
+            digits={0}
+            {...drag}
+            onChange={(sequence) => setCustom({ sequence: Math.round(sequence) })}
+          />
+          <div>
+            <span className="mb-2 block text-xs font-medium text-muted">Accuracy order</span>
+            <Seg
+              value={String(cur.volume.order ?? 1) as "1" | "2"}
+              onChange={(o) => setCustom({ order: o === "2" ? 2 : 1 })}
+              options={[
+                { id: "1", label: "1st (HLLC)" },
+                { id: "2", label: "2nd (MUSCL)" },
+              ]}
+            />
+          </div>
           <NumberField
             label="Wall clustering"
             value={cur.volume.wallClustering}

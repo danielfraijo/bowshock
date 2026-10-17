@@ -5,13 +5,13 @@
  * Fidelity target: above a CBAERO panel run, below a Cart3D volume Euler.
  * Nothing here changes a physics model — only where grid points go and how many.
  *
- * Defaults: `medium` reproduces the pre-refinement behaviour exactly
- * (surface nx/ny = DEFAULT_PARAMS 40x28, wedge-anchor Euler 72x24x280,
- * symmetry-plane kernel 88x28x42, no clustering). See refinement.test.ts.
+ * Defaults: `legacy` reproduces the pre-refinement behaviour (b5fdccc) exactly (surface 40x28, wedge-anchor Euler 72x24x280,
+ * symmetry-plane kernel 88x28x42, no clustering, unconverged). `medium` (the default when nothing is set) keeps the same
+ * surface and cell counts but adds wall/shock clustering and a convergence stop. See refinement.test.ts.
  */
 import { betaFromThetaM } from "./math";
 
-export type RefinementPreset = "coarse" | "medium" | "fine" | "custom";
+export type RefinementPreset = "coarse" | "legacy" | "medium" | "fine" | "custom";
 
 export interface SurfaceRefinement {
   /** Streamwise points per loft sheet. */
@@ -20,6 +20,12 @@ export interface SurfaceRefinement {
   ny: number;
   /** 0 = today's stations (cosine-clustered). 1 = strong extra clustering toward the leading edge / nose. */
   leClustering: number;
+  /**
+   * 0 (default / absent) = today's spanwise stations. > 0 = curvature-adaptive spanwise stations with
+   * sharp-corner detection (see curvature.ts): points gather where the planform / section turns quickly
+   * and sit exactly on corners (e.g. the double-delta kink). Same point count, so the cost is unchanged.
+   */
+  curvature?: number;
 }
 
 export interface VolumeRefinement {
@@ -37,6 +43,16 @@ export interface VolumeRefinement {
   shockWidth: number;
   /** Re-cluster toward the computed density jump after a first solve, then re-solve. */
   adaptive: boolean;
+  /**
+   * Opt-in convergence mode (symmetry-plane kernel, TypeScript path): stop when the residual has dropped
+   * below `tol` x its running peak (and the wall pressure has settled); `iters` becomes the hard cap.
+   * 0 / absent = fixed `iters` (the legacy behaviour).
+   */
+  tol?: number;
+  /** 1 (default, shipped first-order HLLC) or 2 (MUSCL, van Albada limiter) - TypeScript path only. */
+  order?: 1 | 2;
+  /** Coarser grid levels solved first and injected (0 = off; needs tol > 0). */
+  sequence?: number;
 }
 
 export interface RefinementSettings {
@@ -45,7 +61,7 @@ export interface RefinementSettings {
   volume: VolumeRefinement;
 }
 
-/** Legacy grids this module must reproduce at `medium`. */
+/** Legacy grids this module must reproduce at `legacy`. */
 export const LEGACY = {
   surface: { nx: 40, ny: 28 },
   wedge: { ni: 72, nj: 24, iters: 280 },
@@ -54,7 +70,7 @@ export const LEGACY = {
 } as const;
 
 export const REFINEMENT_LIMITS = {
-  surface: { nx: [12, 160], ny: [10, 120], leClustering: [0, 1], maxPoints: 12000 },
+  surface: { nx: [12, 160], ny: [10, 120], leClustering: [0, 1], curvature: [0, 1], maxPoints: 12000 },
   volume: {
     nStream: [24, 400],
     nCross: [8, 160],
@@ -62,10 +78,12 @@ export const REFINEMENT_LIMITS = {
     wallClustering: [0, 12],
     shockClustering: [0, 30],
     shockWidth: [0.02, 0.3],
+    tol: [1e-6, 0.1],
+    sequence: [0, 3],
     /** Hard cap on cells of one 2-D grid. Memory is ~140 B/cell, so this is far inside browser limits. */
     maxCells: 60000,
     /** Hard cap on cell-updates (cells x iterations): bounds wall-clock time (~10-15 s at the measured TypeScript rates). */
-    maxWork: 5e7,
+    maxWork: 2.5e7,
   },
 } as const;
 
@@ -76,7 +94,7 @@ export const REFINEMENT_LIMITS = {
  */
 export const COST_MODEL = {
   jsRateWedge: 3.4e6,
-  jsRateStrip: 5.5e6,
+  jsRateStrip: 4.5e6,
   wasmRateStrip: 8e6,
 } as const;
 
@@ -87,19 +105,22 @@ export const MAX_SMOOTH_STRETCH = 2;
 const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> = {
   coarse: {
     preset: "coarse",
-    surface: { nx: 24, ny: 16, leClustering: 0 },
+    surface: { nx: 24, ny: 16, leClustering: 0, curvature: 0 },
     volume: {
       nStream: 48,
       nCross: 16,
-      iters: 400,
+      iters: 600,
       wallClustering: 0,
       shockClustering: 0,
       shockWidth: DEFAULT_SHOCK_WIDTH,
       adaptive: false,
+      tol: 1e-3,
+      sequence: 0,
     },
   },
-  medium: {
-    preset: "medium",
+  /** Reproduces the pre-refinement build (b5fdccc) bit for bit: the shipped wasm run, 88x28 cells x 42 sweeps (unconverged). */
+  legacy: {
+    preset: "legacy",
     surface: { nx: LEGACY.surface.nx, ny: LEGACY.surface.ny, leClustering: 0 },
     volume: {
       nStream: LEGACY.wedge.ni,
@@ -111,17 +132,35 @@ const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> =
       adaptive: false,
     },
   },
-  fine: {
-    preset: "fine",
-    surface: { nx: 96, ny: 32, leClustering: 0.6 },
+  /** Default: the legacy cell counts, run to convergence (residual stop, grid sequencing) with wall + shock clustering. */
+  medium: {
+    preset: "medium",
+    surface: { nx: LEGACY.surface.nx, ny: LEGACY.surface.ny, leClustering: 0, curvature: 0 },
     volume: {
-      nStream: 96,
-      nCross: 32,
-      iters: 1500,
+      nStream: LEGACY.wedge.ni,
+      nCross: LEGACY.wedge.nj,
+      iters: 2500,
       wallClustering: 2,
       shockClustering: 6,
       shockWidth: DEFAULT_SHOCK_WIDTH,
       adaptive: false,
+      tol: 3e-3,
+      sequence: 2,
+    },
+  },
+  fine: {
+    preset: "fine",
+    surface: { nx: 96, ny: 32, leClustering: 0.3, curvature: 0.5 },
+    volume: {
+      nStream: 96,
+      nCross: 32,
+      iters: 2500,
+      wallClustering: 2,
+      shockClustering: 6,
+      shockWidth: DEFAULT_SHOCK_WIDTH,
+      adaptive: false,
+      tol: 1e-3,
+      sequence: 2,
     },
   },
 };
@@ -132,6 +171,8 @@ export function presetSettings(id: Exclude<RefinementPreset, "custom">): Refinem
 }
 
 export const MEDIUM: RefinementSettings = presetSettings("medium");
+/** The b5fdccc behaviour (see the `legacy` preset). */
+export const LEGACY_SETTINGS: RefinementSettings = presetSettings("legacy");
 
 /** Effective settings for a design: refinement (or medium) with the surface counts mirrored from params.nx / params.ny (those sliders are the source of truth). */
 export function refinementOf(p: {
@@ -170,7 +211,7 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
   const warnings: string[] = [];
   const L = REFINEMENT_LIMITS;
   const id = input?.preset;
-  if (id === "coarse" || id === "medium" || id === "fine") {
+  if (id === "coarse" || id === "legacy" || id === "medium" || id === "fine") {
     return { settings: presetSettings(id), warnings, clamped: false };
   }
   if (id !== undefined && id !== "custom")
@@ -190,7 +231,10 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
     integer: boolean,
   ) => {
     let x = num(raw, def);
-    if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    if (raw === Infinity || raw === -Infinity) {
+      // an infinite request is "as much as allowed" / "as little as allowed", not garbage
+      x = raw > 0 ? hi : lo;
+    } else if (typeof raw !== "number" || !Number.isFinite(raw)) {
       if (raw !== undefined) {
         warnings.push(`${label}: not a finite number, using ${def}.`);
         clamped = true;
@@ -223,6 +267,14 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
       0,
       L.surface.leClustering[0],
       L.surface.leClustering[1],
+      false,
+    ),
+    curvature: fit(
+      "curvature adaptation",
+      s.curvature,
+      0,
+      L.surface.curvature[0],
+      L.surface.curvature[1],
       false,
     ),
   };
@@ -264,7 +316,7 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
     wallClustering: fit(
       "wall clustering",
       v.wallClustering,
-      0,
+      base.volume.wallClustering,
       L.volume.wallClustering[0],
       L.volume.wallClustering[1],
       false,
@@ -272,7 +324,7 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
     shockClustering: fit(
       "shock clustering",
       v.shockClustering,
-      0,
+      base.volume.shockClustering,
       L.volume.shockClustering[0],
       L.volume.shockClustering[1],
       false,
@@ -286,7 +338,18 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
       false,
     ),
     adaptive: v.adaptive === true,
+    // absent -> the medium tolerance; an explicit 0 means a fixed-iteration run
+    tol:
+      v.tol === 0
+        ? 0
+        : fit("convergence tolerance", v.tol, base.volume.tol ?? 3e-3, L.volume.tol[0], L.volume.tol[1], false),
+    order: v.order === 2 ? 2 : 1,
+    sequence: fit("grid sequencing levels", v.sequence, base.volume.sequence ?? 0, L.volume.sequence[0], L.volume.sequence[1], true),
   };
+  if (volume.sequence && !(volume.tol && volume.tol > 0)) {
+    warnings.push("Grid sequencing needs a convergence tolerance; ignored (fixed-iteration run).");
+    volume.sequence = 0;
+  }
   if (volume.nStream * volume.nCross > L.volume.maxCells) {
     const k = Math.sqrt(L.volume.maxCells / (volume.nStream * volume.nCross));
     volume.nStream = Math.max(L.volume.nStream[0], Math.floor(volume.nStream * k));
@@ -341,10 +404,10 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
   return { settings: { preset: "custom", surface, volume }, warnings, clamped };
 }
 
-/** True when these settings must reproduce the legacy grids bit for bit. */
+/** True when these settings are the `legacy` run (b5fdccc: shipped wasm, 88x28x42). Undefined settings mean `medium`, which is not. */
 export function isBaseline(r?: RefinementSettings | null): boolean {
-  if (!r) return true;
-  const m = MEDIUM;
+  if (!r) return false;
+  const m = LEGACY_SETTINGS;
   const v = r.volume;
   return (
     v.nStream === m.volume.nStream &&
@@ -352,12 +415,14 @@ export function isBaseline(r?: RefinementSettings | null): boolean {
     v.iters === m.volume.iters &&
     v.wallClustering === 0 &&
     v.shockClustering === 0 &&
-    !v.adaptive
+    !v.adaptive &&
+    !(v.tol && v.tol > 0) &&
+    (v.order ?? 1) === 1
   );
 }
 
 export function isSurfaceBaseline(r?: RefinementSettings | null): boolean {
-  return !r || r.surface.leClustering === 0;
+  return !r || (r.surface.leClustering === 0 && !(r.surface.curvature && r.surface.curvature > 0));
 }
 
 /**
@@ -380,17 +445,15 @@ export function stripDims(v: VolumeRefinement): { ni: number; nj: number; iters:
 }
 
 /**
- * Spanwise points above this trip pre-existing non-manifold aft-tip edges in generate.ts / mesh.ts weldAft
- * (tolerance 8e-4 L is larger than the tip spacing). Measured on b5fdccc: caret is manifold at ny <= 32 and
- * not at ny >= 34. Streamwise points (nx) are not affected. See NOTES.md.
+ * Surface-mesh advisories. Dense spanwise sampling used to produce non-manifold aft-tip edges (weld tolerance larger than the
+ * tip spacing); `weldAftRobust` (mesh-repair.ts) fixed that for every family, so there is no manifold warning any more. What is
+ * left is a cost note for very dense sheets.
  */
-export const SPAN_MANIFOLD_SAFE_NY = 32;
-
 export function surfaceWarnings(r: RefinementSettings): string[] {
   const out: string[] = [];
-  if (r.surface.ny > SPAN_MANIFOLD_SAFE_NY) {
+  if (r.surface.nx * r.surface.ny > 12000) {
     out.push(
-      `Spanwise points ${r.surface.ny} > ${SPAN_MANIFOLD_SAFE_NY}: several families currently report non-manifold aft-tip edges at this density (existing weld tolerance; still watertight). Check the CAD tab.`,
+      `Surface sheet of ${r.surface.nx}x${r.surface.ny} points: meshing, aero and exports slow down noticeably (triangle count grows with nx*ny).`,
     );
   }
   return out;
@@ -422,6 +485,10 @@ function estimateCostOf(v: VolumeRefinement) {
 
 export function estimateCost(r: RefinementSettings): CostEstimate {
   const { wedgeCells, wedgeWork, stripCells, stripWork } = estimateCostOf(r.volume);
+  // a tolerance run stops long before its cap: ~900 sweeps was typical in the measured wedge / cone cases
+  const dd = stripDims(r.volume);
+  const typ = r.volume.tol && r.volume.tol > 0 ? Math.min(dd.iters, 900) / Math.max(dd.iters, 1) : 1;
+  const stripWorkTypical = stripWork * typ;
   const L = REFINEMENT_LIMITS;
   return {
     surfacePointsPerSheet: r.surface.nx * r.surface.ny,
@@ -431,7 +498,7 @@ export function estimateCost(r: RefinementSettings): CostEstimate {
     wedgeSeconds: wedgeWork / COST_MODEL.jsRateWedge,
     stripCells,
     stripWork,
-    stripSeconds: stripWork / (isBaseline(r) ? COST_MODEL.wasmRateStrip : COST_MODEL.jsRateStrip),
+    stripSeconds: stripWorkTypical / (isBaseline(r) ? COST_MODEL.wasmRateStrip : COST_MODEL.jsRateStrip),
     withinCaps:
       r.surface.nx * r.surface.ny <= L.surface.maxPoints &&
       wedgeCells <= L.volume.maxCells &&

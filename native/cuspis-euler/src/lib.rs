@@ -47,6 +47,8 @@ pub extern "C" fn euler_solve(ptr: *mut u8, n: i32, mach: f64, gamma: f64, alpha
 /// Refined-grid entry point.
 /// Buffer layout (f64): [0, 2n) wall (x, z) pairs, [2n, 3n) Cp out, [3n, 3n + ni + 1) shock position s per
 /// node column (read only when `shock_amp > 0`). Allocate `(3n + ni + 1 + 16) * 8` bytes with `euler_alloc`.
+/// `tol` > 0 turns on the convergence stop (`iters` is then the cap), `sequence` is the number of coarser levels
+/// solved first (needs tol > 0), `cfl` <= 0 selects the default. Second order (MUSCL) is TypeScript-only.
 /// Returns the final residual, or -1 when the arguments are rejected (nothing is written).
 #[no_mangle]
 pub extern "C" fn euler_solve_ex(
@@ -61,6 +63,9 @@ pub extern "C" fn euler_solve_ex(
     wall_amp: f64,
     shock_amp: f64,
     shock_width: f64,
+    tol: f64,
+    sequence: i32,
+    cfl: f64,
 ) -> f64 {
     if ptr.is_null() || n < 4 || ni < 8 || nj < 6 || iters < 1 || ni > 1000 || nj > 400 || iters > 20000 {
         return -1.0;
@@ -84,6 +89,11 @@ pub extern "C" fn euler_solve_ex(
         shock_amp: shock_amp.max(0.0),
         shock_width,
         shock_s: if shock_amp > 0.0 { Some(shock_s) } else { None },
+        tol: if tol.is_finite() && tol > 0.0 { tol.max(1e-6).min(0.1) } else { 0.0 },
+        sequence: sequence.max(0).min(3) as usize,
+        cfl: if cfl.is_finite() { cfl } else { 0.0 },
+        mirror_lower: true,
+        ..Grid::default()
     };
     let (cp, residual) = solve_wall_grid(&xw, &zw, mach, gamma, alpha, &grid);
     let out = unsafe { std::slice::from_raw_parts_mut(ptr.add(n * 16) as *mut f64, n) };
@@ -94,12 +104,44 @@ pub extern "C" fn euler_solve_ex(
 pub struct Grid {
     pub ni: usize,
     pub nj: usize,
+    /// Fixed iteration count, or the hard cap when `tol` > 0.
     pub iters: usize,
     pub wall_amp: f64,
     pub shock_amp: f64,
     pub shock_width: f64,
     /// Per node column (ni + 1): predicted shock position in s. None = no shock clustering.
     pub shock_s: Option<Vec<f64>>,
+    /// > 0: stop when the residual <= tol x its running peak (3 sweeps in a row) and the wall pressure has settled.
+    pub tol: f64,
+    /// Coarser levels solved first and injected (needs tol > 0).
+    pub sequence: usize,
+    /// CFL target; <= 0 means the default (0.5 fixed-iteration, 0.8 with a tolerance).
+    pub cfl: f64,
+    /// Never stop before this many sweeps on the finest level.
+    pub min_iters: usize,
+    /// Solve a wall with the flow domain below it (z < wall) as its mirror image (z -> -z, alpha -> -alpha).
+    /// The legacy kernel builds a left-handed grid there whose face normals point inward (a compression ramp reads the
+    /// vacuum Cp); `euler_solve` keeps that behaviour byte for byte, `euler_solve_ex` turns the fix on.
+    pub mirror_lower: bool,
+}
+
+impl Default for Grid {
+    fn default() -> Self {
+        Grid {
+            ni: NI,
+            nj: NJ,
+            iters: ITERS,
+            wall_amp: 0.0,
+            shock_amp: 0.0,
+            shock_width: 0.09,
+            shock_s: None,
+            tol: 0.0,
+            sequence: 0,
+            cfl: 0.0,
+            min_iters: 30,
+            mirror_lower: false,
+        }
+    }
 }
 
 /// Equidistribute m(s) = 1 + wall*exp(-s/lw) + shock*exp(-((s-c)/w)^2): n + 1 strictly increasing
@@ -167,14 +209,52 @@ fn wall_z(x: f64, xw: &[f64], zw: &[f64]) -> f64 {
 }
 
 fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec<f64>, f64) {
-    let grid = Grid { ni: NI, nj: NJ, iters: ITERS, wall_amp: 0.0, shock_amp: 0.0, shock_width: 0.09, shock_s: None };
-    solve_wall_grid(xw, zw, mach, gamma, alpha, &grid)
+    let grid = Grid::default();
+    let (cp, res, _info) = solve_wall_grid_info(xw, zw, mach, gamma, alpha, &grid);
+    (cp, res)
 }
 
 pub fn solve_wall_grid(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64, grid: &Grid) -> (Vec<f64>, f64) {
-    let gni = grid.ni;
-    let gnj = grid.nj;
-    let giters = grid.iters;
+    let (cp, res, _info) = solve_wall_grid_info(xw, zw, mach, gamma, alpha, grid);
+    (cp, res)
+}
+
+/// What the finest level did (for tests / diagnostics).
+#[derive(Clone, Debug, Default)]
+pub struct SolveInfo {
+    /// Sweeps run on the finest level.
+    pub iters_used: usize,
+    /// 0 = iteration cap (or fixed run), 1 = tolerance, 2 = residual floor with stationary wall pressure.
+    pub stop: u8,
+    /// Cell updates over all levels and attempts.
+    pub work: usize,
+    /// The requested CFL diverged and the solve was repeated at 0.5.
+    pub cfl_fallback: bool,
+}
+
+struct Level {
+    ni: usize,
+    nj: usize,
+    vol: Vec<f64>,
+    fw: Vec<f64>,
+    fe: Vec<f64>,
+    fs: Vec<f64>,
+    fnor: Vec<f64>,
+    xc: Vec<f64>,
+    u: Vec<f64>,
+}
+
+struct Flow {
+    gamma: f64,
+    gm1: f64,
+    rho_inf: f64,
+    p_inf: f64,
+    u_inf: f64,
+    v_inf: f64,
+    e_inf: f64,
+}
+
+fn build_level(xw: &[f64], zw: &[f64], grid: &Grid, gni: usize, gnj: usize, shock_cols: &Option<Vec<f64>>, fl: &Flow) -> Level {
     let clustered = grid.wall_amp > 0.0 || grid.shock_amp > 0.0;
     let n = xw.len();
     let x_nose = xw[0];
@@ -191,7 +271,7 @@ pub fn solve_wall_grid(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64
     let col_s: Vec<Vec<f64>> = if clustered {
         (0..npx)
             .map(|i| {
-                let (amp, pos) = match &grid.shock_s {
+                let (amp, pos) = match shock_cols {
                     Some(v) => (grid.shock_amp, v[i].max(0.04).min(0.92)),
                     None => (0.0, 0.3),
                 };
@@ -214,7 +294,6 @@ pub fn solve_wall_grid(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64
             pz[id] = zwall + sign * eta * h_far;
         }
     }
-
     let nc = gni * gnj;
     let mut vol = vec![0.0; nc];
     let mut fw = vec![0.0; nc * 2];
@@ -256,7 +335,216 @@ pub fn solve_wall_grid(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64
             fnor[id * 2 + 1] = nx;
         }
     }
+    let mut u = vec![0.0; nc * 4];
+    for c in 0..nc {
+        u[c * 4] = fl.rho_inf;
+        u[c * 4 + 1] = fl.rho_inf * fl.u_inf;
+        u[c * 4 + 2] = fl.rho_inf * fl.v_inf;
+        u[c * 4 + 3] = fl.e_inf;
+    }
+    Level { ni: gni, nj: gnj, vol, fw, fe, fs, fnor, xc, u }
+}
 
+/// Inject a coarse solution into a finer level (piecewise-constant, nested index mapping).
+fn prolong(coarse: &Level, fine: &mut Level) {
+    for j in 0..fine.nj {
+        let jc = (j * coarse.nj / fine.nj).min(coarse.nj - 1);
+        for i in 0..fine.ni {
+            let ic = (i * coarse.ni / fine.ni).min(coarse.ni - 1);
+            let a = (jc * coarse.ni + ic) * 4;
+            let b = (j * fine.ni + i) * 4;
+            for k in 0..4 {
+                fine.u[b + k] = coarse.u[a + k];
+            }
+        }
+    }
+}
+
+/// One sweep (Gauss-Seidel, in place) at CFL `cfl`; returns the RMS mass-flux residual.
+fn sweep(l: &mut Level, fl: &Flow, cfl: f64) -> f64 {
+    let gni = l.ni;
+    let gnj = l.nj;
+    let nc = gni * gnj;
+    let (gamma, gm1) = (fl.gamma, fl.gm1);
+    let (rho_inf, p_inf, u_inf, v_inf) = (fl.rho_inf, fl.p_inf, fl.u_inf, fl.v_inf);
+    let mut res_sum = 0.0;
+    for j in 0..gnj {
+        for i in 0..gni {
+            let id = j * gni + i;
+            let o = id * 4;
+            let r = l.u[o].max(1e-8);
+            let uu = l.u[o + 1] / r;
+            let vv = l.u[o + 2] / r;
+            let pp = (gm1 * (l.u[o + 3] - 0.5 * r * (uu * uu + vv * vv))).max(1e-8);
+            let mut d0 = 0.0;
+            let mut d1 = 0.0;
+            let mut d2 = 0.0;
+            let mut d3 = 0.0;
+            let take = |f: [f64; 4], d0: &mut f64, d1: &mut f64, d2: &mut f64, d3: &mut f64| {
+                *d0 += f[0];
+                *d1 += f[1];
+                *d2 += f[2];
+                *d3 += f[3];
+            };
+            if i == 0 {
+                let f = hllc(r, uu, vv, pp, rho_inf, u_inf, v_inf, p_inf, l.fw[id * 2], l.fw[id * 2 + 1], gamma);
+                take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+            } else {
+                let ol = ((j * gni + (i - 1)) * 4) as usize;
+                let (rr, ur, vr, pr) = cons_to_prim(&l.u, ol, gm1);
+                let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, l.fw[id * 2], l.fw[id * 2 + 1], gamma);
+                take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+            }
+            if i + 1 == gni {
+                let f = hllc(r, uu, vv, pp, r, uu, vv, pp, l.fe[id * 2], l.fe[id * 2 + 1], gamma);
+                take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+            } else {
+                let ol = ((j * gni + (i + 1)) * 4) as usize;
+                let (rr, ur, vr, pr) = cons_to_prim(&l.u, ol, gm1);
+                let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, l.fe[id * 2], l.fe[id * 2 + 1], gamma);
+                take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+            }
+            if j + 1 == gnj {
+                let f = hllc(r, uu, vv, pp, rho_inf, u_inf, v_inf, p_inf, l.fnor[id * 2], l.fnor[id * 2 + 1], gamma);
+                take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+            } else {
+                let ol = (((j + 1) * gni + i) * 4) as usize;
+                let (rr, ur, vr, pr) = cons_to_prim(&l.u, ol, gm1);
+                let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, l.fnor[id * 2], l.fnor[id * 2 + 1], gamma);
+                take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+            }
+            if j == 0 {
+                d1 += pp * l.fs[id * 2];
+                d2 += pp * l.fs[id * 2 + 1];
+            } else {
+                let ol = (((j - 1) * gni + i) * 4) as usize;
+                let (rr, ur, vr, pr) = cons_to_prim(&l.u, ol, gm1);
+                let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, l.fs[id * 2], l.fs[id * 2 + 1], gamma);
+                take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+            }
+            let spec = (uu * uu + vv * vv).sqrt() + (gamma * pp / r).sqrt();
+            let per = fw_len(&l.fw, id)
+                .max(fw_len(&l.fe, id))
+                .max(fw_len(&l.fs, id))
+                .max(fw_len(&l.fnor, id))
+                .max(1e-8);
+            let dt = (cfl * (l.vol[id] / per)) / spec.max(1e-6);
+            let scale = dt / l.vol[id].max(1e-12);
+            let nr = l.u[o] - d0 * scale;
+            let nru = l.u[o + 1] - d1 * scale;
+            let nrv = l.u[o + 2] - d2 * scale;
+            let nre = l.u[o + 3] - d3 * scale;
+            let rr = nr.max(1e-8);
+            let uu2 = nru / rr;
+            let vv2 = nrv / rr;
+            let pnew = gm1 * (nre - 0.5 * rr * (uu2 * uu2 + vv2 * vv2));
+            if pnew > 1e-6 && nr > 1e-8 {
+                l.u[o] = nr;
+                l.u[o + 1] = nru;
+                l.u[o + 2] = nrv;
+                l.u[o + 3] = nre;
+            }
+            let src = d0 / l.vol[id].max(1e-12);
+            res_sum += src * src;
+        }
+    }
+    (res_sum / nc as f64).sqrt()
+}
+
+fn wall_pressure(l: &Level, gm1: f64, out: &mut [f64]) {
+    for i in 0..l.ni {
+        out[i] = cons_to_prim(&l.u, i * 4, gm1).3;
+    }
+}
+
+/// Mirrors runLevel in strip-euler.ts: returns (sweeps used, stop reason 0 cap / 1 tol / 2 stalled, last residual).
+fn march_level(l: &mut Level, fl: &Flow, iters: usize, tol: f64, min_iters: usize, cfl_max: f64, peak: &mut f64) -> (usize, u8, f64) {
+    let ni = l.ni;
+    let mut prev = vec![0.0; ni];
+    let mut cur = vec![0.0; ni];
+    let mut below = 0usize;
+    let mut reason = 0u8;
+    let mut used = 0usize;
+    wall_pressure(l, fl.gm1, &mut prev);
+    let mut since_snap = 0usize;
+    let mut win_min = f64::INFINITY;
+    let mut last_win_min = f64::INFINITY;
+    let mut since_win = 0usize;
+    let mut residual = 1.0;
+    while used < iters {
+        let cfl = if tol > 0.0 && cfl_max > 0.5 { cfl_max.min(0.5 + (cfl_max - 0.5) * used as f64 / 60.0) } else { cfl_max };
+        // fixed-iteration runs (tol = 0) never test; tolerance runs test after every sweep
+        let n = if tol > 0.0 { 1 } else { iters - used };
+        for _ in 0..n {
+            residual = sweep(l, fl, cfl);
+            if residual > *peak {
+                *peak = residual;
+            }
+        }
+        used += n;
+        if tol > 0.0 {
+            since_snap += n;
+            since_win += n;
+            if residual < win_min {
+                win_min = residual;
+            }
+            if used >= min_iters {
+                if *peak > 0.0 && residual <= tol * *peak {
+                    below += 1;
+                } else {
+                    below = 0;
+                }
+                let moved = |l: &Level, prev: &[f64], cur: &mut [f64]| -> f64 {
+                    wall_pressure(l, fl.gm1, cur);
+                    let mut dmax: f64 = 0.0;
+                    for i in 0..ni {
+                        let d = (cur[i] - prev[i]).abs() / prev[i].max(1e-8);
+                        if d > dmax {
+                            dmax = d;
+                        }
+                    }
+                    dmax
+                };
+                if below >= 3 && since_snap >= 10 {
+                    let d = moved(l, &prev, &mut cur);
+                    if d <= 2.0 * tol * (since_snap as f64 / 10.0) {
+                        reason = 1;
+                        break;
+                    }
+                    prev.copy_from_slice(&cur);
+                    since_snap = 0;
+                } else if since_win >= 150 {
+                    if win_min > 0.9 * last_win_min && since_snap >= 10 {
+                        let d = moved(l, &prev, &mut cur);
+                        if d <= 2.0 * tol * (since_snap as f64 / 10.0) {
+                            reason = 2;
+                            break;
+                        }
+                        prev.copy_from_slice(&cur);
+                        since_snap = 0;
+                    }
+                    last_win_min = win_min;
+                    win_min = f64::INFINITY;
+                    since_win = 0;
+                }
+            }
+        }
+    }
+    (used, reason, residual)
+}
+
+pub fn solve_wall_grid_info(xw: &[f64], zw_in: &[f64], mach: f64, gamma: f64, alpha_in: f64, grid: &Grid) -> (Vec<f64>, f64, SolveInfo) {
+    let n0 = xw.len();
+    let below = zw_in[n0 / 2] < -1e-8;
+    let mirror = grid.mirror_lower && below;
+    let zw_m: Vec<f64> = if mirror { zw_in.iter().map(|v| -v).collect() } else { Vec::new() };
+    let zw: &[f64] = if mirror { &zw_m } else { zw_in };
+    let alpha = if mirror { -alpha_in } else { alpha_in };
+    let gni = grid.ni;
+    let gnj = grid.nj;
+    let n = xw.len();
+    let tol = if grid.tol > 0.0 { grid.tol } else { 0.0 };
+    let cfl_req = (if grid.cfl > 0.0 { grid.cfl } else if tol > 0.0 { 0.8 } else { CFL }).max(0.05).min(0.9);
     let rho_inf = 1.0;
     let p_inf = 1.0;
     let a_inf = (gamma * p_inf / rho_inf).sqrt();
@@ -264,118 +552,88 @@ pub fn solve_wall_grid(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64
     let u_inf = m * a_inf * alpha.cos();
     let v_inf = m * a_inf * alpha.sin();
     let e_inf = p_inf / (gamma - 1.0) + 0.5 * rho_inf * (u_inf * u_inf + v_inf * v_inf);
-    let mut u = vec![0.0; nc * 4];
-    for c in 0..nc {
-        u[c * 4] = rho_inf;
-        u[c * 4 + 1] = rho_inf * u_inf;
-        u[c * 4 + 2] = rho_inf * v_inf;
-        u[c * 4 + 3] = e_inf;
-    }
+    let fl = Flow { gamma, gm1: gamma - 1.0, rho_inf, p_inf, u_inf, v_inf, e_inf };
+    let shock_fine: Option<Vec<f64>> = grid.shock_s.clone();
 
-    let mut residual = 1.0;
-    let gm1 = gamma - 1.0;
-    for _ in 0..giters {
-        let mut res_sum = 0.0;
-        for j in 0..gnj {
+    // levels, coarse -> fine
+    let n_seq = if tol > 0.0 { grid.sequence.min(3) } else { 0 };
+    let mut dims: Vec<(usize, usize)> = Vec::new();
+    for k in (1..=n_seq).rev() {
+        let f = (1usize << k) as f64;
+        let ci = ((gni as f64 / f).round() as usize).max(16);
+        let cj = ((gnj as f64 / f).round() as usize).max(8);
+        let dup = dims.last().map_or(false, |d| d.0 == ci && d.1 == cj);
+        if ci < gni && cj < gnj && !dup {
+            dims.push((ci, cj));
+        }
+    }
+    dims.push((gni, gnj));
+
+    let mut info = SolveInfo::default();
+    let mut cfl = cfl_req;
+    let mut attempt = 0;
+    loop {
+        let mut peak = 0.0f64;
+        let mut prev: Option<Level> = None;
+        let mut last_res = 1.0;
+        let mut finest: Option<Level> = None;
+        for (k, &(li, lj)) in dims.iter().enumerate() {
+            let cols: Option<Vec<f64>> = shock_fine.as_ref().map(|sf| {
+                if li == gni {
+                    sf.clone()
+                } else {
+                    (0..=li).map(|i| sf[((i as f64 * gni as f64 / li as f64).round() as usize).min(gni)]).collect()
+                }
+            });
+            let mut lv = build_level(xw, zw, grid, li, lj, &cols, &fl);
+            if let Some(pl) = prev.as_ref() {
+                prolong(pl, &mut lv);
+            }
+            let last = k + 1 == dims.len();
+            let lt = if last { tol } else { tol * 10.0 };
+            let mi = if last { grid.min_iters } else { grid.min_iters.min(20) };
+            let (used, reason, res) = march_level(&mut lv, &fl, grid.iters, lt, mi, cfl, &mut peak);
+            info.work += used * li * lj;
+            if last {
+                info.iters_used = used;
+                info.stop = if tol > 0.0 { reason } else { 0 };
+                last_res = res;
+            }
+            if last {
+                finest = Some(lv);
+            } else {
+                prev = Some(lv);
+            }
+        }
+        let lv = finest.unwrap();
+        let q = 0.5 * gamma * m * m;
+        let mut cp = vec![0.0; n];
+        let mut healthy = true;
+        for k in 0..n {
+            let x = xw[k];
+            let mut best = 0usize;
+            let mut best_d = f64::MAX;
             for i in 0..gni {
-                let id = j * gni + i;
-                let o = id * 4;
-                let r = u[o].max(1e-8);
-                let uu = u[o + 1] / r;
-                let vv = u[o + 2] / r;
-                let pp = (gm1 * (u[o + 3] - 0.5 * r * (uu * uu + vv * vv))).max(1e-8);
-                let mut d0 = 0.0;
-                let mut d1 = 0.0;
-                let mut d2 = 0.0;
-                let mut d3 = 0.0;
-                let take = |f: [f64; 4], d0: &mut f64, d1: &mut f64, d2: &mut f64, d3: &mut f64| {
-                    *d0 += f[0];
-                    *d1 += f[1];
-                    *d2 += f[2];
-                    *d3 += f[3];
-                };
-                if i == 0 {
-                    let f = hllc(r, uu, vv, pp, rho_inf, u_inf, v_inf, p_inf, fw[id * 2], fw[id * 2 + 1], gamma);
-                    take(f, &mut d0, &mut d1, &mut d2, &mut d3);
-                } else {
-                    let ol = ((j * gni + (i - 1)) * 4) as usize;
-                    let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
-                    let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fw[id * 2], fw[id * 2 + 1], gamma);
-                    take(f, &mut d0, &mut d1, &mut d2, &mut d3);
+                let d = (lv.xc[i] - x).abs();
+                if d < best_d {
+                    best_d = d;
+                    best = i;
                 }
-                if i + 1 == gni {
-                    let f = hllc(r, uu, vv, pp, r, uu, vv, pp, fe[id * 2], fe[id * 2 + 1], gamma);
-                    take(f, &mut d0, &mut d1, &mut d2, &mut d3);
-                } else {
-                    let ol = ((j * gni + (i + 1)) * 4) as usize;
-                    let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
-                    let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fe[id * 2], fe[id * 2 + 1], gamma);
-                    take(f, &mut d0, &mut d1, &mut d2, &mut d3);
-                }
-                if j + 1 == gnj {
-                    let f = hllc(r, uu, vv, pp, rho_inf, u_inf, v_inf, p_inf, fnor[id * 2], fnor[id * 2 + 1], gamma);
-                    take(f, &mut d0, &mut d1, &mut d2, &mut d3);
-                } else {
-                    let ol = (((j + 1) * gni + i) * 4) as usize;
-                    let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
-                    let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fnor[id * 2], fnor[id * 2 + 1], gamma);
-                    take(f, &mut d0, &mut d1, &mut d2, &mut d3);
-                }
-                if j == 0 {
-                    d1 += pp * fs[id * 2];
-                    d2 += pp * fs[id * 2 + 1];
-                } else {
-                    let ol = (((j - 1) * gni + i) * 4) as usize;
-                    let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
-                    let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fs[id * 2], fs[id * 2 + 1], gamma);
-                    take(f, &mut d0, &mut d1, &mut d2, &mut d3);
-                }
-                let spec = (uu * uu + vv * vv).sqrt() + (gamma * pp / r).sqrt();
-                let per = fw_len(&fw, id)
-                    .max(fw_len(&fe, id))
-                    .max(fw_len(&fs, id))
-                    .max(fw_len(&fnor, id))
-                    .max(1e-8);
-                let dt = (CFL * (vol[id] / per)) / spec.max(1e-6);
-                let scale = dt / vol[id].max(1e-12);
-                let nr = u[o] - d0 * scale;
-                let nru = u[o + 1] - d1 * scale;
-                let nrv = u[o + 2] - d2 * scale;
-                let nre = u[o + 3] - d3 * scale;
-                let rr = nr.max(1e-8);
-                let uu2 = nru / rr;
-                let vv2 = nrv / rr;
-                let pnew = gm1 * (nre - 0.5 * rr * (uu2 * uu2 + vv2 * vv2));
-                if pnew > 1e-6 && nr > 1e-8 {
-                    u[o] = nr;
-                    u[o + 1] = nru;
-                    u[o + 2] = nrv;
-                    u[o + 3] = nre;
-                }
-                let src = d0 / vol[id].max(1e-12);
-                res_sum += src * src;
+            }
+            let (_r, _uu, _vv, p) = cons_to_prim(&lv.u, best * 4, fl.gm1);
+            cp[k] = (p - 1.0) / q;
+            if !cp[k].is_finite() || cp[k] > 2.6 || cp[k] < -2.2 / (gamma * m * m) - 0.05 {
+                healthy = false;
             }
         }
-        residual = (res_sum / nc as f64).sqrt();
-    }
-
-    let q = 0.5 * gamma * m * m;
-    let mut cp = vec![0.0; n];
-    for k in 0..n {
-        let x = xw[k];
-        let mut best = 0usize;
-        let mut best_d = f64::MAX;
-        for i in 0..gni {
-            let d = (xc[i] - x).abs();
-            if d < best_d {
-                best_d = d;
-                best = i;
-            }
+        if (!healthy || (tol > 0.0 && info.stop == 0)) && cfl > 0.5 + 1e-9 && attempt == 0 {
+            cfl = 0.5;
+            info.cfl_fallback = true;
+            attempt += 1;
+            continue;
         }
-        let (_r, _uu, _vv, p) = cons_to_prim(&u, best * 4, gm1);
-        cp[k] = (p - 1.0) / q;
+        return (cp, last_res, info);
     }
-    (cp, residual)
 }
 
 fn fw_len(a: &[f64], id: usize) -> f64 {
@@ -517,7 +775,7 @@ mod tests {
         let (x, z) = wedge(8.0, 60, 4.0);
         let ni = 64usize;
         let shock_s: Vec<f64> = (0..=ni).map(|i| 0.1 + 0.4 * i as f64 / ni as f64).collect();
-        let grid = Grid { ni, nj: 20, iters: 150, wall_amp: 2.0, shock_amp: 6.0, shock_width: 0.09, shock_s: Some(shock_s) };
+        let grid = Grid { ni, nj: 20, iters: 150, wall_amp: 2.0, shock_amp: 6.0, shock_width: 0.09, shock_s: Some(shock_s), ..Grid::default() };
         let (cp, res) = solve_wall_grid(&x, &z, 8.0, 1.4, 0.0, &grid);
         assert!((cp[5] - 0.07180176310553892).abs() < 1e-9, "cp[5] = {}", cp[5]);
         assert!((cp[30] - 0.06338922395989954).abs() < 1e-9, "cp[30] = {}", cp[30]);
@@ -542,7 +800,7 @@ mod tests {
                 (h / h_far).max(0.04).min(0.92).powf(1.0 / WALL_EXP)
             })
             .collect();
-        let grid = Grid { ni, nj, iters: 1000, wall_amp: 0.0, shock_amp: 6.0, shock_width: 0.09, shock_s: Some(shock_s) };
+        let grid = Grid { ni, nj, iters: 1000, wall_amp: 0.0, shock_amp: 6.0, shock_width: 0.09, shock_s: Some(shock_s), ..Grid::default() };
         let (cp, _res) = solve_wall_grid(&x, &z, 8.0, 1.4, 0.0, &grid);
         let mid: Vec<f64> = (0..80).filter(|&i| x[i] > 0.3 && x[i] < 0.8).map(|i| cp[i]).collect();
         let mean = mid.iter().sum::<f64>() / mid.len() as f64;
@@ -565,16 +823,96 @@ mod tests {
         for i in 0..=ni {
             buf[3 * n + i] = 0.25;
         }
-        assert_eq!(euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 4, 10, 50, 0.0, 0.0, 0.09), -1.0);
-        assert_eq!(euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 32, 10, 0, 0.0, 0.0, 0.09), -1.0);
-        let res = euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 32, 10, 60, 1.0, 4.0, 0.09);
+        assert_eq!(euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 4, 10, 50, 0.0, 0.0, 0.09, 0.0, 0, 0.0), -1.0);
+        assert_eq!(euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 32, 10, 0, 0.0, 0.0, 0.09, 0.0, 0, 0.0), -1.0);
+        let res = euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 32, 10, 60, 1.0, 4.0, 0.09, 0.0, 0, 0.0);
         assert!(res >= 0.0 && res.is_finite());
         let out = unsafe { std::slice::from_raw_parts(ptr.add(n * 16) as *const f64, n) }.to_vec();
-        let grid = Grid { ni: 32, nj: 10, iters: 60, wall_amp: 1.0, shock_amp: 4.0, shock_width: 0.09, shock_s: Some(vec![0.25; 33]) };
+        let grid = Grid { ni: 32, nj: 10, iters: 60, wall_amp: 1.0, shock_amp: 4.0, shock_width: 0.09, shock_s: Some(vec![0.25; 33]), ..Grid::default() };
         let (cp, res2) = solve_wall_grid(&x, &z, 8.0, 1.4, 0.0, &grid);
         assert_eq!(res, res2);
         for i in 0..n {
             assert_eq!(out[i], cp[i]);
         }
+    }
+
+    #[test]
+    fn convergence_stop_and_sequencing_match_typescript_port() {
+        // strip-euler.ts solveStrip: 64x20, cap 1500, tol 1e-3, wall 2, shock 6, shockS_i = 0.1 + 0.4 i / 64, M=8, 8 deg.
+        let (x, z) = wedge(8.0, 60, 4.0);
+        let ni = 64usize;
+        let shock_s: Vec<f64> = (0..=ni).map(|i| 0.1 + 0.4 * i as f64 / ni as f64).collect();
+        let mk = |sequence: usize| Grid {
+            ni,
+            nj: 20,
+            iters: 1500,
+            wall_amp: 2.0,
+            shock_amp: 6.0,
+            shock_width: 0.09,
+            shock_s: Some(shock_s.clone()),
+            tol: 1e-3,
+            sequence,
+            ..Grid::default()
+        };
+        let (cp0, res0, i0) = solve_wall_grid_info(&x, &z, 8.0, 1.4, 0.0, &mk(0));
+        assert_eq!(i0.iters_used, 434);
+        assert_eq!(i0.stop, 1);
+        assert_eq!(i0.work, 555520);
+        assert!(!i0.cfl_fallback);
+        assert!((cp0[5] - 0.07187726694592375).abs() < 1e-9, "cp[5] = {}", cp0[5]);
+        assert!((cp0[30] - 0.06518787731906311).abs() < 1e-9, "cp[30] = {}", cp0[30]);
+        assert!((cp0[55] - 0.06517262014014678).abs() < 1e-9, "cp[55] = {}", cp0[55]);
+        assert!((res0 - 0.014933525783737439).abs() < 1e-9, "res = {}", res0);
+        let (cp1, _res1, i1) = solve_wall_grid_info(&x, &z, 8.0, 1.4, 0.0, &mk(1));
+        assert_eq!(i1.iters_used, 429);
+        assert_eq!(i1.work, 577600);
+        assert!((cp1[30] - 0.06518788214231144).abs() < 1e-9, "cp[30] = {}", cp1[30]);
+        assert!((cp1[55] - 0.06519647327513348).abs() < 1e-9, "cp[55] = {}", cp1[55]);
+    }
+
+    #[test]
+    fn converged_run_stops_early_and_agrees_with_the_long_fixed_run() {
+        // 88x28 plain grid, 8 deg wedge, M=8: the tolerance stop must land on the same wall Cp as a 1500-sweep run
+        // (to 0.5 %), in fewer sweeps; and a fixed-iteration run reports stop = 0.
+        let (x, z) = wedge(8.0, 80, 1.0);
+        let fixed = Grid { iters: 1500, ..Grid::default() };
+        let conv = Grid { iters: 4000, tol: 1e-3, ..Grid::default() };
+        let (cpf, _rf, inf) = solve_wall_grid_info(&x, &z, 8.0, 1.4, 0.0, &fixed);
+        let (cpc, _rc, inc) = solve_wall_grid_info(&x, &z, 8.0, 1.4, 0.0, &conv);
+        assert_eq!(inf.stop, 0);
+        assert_eq!(inf.iters_used, 1500);
+        assert!(inc.stop != 0 && inc.iters_used < 1500, "stop {} after {}", inc.stop, inc.iters_used);
+        let mean = |c: &Vec<f64>| {
+            let v: Vec<f64> = (0..80).filter(|&i| x[i] > 0.3 && x[i] < 0.8).map(|i| c[i]).collect();
+            v.iter().sum::<f64>() / v.len() as f64
+        };
+        let (a, b) = (mean(&cpf), mean(&cpc));
+        assert!((a - b).abs() / a < 0.005, "fixed {} vs converged {}", a, b);
+        let exact = 0.06556490633109267;
+        assert!((b - exact).abs() / exact < 0.02, "converged mean Cp {} vs exact {}", b, exact);
+    }
+
+    #[test]
+    fn lower_wall_is_solved_as_its_mirror_image() {
+        // A wall with the flow domain below it: the legacy grid is left-handed and reads ~vacuum Cp on a compression
+        // ramp; with mirror_lower the result equals the mirrored upper-wall solve. Golden values from strip-euler.ts.
+        let n = 60usize;
+        let x: Vec<f64> = (0..n).map(|i| 4.0 * i as f64 / (n - 1) as f64).collect();
+        let tan8 = (8.0f64).to_radians().tan();
+        let z_low: Vec<f64> = x.iter().map(|v| -v * tan8).collect();
+        let mk = |mirror: bool| Grid { ni: 64, nj: 20, iters: 1500, tol: 1e-3, mirror_lower: mirror, ..Grid::default() };
+        let (cp, _r, info) = solve_wall_grid_info(&x, &z_low, 8.0, 1.4, 0.05, &mk(true));
+        assert_eq!(info.iters_used, 253);
+        assert!((cp[5] - 0.1305758450836902).abs() < 1e-9, "cp[5] = {}", cp[5]);
+        assert!((cp[30] - 0.1054083740106615).abs() < 1e-9, "cp[30] = {}", cp[30]);
+        assert!((cp[55] - 0.10580667042407042).abs() < 1e-9, "cp[55] = {}", cp[55]);
+        let z_up: Vec<f64> = x.iter().map(|v| v * tan8).collect();
+        let (cpu, _r2, _i2) = solve_wall_grid_info(&x, &z_up, 8.0, 1.4, -0.05, &mk(true));
+        for k in [5usize, 30, 55] {
+            assert_eq!(cp[k], cpu[k]);
+        }
+        // without the fix the lower wall is wrong (this is what the shipped wasm still does): far from the ramp value
+        let (cpb, _r3, _i3) = solve_wall_grid_info(&x, &z_low, 8.0, 1.4, 0.05, &mk(false));
+        assert!((cpb[30] - cp[30]).abs() > 0.02, "legacy lower wall cp {}", cpb[30]);
     }
 }

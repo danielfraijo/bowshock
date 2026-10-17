@@ -16,7 +16,9 @@ import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, gridPoint,
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 import { bindCenterline } from "./sym-euler";
 import { collapseTipRows, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
+import { repairAftIfDefective } from "./mesh-repair"; // [mesh-refinement]
 import { clusterFractionsToLE } from "./refinement"; // [mesh-refinement]
+import { curvatureStations } from "./curvature"; // [mesh-refinement]
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -446,7 +448,9 @@ function lofts(
   const rhoPlan = Rle > 0 && planform !== "rect" ? Math.min(3.5 * Rle, 0.04 * L, 0.2 * s) : 0;
   const xleRaw = (t: number) => xLeading(t, L, s, planform, power, spat);
   const xle = rhoPlan > 0 ? roundPlanformVertex(xleRaw, s, rhoPlan) : xleRaw;
-  const ys = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / 12 } : undefined);
+  const ys0 = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / 12 } : undefined);
+  // [mesh-refinement] curvature-adaptive spanwise stations (strength 0 / undefined = the unchanged stations)
+  const ys = curvatureStations(ys0, params.refinement?.surface.curvature ?? 0, (y) => [xle(y), y, zBase(y)]);
   const nx = Math.max(8, params.nx);
   const nj = ys.length;
   const zPow = Math.max(0.6, zExp);
@@ -1239,6 +1243,10 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   }
 
   mesh = removeDoubleFaces(compactMesh(mesh));
+  // [mesh-refinement] The grid-level TE tidy + removeDoubleFaces above is the primary closure. Only when that
+  // leaves open / non-manifold edges (aft tips at higher ny) fall back to the tolerance-aware aft weld.
+  // Open-ended flow-through ducts are intentionally open, so they are left alone.
+  if (!(params.flowThrough && (params.family === "ramjet" || params.family === "scramjet"))) mesh = repairAftIfDefective(mesh, params.length);
   orientOutward(mesh);
   orientConsistent(mesh);
   lockFrame(mesh, grids, shock, params.halfModel);

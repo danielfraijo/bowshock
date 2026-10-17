@@ -2,7 +2,11 @@
  * Capture legacy (pre-refinement) outputs so tests can prove that the
  * "medium" preset reproduces today's behaviour.
  *
- *   bun run src/lib/waverider/__baseline__/capture.ts <repoRoot> <out.json>
+ *   bun run src/lib/waverider/__baseline__/capture.ts <repoRoot> <out.json> [family|alpha]
+ *
+ * The base clone's Euler cache key (x0, z[mid], xN to 4 decimals) COLLIDES between different vehicles, so the base
+ * results depend on what was solved earlier in the process. Capture each vehicle case in its own fresh process
+ * (pass family|alpha as the 3rd argument and merge the files) to get history-free numbers.
  *
  * Run it against the untouched base clone (b5fdccc) to produce the fixture.
  * Only imports from <repoRoot>; writes only to <out.json>.
@@ -11,6 +15,7 @@ import { writeFileSync } from "node:fs";
 
 const root = process.argv[2];
 const out = process.argv[3];
+const only = process.argv[4]; // optional "family|alpha": capture just that vehicle case (and no wedge cases)
 if (!root || !out) throw new Error("usage: capture.ts <repoRoot> <out.json>");
 const wr = `${root}/src/lib/waverider`;
 
@@ -35,13 +40,13 @@ function fnv(arr: ArrayLike<number>): string {
 }
 
 const wedge: Record<string, unknown> = {};
-for (const [M, th] of [
+for (const [M, th] of (only ? [] : [
   [2, 10],
   [8, 8],
   [8, 30],
   [5, 15],
   [8, 12],
-] as const) {
+] as [number, number][])) {
   const r = eulerWedge(M, th, 1.4);
   wedge[`${M}|${th}`] = { p2p1: r.p2p1, exactP: r.exactP, relErr: r.relErr, cp: r.cp, exactCp: r.exactCp, residual: r.residual, iters: r.iters };
 }
@@ -49,6 +54,7 @@ for (const [M, th] of [
 const vehicles: Record<string, unknown> = {};
 for (const family of ["caret", "osculating", "cone", "liftbody", "wedgecone"]) {
   for (const alphaDeg of [0, 3]) {
+    if (only && only !== `${family}|${alphaDeg}`) continue;
     const params = { ...DEFAULT_PARAMS, family, alphaDeg };
     const built = buildVehicle(params);
     const q = analyzeMesh(built.mesh);
