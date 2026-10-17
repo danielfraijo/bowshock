@@ -23,7 +23,8 @@ function idOf(o: object): number {
 }
 
 export const panelCache = new LRU<unknown>(160, 64 * 1024 * 1024);
-export const panelMemoFlags = { enabled: true };
+/** `verify`: on every hit, recompute and throw when the memoised value differs (debug / tests). */
+export const panelMemoFlags: { enabled: boolean; verify: boolean } = { enabled: true, verify: false };
 
 function bytesOf(r: unknown): number {
   let n = 2048;
@@ -61,7 +62,18 @@ export function memoPanel<T>(
     .value(withoutCosmetic(params as object))
     .digest();
   const hit = panelCache.get(key);
-  if (hit) return hit as T;
+  if (hit) {
+    if (panelMemoFlags.verify) {
+      const fresh = compute() as unknown as Record<string, unknown>;
+      const old = hit as Record<string, unknown>;
+      for (const k of Object.keys(fresh)) {
+        const a = fresh[k];
+        const b = old[k];
+        if (typeof a === "number" && a !== b && !(Number.isNaN(a) && Number.isNaN(b as number))) throw new Error(`panel memo stale: ${k} ${String(b)} vs fresh ${a} (alpha ${alphaDeg}, beta ${betaDeg})`);
+      }
+    }
+    return hit as T;
+  }
   const out = compute();
   panelCache.set(key, out, bytesOf(out));
   return out;

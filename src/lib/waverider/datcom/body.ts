@@ -160,13 +160,21 @@ export interface BodyNormal {
   notes: string[];
 }
 
+const NEWTON_NW = 48;
+/** cos of the azimuth midpoints (same expression as the loop used to evaluate per segment) [perf] */
+const NEWTON_COS = (() => {
+  const c = new Float64Array(NEWTON_NW);
+  for (let k = 0; k < NEWTON_NW; k++) c[k] = Math.cos(((k + 0.5) * Math.PI) / NEWTON_NW);
+  return c;
+})();
+
 function newtonBody(ctx: BodyCtx, alphaT: number): { N: number; Nx: number; CA: number } {
   const { prof, sRef } = ctx;
   const g = ctx.flow.gamma;
   const cpm = cpMaxNewton(ctx.flow.mach, g);
   const sa = Math.sin(alphaT);
   const ca = Math.cos(alphaT);
-  const NW = 48;
+  const NW = NEWTON_NW;
   let N = 0;
   let Nx = 0;
   let CA = 0;
@@ -183,11 +191,11 @@ function newtonBody(ctx: BodyCtx, alphaT: number): { N: number; Nx: number; CA: 
     let fc = 0;
     let fx = 0;
     for (let k = 0; k < NW; k++) {
-      const om = ((k + 0.5) * Math.PI) / NW;
-      const sn = sd * ca + sa * cd * Math.cos(om);
+      const com = NEWTON_COS[k];
+      const sn = sd * ca + sa * cd * com;
       if (sn > 0) {
         const cp = cpm * sn * sn;
-        fc += cp * cd * Math.cos(om);
+        fc += cp * cd * com;
         fx += cp * sd;
       }
     }

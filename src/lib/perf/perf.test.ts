@@ -54,6 +54,27 @@ test("hash: stable, order-independent for objects, sensitive to 1-ulp changes", 
   assert.equal(new Hasher().value({ x: undefined, y: 1 }).digest(), new Hasher().value({ y: 1 }).digest());
 });
 
+test("hash: no collisions among (alpha, beta, ...) tuples that differ only in sign / high exponent bits (regression: the panel memo served alpha=-2,beta=0 for alpha=0,beta=2)", () => {
+  const vals: number[] = [];
+  for (let v = -24; v <= 24; v += 0.5) vals.push(v, v + 1e-9);
+  vals.push(0.1, 0.2, 0.3, 1e-300, -1e-300, 1e300, -1e300, Infinity, -Infinity);
+  const seen = new Map<string, string>();
+  let n = 0;
+  for (const a of vals)
+    for (const b of vals) {
+      const k = new Hasher().int(7).num(a).num(b).num(1.5).digest();
+      const id = `${Object.is(a, -0) ? "-0" : a}|${b}`;
+      assert.ok(!seen.has(k), `collision: (${id}) vs (${seen.get(k)})`);
+      seen.set(k, id);
+      n++;
+    }
+  // single numbers and short arrays
+  const s1 = new Set<string>();
+  for (let i = 0; i < 20000; i++) s1.add(new Hasher().num(i / 8).digest());
+  assert.equal(s1.size, 20000);
+  assert.ok(n > 5000);
+});
+
 test("lru: entry bound, byte bound, recency", () => {
   const l = new LRU<number>(3, 100);
   l.set("a", 1, 10);

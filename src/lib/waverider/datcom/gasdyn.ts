@@ -62,8 +62,23 @@ export function thetaFromBeta(M: number, beta: number, g = GAMMA_AIR): number {
   const den = M * M * (g + Math.cos(2 * beta)) + 2;
   return Math.atan(num / den);
 }
-/** Maximum deflection angle for attached oblique shock [rad] (coarse scan + refine). */
+/** Maximum deflection angle for attached oblique shock [rad] (coarse scan + refine). Memoised per (M, gamma) [perf]. */
 export function thetaMax(M: number, g = GAMMA_AIR): number {
+  if (M <= 1) return 0;
+  const key = `${M},${g}`;
+  let v = thetaMaxMemo.get(key);
+  if (v === undefined) {
+    v = thetaMaxRef(M, g);
+    if (thetaMaxMemo.size >= MEMO_MAX) thetaMaxMemo.clear();
+    thetaMaxMemo.set(key, v);
+  }
+  return v;
+}
+const MEMO_MAX = 512;
+const thetaMaxMemo = new Map<string, number>();
+const weakTopMemo = new Map<string, { lo: number; bTop: number }>();
+/** The original (unmemoised) scan; kept exported so tests can compare. */
+export function thetaMaxRef(M: number, g = GAMMA_AIR): number {
   if (M <= 1) return 0;
   const bmin = Math.asin(1 / M);
   let best = 0;
@@ -86,23 +101,32 @@ export function thetaMax(M: number, g = GAMMA_AIR): number {
   }
   return best;
 }
-/** Weak-shock angle beta [rad] for a deflection theta [rad]; null if detached. */
+/** Weak-shock angle beta [rad] for a deflection theta [rad]; null if detached. The Mach-only scan is memoised [perf]. */
 export function weakBeta(M: number, theta: number, g = GAMMA_AIR): number | null {
   if (M <= 1 || theta <= 0) return M > 1 ? Math.asin(1 / M) : null;
   if (theta > thetaMax(M, g)) return null;
-  let lo = Math.asin(1 / M) + 1e-9;
-  // find the beta at theta_max to bound the weak branch
-  let bTop = lo;
-  let tTop = 0;
-  const n = 400;
-  for (let i = 1; i <= n; i++) {
-    const b = lo + ((Math.PI / 2 - lo) * i) / n;
-    const t = thetaFromBeta(M, b, g);
-    if (t >= tTop) {
-      tTop = t;
-      bTop = b;
-    } else break;
+  const key = `${M},${g}`;
+  let top = weakTopMemo.get(key);
+  if (!top) {
+    const lo0 = Math.asin(1 / M) + 1e-9;
+    // find the beta at theta_max to bound the weak branch
+    let bTop0 = lo0;
+    let tTop = 0;
+    const n = 400;
+    for (let i = 1; i <= n; i++) {
+      const b = lo0 + ((Math.PI / 2 - lo0) * i) / n;
+      const t = thetaFromBeta(M, b, g);
+      if (t >= tTop) {
+        tTop = t;
+        bTop0 = b;
+      } else break;
+    }
+    top = { lo: lo0, bTop: bTop0 };
+    if (weakTopMemo.size >= MEMO_MAX) weakTopMemo.clear();
+    weakTopMemo.set(key, top);
   }
+  let lo = top.lo;
+  const bTop = top.bTop;
   let hi = bTop;
   if (thetaFromBeta(M, hi, g) < theta) return hi;
   for (let i = 0; i < 80; i++) {

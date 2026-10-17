@@ -32,6 +32,13 @@ try {
 } catch {
   /* baseline checkout has no perf layer */
 }
+try {
+  // Integrated-app benches (topology / mesh refinement / data pack / DATCOM): only use origin/main APIs.
+  const mod = await import("./bench/suite-combined");
+  specs = [...specs, ...mod.combinedSuite()];
+} catch (err) {
+  console.log("combined suite unavailable:", err instanceof Error ? err.message : err);
+}
 specs = [...specs, ...extra];
 if (filter) specs = specs.filter((s) => s.name.includes(filter));
 

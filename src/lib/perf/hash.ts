@@ -2,19 +2,45 @@
  * Stable, allocation-light content hashing used for cache keys.
  * `hashValue` canonicalises plain data (sorted object keys, exact number round-trip strings),
  * `hashFloats` hashes the raw bytes of a typed array. Both return a 53-bit-strength hex string
- * (two independent 32-bit lanes, cyrb53 style), which is ample for LRU sizes of a few thousand.
+ * (two independent 32-bit lanes), which is ample for LRU sizes of a few thousand.
  */
 
+/*
+ * Two independent 32-bit lanes (murmur3 body / xxhash32 round), each with a rotate so that differences in the HIGH
+ * bits of an input word diffuse into the low bits. (A plain `h = imul(h ^ x, K)` chain - cyrb53's step - keeps a
+ * difference confined to the bits it started in; for IEEE-754 words that made e.g. (alpha=-2, beta=0) and
+ * (alpha=0, beta=2) collide, which corrupted the panel memo. Regression test: perf.test.ts "hash: no collisions".)
+ */
+const rotl = (x: number, r: number) => (x << r) | (x >>> (32 - r));
+
 function mix(h1: number, h2: number, ch: number): [number, number] {
-  h1 = Math.imul(h1 ^ ch, 2654435761);
-  h2 = Math.imul(h2 ^ ch, 1597334677);
+  // lane 1: murmur3_32 block
+  let k = Math.imul(ch, 0xcc9e2d51);
+  k = rotl(k, 15);
+  k = Math.imul(k, 0x1b873593);
+  h1 ^= k;
+  h1 = rotl(h1, 13);
+  h1 = (Math.imul(h1, 5) + 0xe6546b64) | 0;
+  // lane 2: xxhash32 round
+  h2 = (h2 + Math.imul(ch, 0x85ebca77)) | 0;
+  h2 = rotl(h2, 13);
+  h2 = Math.imul(h2, 0x9e3779b1);
   return [h1, h2];
 }
 
+function fmix(h: number): number {
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return h;
+}
+
 function finish(h1: number, h2: number): string {
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+  const a = fmix(h1 ^ Math.imul(h2, 0x27d4eb2f));
+  const b = fmix(h2 ^ Math.imul(h1, 0x165667b1));
+  return (b >>> 0).toString(16).padStart(8, "0") + (a >>> 0).toString(16).padStart(8, "0");
 }
 
 export class Hasher {

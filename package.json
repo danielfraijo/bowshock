@@ -35,6 +35,7 @@
     "build:wasm": "node scripts/build-wasm.mjs",
     "test:perf": "tsx src/lib/perf/perf.test.ts",
     "test:bridge": "tsx src/lib/perf/bridge.test.ts",
+    "test:regress": "tsx scripts/bench/golden.ts --check src/lib/perf/fixtures/golden.json",
     "test:fidelity": "tsx src/lib/waverider/fidelity.test.ts"
   },
   "dependencies": {
