@@ -24,6 +24,9 @@ import { flightMachOf, studyVehicle } from "../waverider/study";
 import { runValidation, validationSummary } from "../waverider/validate";
 import { ANALYSIS_ONLY, geometryKey, Pipeline, rebindCenterline } from "./pipeline";
 import { ComputeClient, SupersededError } from "./client";
+import { computeDataPack, packToJson } from "../waverider/datapack";
+import { runCases } from "../waverider/datcom/model";
+import { PRESETS as DATCOM_PRESETS } from "../waverider/datcom/presets";
 import { memoPanel, panelCache, panelMemoFlags } from "./panel-memo";
 import { DEFAULT_PARAMS, type DesignParams, type SurfaceGrid, type WaveriderFamily } from "../waverider/types";
 
@@ -433,6 +436,38 @@ await atest("client: latest-wins coalescing drops superseded queued requests, ke
   const [a, b] = await Promise.all([c.study(base, "full"), c.study(base, "preview")]);
   assert.equal(a.mode, "full");
   assert.equal(b.mode, "preview");
+  c.dispose();
+});
+
+await atest("client: datapack + DATCOM jobs (bulk lane) equal the direct computation; refine lane runs the converged tier and can be cancelled", async () => {
+  const c = new ComputeClient({ runner: "inline", clone: true });
+  const p = { ...DEFAULT_PARAMS, nx: 20, ny: 12, aeroMethod: "cbaero" as const };
+  const via = await c.datapack(p);
+  const direct = computeDataPack(p);
+  assert.equal(packToJson(via.pack), packToJson(direct));
+  const preset = DATCOM_PRESETS[0];
+  const dc = await c.datcom(preset.config, preset.flight);
+  assert.equal(JSON.stringify(dc.result), JSON.stringify(runCases(preset.config, preset.flight)));
+  // latest wins among queued datapack requests, DATCOM requests are never dropped
+  const out: string[] = [];
+  const reqs = [0, 1, 2, 3].map((i) =>
+    c.datapack({ ...p, alphaDeg: i }).then(
+      () => out.push(`ok${i}`),
+      (e) => out.push(e instanceof SupersededError ? `sup${i}` : `err${i}`),
+    ),
+  );
+  const keep = c.datcom(preset.config, preset.flight).then(() => out.push("datcom"));
+  await Promise.all([...reqs, keep]);
+  assert.ok(out.includes("ok3") && out.includes("datcom") && out.includes("sup1") && out.includes("sup2"), out.join(","));
+  // refine lane: cancel rejects what is queued
+  const r1 = c.study({ ...p, aeroMethod: "euler" as const }, "refine");
+  const r2 = c.study({ ...p, aeroMethod: "euler" as const, alphaDeg: 3 }, "refine");
+  c.cancelRefine();
+  await assert.rejects(r1, SupersededError);
+  await assert.rejects(r2, SupersededError);
+  const r3 = await c.study({ ...p, aeroMethod: "euler" as const }, "refine");
+  assert.equal(r3.mode, "refine");
+  assert.equal(kernelFlags.quality, "legacy");
   c.dispose();
 });
 

@@ -1062,6 +1062,11 @@ function remember(pack: DataPack) {
   }
 }
 
+/** [perf] store a pack computed elsewhere (the compute worker) in this thread's cache. */
+export function primeDataPack(pack: DataPack) {
+  remember(pack);
+}
+
 export function clearDataPackCache() {
   cache.clear();
 }

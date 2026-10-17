@@ -1,6 +1,8 @@
 /** Message protocol between ComputeClient and the compute worker (also used by the loopback runner). */
 import type { StudyResult } from "../waverider/study";
 import type { BuiltVehicle, DesignParams } from "../waverider/types";
+import type { DataPack, DataPackOptions } from "../waverider/datapack";
+import type { FlightSpec, RunResult, VehicleConfig } from "../waverider/datcom/types";
 import type { StudyMode } from "./pipeline";
 
 export interface ExportSources {
@@ -13,6 +15,8 @@ export interface ExportSources {
 export type WorkerRequest =
   | { type: "study"; id: number; params: DesignParams; mode: StudyMode; /** geometry key the caller already holds */ have?: string }
   | { type: "export"; id: number; kind: string; params: DesignParams; sources: ExportSources }
+  | { type: "datapack"; id: number; params: DesignParams; opts?: DataPackOptions }
+  | { type: "datcom"; id: number; config: VehicleConfig; flight: FlightSpec }
   | { type: "init"; wasmUrl?: string }
   | { type: "stats"; id: number };
 
@@ -32,6 +36,8 @@ export interface StudyReply {
 export type WorkerReply =
   | StudyReply
   | { type: "export"; id: number; files: { name: string; blob: Blob }[]; ms: number }
+  | { type: "datapack"; id: number; pack: DataPack; ms: number }
+  | { type: "datcom"; id: number; result: RunResult; ms: number }
   | { type: "stats"; id: number; stats: unknown }
   | { type: "error"; id: number; message: string }
   | { type: "ready"; wasm: "none" | "streaming" | "fetch" | "file" | "embedded" };

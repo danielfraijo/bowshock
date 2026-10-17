@@ -12,7 +12,7 @@ import {
   fromWaveriderDesign,
   type Preset,
 } from "@/lib/waverider/datcom/presets";
-import { runCases } from "@/lib/waverider/datcom/model";
+import { runCasesOffThread } from "@/lib/perf/client";
 import {
   downloadName,
   format,
@@ -125,12 +125,12 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
     setResult(null);
   }
 
-  function run() {
+  async function run() {
     setBusy(true);
     setErr(null);
     try {
       const t0 = performance.now();
-      const r = runCases(config, flight);
+      const r = await runCasesOffThread(config, flight); // [perf] compute worker; inline when Workers are unavailable
       (r as RunResult & { _ms?: number })._ms = performance.now() - t0;
       setResult(r);
       setMachFocus(0);

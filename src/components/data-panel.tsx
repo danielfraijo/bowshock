@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Stat } from "@/components/fields";
 import {
   DEFAULT_OPTIONS,
-  computeDataPackAsync,
+
   datapackCached,
   datapackKey,
   dataDictionary,
@@ -20,6 +20,7 @@ import {
   type DataPack,
   type DataPackOptions,
 } from "@/lib/waverider/datapack";
+import { computeDataPackOffThread } from "@/lib/perf/client";
 import { buildZip, utf8 } from "@/lib/waverider/zip";
 import { downloadBlob } from "@/lib/utils";
 import type { DesignParams } from "@/lib/waverider/types";
@@ -74,7 +75,7 @@ export function DataPanel({ params, paused }: { params: DesignParams; paused: bo
     const timer = window.setTimeout(() => {
       setBusy({ frac: 0, label: "queued" });
       setErr(null);
-      computeDataPackAsync(latest.current.params, latest.current.opts, {
+      computeDataPackOffThread(latest.current.params, latest.current.opts, {
         signal: ctl.signal,
         onProgress: (p) => !ctl.signal.aborted && setBusy(p),
       })

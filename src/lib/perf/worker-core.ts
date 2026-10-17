@@ -5,6 +5,8 @@
  */
 import { cfdZip, fileBlobs } from "../waverider/export-kit";
 import { studyJson } from "../waverider/study";
+import { computeDataPack } from "../waverider/datapack";
+import { runCases } from "../waverider/datcom/model";
 import { eulerAsync, eulerSync, wasmSource } from "./euler-kernel";
 import type { DesignParams } from "../waverider/types";
 import { Pipeline } from "./pipeline";
@@ -44,6 +46,16 @@ export class WorkerCore {
           ms: out.ms,
         });
         return;
+      }
+      if (req.type === "datapack") {
+        const t0 = performance.now();
+        const pack = computeDataPack(req.params, req.opts);
+        return this.post({ type: "datapack", id: req.id, pack, ms: performance.now() - t0 });
+      }
+      if (req.type === "datcom") {
+        const t0 = performance.now();
+        const result = runCases(req.config, req.flight);
+        return this.post({ type: "datcom", id: req.id, result, ms: performance.now() - t0 });
       }
       if (req.type === "export") return await this.exportJob(req.id, req.kind, req.params, req.sources);
     } catch (err) {

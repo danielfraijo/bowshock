@@ -18,6 +18,9 @@
  * (`LoopbackTransport`), with identical protocol and coalescing, so callers never branch.
  */
 import type { DesignParams } from "../waverider/types";
+import { computeDataPackAsync, datapackCached, primeDataPack, type DataPack, type DataPackOptions } from "../waverider/datapack";
+import { runCases } from "../waverider/datcom/model";
+import type { FlightSpec, RunResult, VehicleConfig } from "../waverider/datcom/types";
 import type { StudyMode } from "./pipeline";
 import type { ExportSources, StudyReply, WorkerReply, WorkerRequest } from "./protocol";
 import { WorkerCore } from "./worker-core";
@@ -172,6 +175,7 @@ export class ComputeClient {
   private fast: Lane;
   private slow: Lane;
   private refine: Lane;
+  private bulk: Lane;
   private seq = 1;
 
   constructor(opts: ComputeClientOptions = {}) {
@@ -180,10 +184,13 @@ export class ComputeClient {
     this.fast = new Lane("fast", make);
     this.slow = new Lane("slow", make);
     this.refine = new Lane("refine", make, true);
+    // datapack tables + DATCOM runs: own worker so they never queue behind (or in front of) the live study lanes;
+    // a newer datapack request preempts a running one (terminate + respawn), DATCOM runs are never dropped
+    this.bulk = new Lane("bulk", make, true);
   }
 
   get busy() {
-    return this.fast.busy || this.slow.busy || this.refine.busy;
+    return this.fast.busy || this.slow.busy || this.refine.busy || this.bulk.busy;
   }
 
   /** Run a study. Rejects with SupersededError if a newer request on the same lane replaced it before it started. */
@@ -210,6 +217,30 @@ export class ComputeClient {
     });
   }
 
+  /** Data tab tables in the worker; a newer request replaces an older queued/running one (rejects SupersededError). */
+  datapack(params: DesignParams, opts?: DataPackOptions): Promise<{ pack: DataPack; ms: number }> {
+    return new Promise((resolve, reject) => {
+      this.bulk.submit({
+        req: { type: "datapack", id: this.seq++, params, opts },
+        coalesce: true,
+        resolve: (r) => resolve(r as never),
+        reject,
+      });
+    });
+  }
+
+  /** DATCOM case sweep in the worker. */
+  datcom(config: VehicleConfig, flight: FlightSpec): Promise<{ result: RunResult; ms: number }> {
+    return new Promise((resolve, reject) => {
+      this.bulk.submit({
+        req: { type: "datcom", id: this.seq++, config, flight },
+        coalesce: false,
+        resolve: (r) => resolve(r as never),
+        reject,
+      });
+    });
+  }
+
   /** Abort a running/queued background refinement (called on every new interaction). */
   cancelRefine() {
     this.refine.cancel();
@@ -231,6 +262,7 @@ export class ComputeClient {
     this.fast.dispose();
     this.slow.dispose();
     this.refine.dispose();
+    this.bulk.dispose();
   }
 }
 
@@ -258,5 +290,42 @@ export async function exportOffThread(kind: string, params: DesignParams, source
   } catch (err) {
     console.warn("worker export failed, exporting on the main thread", err);
     return null;
+  }
+}
+
+/**
+ * Data tab tables: worker when available (result is also stored in the main-thread datapack cache so
+ * `datapackCached` keeps working), else the time-sliced main-thread computation.
+ */
+export async function computeDataPackOffThread(
+  params: DesignParams,
+  opts: DataPackOptions | undefined,
+  hooks: { signal?: AbortSignal; onProgress?: (p: { frac: number; label: string }) => void } = {},
+): Promise<DataPack> {
+  if (!workersAvailable()) return computeDataPackAsync(params, opts, hooks);
+  const hit = datapackCached(params, opts);
+  if (hit) return hit;
+  hooks.onProgress?.({ frac: 0, label: "computing in worker" });
+  try {
+    const { pack } = await getComputeClient().datapack(params, opts);
+    if (hooks.signal?.aborted) throw new Error("aborted");
+    primeDataPack(pack);
+    return pack;
+  } catch (err) {
+    if (err instanceof SupersededError) throw new Error("aborted");
+    if (hooks.signal?.aborted) throw err;
+    console.warn("worker datapack failed, computing on the main thread", err);
+    return computeDataPackAsync(params, opts, hooks);
+  }
+}
+
+/** DATCOM sweep off the main thread (falls back to inline). */
+export async function runCasesOffThread(config: VehicleConfig, flight: FlightSpec): Promise<RunResult> {
+  if (!workersAvailable()) return runCases(config, flight);
+  try {
+    return (await getComputeClient().datcom(config, flight)).result;
+  } catch (err) {
+    console.warn("worker DATCOM run failed, running on the main thread", err);
+    return runCases(config, flight);
   }
 }
