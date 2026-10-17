@@ -1173,7 +1173,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     let leading: SurfaceGrid | null = null;
     const tips: SurfaceGrid[] = [];
     if (!isDuct && !isLift) {
-      if (R > 0) leading = applyLeadingFillet(built.upper, built.lower, R, params.length);
+      if (R > 0) leading = applyLeadingFillet(built.upper, built.lower, R, params.length, { blend: params.leBlend });
       if (params.family !== "liftbody") {
         sharpenTips(built.upper, built.lower, leading, params.halfModel);
       }

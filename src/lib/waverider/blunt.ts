@@ -24,6 +24,8 @@ const ALPHA_MIN = 3.5 * (Math.PI / 180);
 const FILLET_ASPECT = 12;
 /** Tangent length of the blend never exceeds this many radii (bounds the material removed). */
 const S_CAP = 4;
+/** G2 blends need a much longer transition than a circle to turn the same angle with zero end curvature. */
+const S_CAP_G2 = 40;
 /** Blend footprint never exceeds this fraction of the local row length. */
 const CHORD_FRAC = 0.12;
 /** The tangent length may change by at most this much per unit LE length (smooth radius law). */
@@ -281,30 +283,48 @@ function stationFrame(U: Vec3[], Lo: Vec3[], T: Vec3, sgnUp: number, Rreq: numbe
   return { ok: true, P, T, uU, uL, h, alpha, U, Lo, wU, wL, chord, s: 0 };
 }
 
+/** Points of the LE blend between the two tangent lines (apex P, unit directions uL/uU, tangent length s). */
+function blendPoints(P: Vec3, uL: Vec3, uU: Vec3, s: number, h: number, nArc: number, blend: LeBlend): { raw: Vec3[]; R: number } {
+  const raw: Vec3[] = [];
+  if (blend === "g2") {
+    const ctrl = g2Controls(P, uL, uU, s);
+    for (let k = 0; k < nArc; k++) raw.push(bezier5(ctrl, k / (nArc - 1)));
+    return { raw, R: s * g2ApexRadiusUnit(h) };
+  }
+  const R = s * Math.tan(h);
+  const bis = vnorm(vadd(uU, uL));
+  const AU = vadd(P, vscale(uU, s));
+  const AL = vadd(P, vscale(uL, s));
+  const d = R / Math.sin(h);
+  const C = vadd(P, vscale(bis, d));
+  const aL = vnorm(vsub(AL, C));
+  const aU = vnorm(vsub(AU, C));
+  const front = vscale(bis, -1);
+  for (let k = 0; k < nArc; k++) {
+    const t = k / (nArc - 1);
+    const dir = t <= 0.5 ? slerpUnit(aL, front, t * 2) : slerpUnit(front, aU, t * 2 - 1);
+    raw.push(vadd(C, vscale(dir, R)));
+  }
+  return { raw, R };
+}
+
+/**
+ * 2-D LE profile for a wedge of half-angle `halfAngle` (rad): the blend between the lower and upper tangent
+ * lines, n points, apex at the origin pointing to -x, tangent length 1. Exposed for the continuity tests.
+ */
+export function leBlendProfile(halfAngle: number, blend: LeBlend, n = 201): { pts: Vec3[]; radius: number; uL: Vec3; uU: Vec3 } {
+  const uU: Vec3 = [Math.cos(halfAngle), 0, Math.sin(halfAngle)];
+  const uL: Vec3 = [Math.cos(halfAngle), 0, -Math.sin(halfAngle)];
+  const { raw, R } = blendPoints([0, 0, 0], uL, uU, 1, halfAngle, n, blend);
+  return { pts: raw, radius: R, uL, uU };
+}
+
 function buildArc(f: Frame, s: number, y: number, nArc: number, blend: LeBlend): Arc {
   const h = f.h;
   const bis = vnorm(vadd(f.uU, f.uL));
   const AU = vadd(f.P, vscale(f.uU, s));
   const AL = vadd(f.P, vscale(f.uL, s));
-  const raw: Vec3[] = [];
-  let R: number;
-  if (blend === "g2") {
-    const ctrl = g2Controls(f.P, f.uL, f.uU, s);
-    for (let k = 0; k < nArc; k++) raw.push(bezier5(ctrl, k / (nArc - 1)));
-    R = s * g2ApexRadiusUnit(h);
-  } else {
-    R = s * Math.tan(h);
-    const d = R / Math.sin(h);
-    const C = vadd(f.P, vscale(bis, d));
-    const aL = vnorm(vsub(AL, C));
-    const aU = vnorm(vsub(AU, C));
-    const front = vscale(bis, -1);
-    for (let k = 0; k < nArc; k++) {
-      const t = k / (nArc - 1);
-      const dir = t <= 0.5 ? slerpUnit(aL, front, t * 2) : slerpUnit(front, aU, t * 2 - 1);
-      raw.push(vadd(C, vscale(dir, R)));
-    }
-  }
+  const { raw, R } = blendPoints(f.P, f.uL, f.uU, s, h, nArc, blend);
   const pts = raw.map((q) => {
     const D = vsub(q, f.P);
     const d = toSection(D, f.T);
@@ -383,7 +403,7 @@ export function applyLeadingFillet(
   const apexUnit = (h: number) => (blend === "g2" ? g2ApexRadiusUnit(h) : Math.tan(h));
   for (const f of frames) {
     if (!f.ok) continue;
-    let s = Math.min(Rreq / apexUnit(f.h), S_CAP * Rreq);
+    let s = Math.min(Rreq / apexUnit(f.h), (blend === "g2" ? S_CAP_G2 : S_CAP) * Rreq);
     const muU = Math.max(vlen(f.wU), 1e-9);
     const muL = Math.max(vlen(f.wL), 1e-9);
     s = Math.min(s, (CHORD_FRAC * chordLen(f.U)) / muU, (CHORD_FRAC * chordLen(f.Lo)) / muL);

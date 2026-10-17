@@ -48,6 +48,8 @@ export interface DesignParams {
   nx: number;
   ny: number;
   leRadius: number;
+  /** LE fillet blend: circular arc (G1, default) or a quintic blend with zero end curvature (G2). */
+  leBlend?: "circular" | "g2";
   leBlunt: boolean;
   halfModel: boolean;
   unit: LengthUnit;
