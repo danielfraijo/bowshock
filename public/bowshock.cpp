@@ -57,7 +57,7 @@ static void normal_shock(double M, double g, double& p2p1, double& M2) {
 }
 
 static double sutton_graves(double rho, double V, double Rn, double rec) {
-  return 1.83e-8 * std::sqrt(rho / std::max(Rn, 1e-8)) * std::pow(V, 3.0) * rec;
+  return 1.7415e-8 * std::sqrt(rho / std::max(Rn, 1e-8)) * std::pow(V, 3.0) * rec;
 }
 
 static double billig_standoff(double M) {
@@ -255,7 +255,7 @@ static int check_kernel() {
   double beta = beta_from_theta_M(8, 8 * deg, g);
   ok("theta-beta-M M=8 theta=8 deg  beta~12.2-13.5", beta / deg, 12.8, 1.0);
   double qs = sutton_graves(1, 1000, 1, 1);
-  ok("Sutton-Graves 1.83e-8 V^3 (18.3 W/cm^2)", qs, 18.3, 1e-6);
+  ok("Sutton-Graves 1.7415e-8 V^3 (17.415 W/cm^2)", qs, 17.415, 1e-6);
   double T, p, rho, a, V, q;
   us76(0, 8, g, T, p, rho, a, V, q);
   ok("US76 SL T=288.15", T, 288.15, 0.05);

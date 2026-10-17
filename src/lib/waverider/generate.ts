@@ -16,6 +16,9 @@ import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, gridPoint,
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 import { bindCenterline } from "./sym-euler";
 import { collapseTipRows, flipPinchEdges, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
+import { repairAftIfDefective } from "./mesh-repair"; // [mesh-refinement]
+import { clusterFractionsToLE } from "./refinement"; // [mesh-refinement]
+import { curvatureStations } from "./curvature"; // [mesh-refinement]
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -448,7 +451,9 @@ function lofts(
   const rhoPlan = Rle > 0 && planform !== "rect" ? Math.min(NOSE_RHO_K * Rle, 0.04 * L, 0.2 * s) : 0;
   const xleRaw = (t: number) => xLeading(t, L, s, planform, power, spat);
   const xle = rhoPlan > 0 ? roundPlanformVertex(xleRaw, s, rhoPlan) : xleRaw;
-  const ys = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / NOSE_DY_DIV } : undefined);
+  const ys0 = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / NOSE_DY_DIV } : undefined);
+  // [mesh-refinement] curvature-adaptive spanwise stations (strength 0 / undefined = the unchanged stations)
+  const ys = curvatureStations(ys0, params.refinement?.surface.curvature ?? 0, (y) => [xle(y), y, zBase(y)]);
   const nx = Math.max(8, params.nx);
   const nj = ys.length;
   const zPow = Math.max(0.6, zExp);
@@ -480,10 +485,13 @@ function lofts(
   const fracs = rowInfo.map((r, j) => {
     const m = mRow[j];
     const base = chordFractions(m, r.chord, Math.exp(lg[j]));
-    if (m >= nx) return base;
-    const out = new Float64Array(nx);
-    for (let i = 0; i < nx; i++) out[i] = base[Math.round((i * (m - 1)) / (nx - 1))];
-    return out;
+    let out = base;
+    if (m < nx) {
+      out = new Float64Array(nx);
+      for (let i = 0; i < nx; i++) out[i] = base[Math.round((i * (m - 1)) / (nx - 1))];
+    }
+    // [mesh-refinement] optional extra stretching toward the LE / nose; strength 0 returns the same array (unchanged).
+    return clusterFractionsToLE(out, params.refinement?.surface.leClustering ?? 0);
   });
   const sample = (i: number, j: number, isLower: boolean): Vec3 => {
     const y = ys[j];
@@ -1241,6 +1249,10 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   }
 
   mesh = flipPinchEdges(removeDoubleFaces(compactMesh(mesh)));
+  // [mesh-refinement] The grid-level TE tidy + removeDoubleFaces above is the primary closure. Only when that
+  // leaves open / non-manifold edges (aft tips at higher ny) fall back to the tolerance-aware aft weld.
+  // Open-ended flow-through ducts are intentionally open, so they are left alone.
+  if (!(params.flowThrough && (params.family === "ramjet" || params.family === "scramjet"))) mesh = repairAftIfDefective(mesh, params.length);
   orientOutward(mesh);
   orientConsistent(mesh);
   lockFrame(mesh, grids, shock, params.halfModel);

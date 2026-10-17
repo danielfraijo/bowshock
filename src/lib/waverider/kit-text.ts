@@ -141,12 +141,23 @@ leaves on a face that turns back. Modified Newtonian (Lees) if the shock
 detaches. Love base Cp = −1/M². van Driest II Cf (Hopkins–Inouye).
 The 2D HLLC wedge in bowshock_kernel.c is an Euler anchor for that shock.
 It is not a 3D Cart3D run.
-Heating: Sutton–Graves stagnation (TR R-802, q in W/cm² with k=1.83e-8) +
-Tauber running-length (TP-2914) + Tauber–Sutton radiative (JSR 1991).
+Heating: Fay–Riddell / Sutton–Graves stagnation (TR R-376, q in W/cm² with k=1.7415e-8 for
+Earth air) + Eckert reference-temperature (Zoby) running-length laminar/turbulent heating on the
+local edge state, blended with Tauber and Lees scaling (engineering blend, not validated against
+flight data) + Tauber–Sutton radiative (JSR 1991). Friction: van Driest II on the wetted area.
 Stability: finite-difference CLα, Cmα, Cnβ, Clβ, static margin about CG x/L.
 Mass: closed-mesh tetrahedron integrals. Trajectory: RK4 3DOF point-mass using
 the panel polar. Ramjet/scram: Heiser–Pratt 1-D.
 Use analysis.json as the quantitative dump.
+
+data/ (the data package)
+------------------------
+data/README.txt is the data dictionary (units are in the column names). One CSV per table:
+flight_conditions, results_design_point, surface_panels (per triangle: x,y,z,area,n,Cp,q,Cf,Tw),
+stations_streamwise / stations_spanwise, sweep_alpha, sweep_mach, sweep_mach_alpha, heating_peaks,
+shock_standoff, stability, validation (reference, value, error, tolerance, pass, source) and
+provenance (version, input hash, models). data/datapack.json holds the same tables. The web app's
+Data tab recomputes these live for every geometry change; identical inputs give identical numbers.
 
 These are engineering methods for configuration screening. Always follow
 with a mesh in Pointwise / a solver (SU2, FUN3D, CFD++) before hardware.
@@ -156,8 +167,8 @@ CFD notes
 - Leading edges are circular fillets (toggle + radius on the Geom tab).
   Default R = 0.5 % of length. Heat flux and Pointwise auto-mesh both need
   a finite Rn; a knife-edge is inviscid-theory only.
-- The base is a blunt aft face. Hypersonic base pressure is low; the
-  kit's CD includes a simple p_base ~ 0 contribution.
+- The base is a blunt aft face. Base pressure uses Love Cp = −1/M² and is
+  included in CD (CD_base in analysis.json / data/sweep_*.csv).
 - Freestream: +X. Typical farfield 10–20 body lengths upstream / sides,
   15–25 downstream if the wake matters.
 - gamma = ${p.gamma}. For high-T air you will want a thermo model in the

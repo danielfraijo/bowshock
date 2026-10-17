@@ -7,6 +7,7 @@ import {
   airMu,
   clamp,
   coneSurfaceCp,
+  cpGas,
   dahlemBuckCp,
   eckertStanton,
   fayRiddell,
@@ -39,6 +40,7 @@ import {
 } from "./math";
 import type { Atmosphere } from "./atmosphere";
 import { integrateShockExpansion } from "./shockexp";
+import { bodyCf, surfaceHeat, xLeadingOf, type HeatCtx } from "./heating";
 
 export interface PanelAero {
   cl: number;
@@ -174,34 +176,6 @@ function leewardCp(M: number, theta: number, gamma: number): number {
   return clamp((p2 - 1) / q, vacuumCp(M, gamma), 0.2);
 }
 
-/** Planform LE x so running length is s = x − x_LE(y), not just x (outboard LE was too cold). */
-function xLeadingOf(params: DesignParams, y: number): number {
-  const L = params.length;
-  const s = Math.max(params.span / 2, 1e-9);
-  const yn = clamp(Math.abs(y) / s, 0, 1);
-  if (params.family === "liftbody" || params.family === "star") return 0;
-  if (params.family === "caret") return L * yn;
-  if (params.family === "cone" || params.family === "busemann") {
-    const nose = clamp(params.captureFrac, 0.04, 0.45);
-    const blunt = 1 - Math.sqrt(Math.max(0, 1 - yn * yn));
-    return L * (nose * blunt * 0.65 + yn * 0.35);
-  }
-  const planform = params.planform;
-  if (planform === "rect") return 0;
-  if (planform === "spatular") {
-    const nose = clamp(params.captureFrac, 0.04, 0.45);
-    const blunt = 1 - Math.sqrt(Math.max(0, 1 - yn * yn));
-    return L * (nose * blunt * 0.65 + yn * 0.35);
-  }
-  if (planform === "double") {
-    const kink = 0.42;
-    if (yn < kink) return L * 0.1 * (yn / kink);
-    return L * (0.1 + 0.9 * ((yn - kink) / (1 - kink)) ** 1.05);
-  }
-  const pow = planform === "delta" ? 1 : clamp(params.planformPower, 0.6, 2.4);
-  return L * yn ** pow;
-}
-
 export interface RateState {
   p: number;
   q: number;
@@ -219,7 +193,8 @@ export function panelAero(
   rates?: RateState,
 ): PanelAero {
   const notes: string[] = [];
-  const M = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
+  const machIn = params.lockFlight ? params.mach : params.flightMach;
+  const M = Math.max(1.05, Number.isFinite(machIn) ? machIn : 1.05); // [mesh-refinement] NaN Mach must not poison the totals
   const g = params.gamma;
   const method = params.aeroMethod;
   if (method === "euler") {
@@ -257,8 +232,9 @@ export function panelAero(
   let nDetached = 0;
   const Rn = Math.max(effectiveLeRadius(params), 0.0015 * params.length);
   const Tw = Math.max(200, params.twK);
-  const h0 = atm.T * (1 + 0.5 * (g - 1) * M * M) * 1004.7;
-  const hw = Tw * 1004.7;
+  const cpg = cpGas(g);
+  const h0 = atm.T * (1 + 0.5 * (g - 1) * M * M) * cpg;
+  const hw = Tw * cpg;
   const recovStag = clamp(1 - hw / Math.max(h0, 1), 0.05, 0.95);
   const useCone = CONE_FAMILIES.has(params.family);
   const kn = knudsen(atm.T, atm.p, Math.max(params.length, 1e-6));
@@ -275,11 +251,13 @@ export function panelAero(
   const isoInf = isentropic(M, g);
   const p0inf = atm.p * isoInf.ptP;
   const Rgas = 287.05287;
+  const heatCtx: HeatCtx = { pInf: atm.p, gamma: g, Tw, Rn, cpMax, qDyn: 0.5 * g * M * M, qStag0, sweepF };
   let transArea = 0;
   let qLower = 0;
   let aLower = 0;
   let qUpper = 0;
   let aUpper = 0;
+  let aWet = 0;
 
   const pos = mesh.positions;
   const ind = mesh.indices;
@@ -338,6 +316,7 @@ export function panelAero(
     }
     const windward = ndv < 0 && surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle;
     impact[t] = -ndv;
+    if (surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle && surf !== SURFACE_ID.inlet && surf !== SURFACE_ID.symmetry) aWet += area;
     let cpi: number;
     if (surf === SURFACE_ID.base || surf === SURFACE_ID.nozzle) {
       cpi = -1 / (M * M);
@@ -350,7 +329,10 @@ export function panelAero(
       cpi = w.cp;
       if (!w.attached) nDetached++;
     }
-    if (windward) cpi *= pVisc;
+    // Hayes–Probstein: p/p_inviscid = pVisc. Applied to the absolute pressure ratio, not to Cp
+    // (the old `cpi *= pVisc` scaled the gauge coefficient, so a flat plate at 0° got no rise
+    // and an 8° wedge got +0.31χ̄ of Cp instead of of p/p∞).
+    if (windward) cpi = ((1 + cpi * 0.5 * g * M * M) * pVisc - 1) / (0.5 * g * M * M);
     if (wRare > 1e-4) {
       const fm = 2 * sinth * sinth;
       cpi = (1 - wRare) * cpi + wRare * fm;
@@ -398,33 +380,31 @@ export function panelAero(
       Ue = Me * Math.sqrt(Math.max(g * Rgas * Te, 1));
     }
     machE[t] = Me;
-    const muE = airMu(Te);
-    const ReX = (rhoe * Ue * xRun) / Math.max(muE, 1e-10);
-    const tripped = hypersonicTripped(ReX, Me);
-    const rRec = tripped ? 0.89 : Math.sqrt(0.71);
-    const hrec = Te * 1004.7 * (1 + rRec * 0.5 * (g - 1) * Me * Me);
-    const recov = clamp(1 - hw / Math.max(hrec, 1), 0.05, 0.95);
-    const pRatio = clamp(cpi / Math.max(cpMax, 1e-6), 0.01, 1);
-    const qZ = zobyHeatWcm2(rhoe, Ue, Te, Tw, xRun, Me, g, tripped);
-    const St = eckertStantonLocal(rhoe, Ue, Te, xRun, Me, g, tripped, Tw);
-    stanton[t] = St;
-    cfArr[t] = stantonToCf(St, tripped);
-
-    if (surf === SURFACE_ID.leading) {
-      heat[t] = qStag0 * sweepF * leesHeatFactor(Math.max(pRatio, 0.25), 1, tripped);
-    } else if (surf === SURFACE_ID.base || surf === SURFACE_ID.nozzle) {
-      heat[t] = 0.08 * qStag0 * Math.pow(Math.max(pe / Math.max(atm.p * (1 + cpMax * qDyn), 1), 0.01), 0.8);
-    } else if (windward) {
-      const impactS = Math.max(sinth, 0.02);
-      const qLam = tauberLaminar(rhoe, Ue, xRun, recov, impactS);
-      const qTurb = tauberTurbulent(rhoe, Ue, xRun, recov, impactS);
-      const qW0 = tripped ? Math.max(qLam, qTurb) : qLam;
-      const qLees = qStag0 * leesHeatFactor(pRatio, xRun / Math.max(Rn, 1e-8), tripped);
-      heat[t] = 0.5 * qZ + 0.3 * qW0 + 0.2 * qLees;
-    } else {
-      // Prandtl–Meyer edge is cold; keep a small residual so the lid isn't a hole.
-      heat[t] = Math.max(0.18 * qZ, 0.015 * qStag0 * Math.sqrt(Math.max(pRatio, 0.02)));
-    }
+    const hr = surfaceHeat(
+      heatCtx,
+      {
+        kind:
+          surf === SURFACE_ID.leading
+            ? "leading"
+            : surf === SURFACE_ID.base || surf === SURFACE_ID.nozzle
+              ? "base"
+              : windward
+                ? "windward"
+                : "leeward",
+        cp: cpi,
+        Me,
+        Te,
+        rhoe,
+        Ue,
+        pe,
+        xRun,
+        sinth,
+      },
+    );
+    stanton[t] = hr.St;
+    cfArr[t] = hr.cf;
+    heat[t] = hr.q;
+    const tripped = hr.tripped;
     if (heat[t] > 0) {
       twEq[t] = twEquilibrium(heat[t]);
       if (heat[t] > qMax) qMax = heat[t];
@@ -453,11 +433,9 @@ export function panelAero(
   const L = Math.max(lRef, 1e-8);
   const wind = rotateForce([Fx * q, Fy * q, Fz * q], alpha, beta);
   const ReBody = atm.ReL * L;
-  const Cf =
-    ReBody < 5e5
-      ? 1.328 / Math.sqrt(Math.max(ReBody, 100))
-      : vanDriestII(ReBody, M, atm.T, Tw, g);
-  const swet = aWind > 0 ? aWind * 1.35 : S * 2.4;
+  const Cf = bodyCf(ReBody, M, atm.T, Tw, g);
+  // Friction acts on the whole wetted surface (lee side included), not 1.35 × the windward area.
+  const swet = aWet > 0 ? aWet : S * 2.4;
   const Dfric = Cf * q * swet;
   const lift = wind.lift;
   const drag = wind.drag + Dfric;
