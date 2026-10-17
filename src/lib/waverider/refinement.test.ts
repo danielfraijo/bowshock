@@ -30,7 +30,9 @@ import { stripStudy, surfaceStudy, wedgeStudy } from "./refinement-study";
 import { legacyStripGrid, solveStrip } from "./strip-euler";
 import { DEFAULT_PARAMS, type WaveriderFamily } from "./types";
 
-const fixture = JSON.parse(readFileSync(new URL("./__baseline__/baseline-b5fdccc.json", import.meta.url), "utf8"));
+const fixture = JSON.parse(
+  readFileSync(new URL("./__baseline__/baseline-b5fdccc.json", import.meta.url), "utf8"),
+);
 
 function fnv(arr: ArrayLike<number>): string {
   const f = new Float64Array(arr.length);
@@ -58,7 +60,18 @@ describe("validation and clamping", () => {
 
   it("custom values are clamped to the limits and rounded", () => {
     const lim = REFINEMENT_LIMITS;
-    const lo = validateRefinement({ preset: "custom", surface: { nx: 1, ny: 1, leClustering: -3 }, volume: { nStream: 2, nCross: 1, iters: 1, wallClustering: -1, shockClustering: -1, shockWidth: 0 } });
+    const lo = validateRefinement({
+      preset: "custom",
+      surface: { nx: 1, ny: 1, leClustering: -3 },
+      volume: {
+        nStream: 2,
+        nCross: 1,
+        iters: 1,
+        wallClustering: -1,
+        shockClustering: -1,
+        shockWidth: 0,
+      },
+    });
     assert.equal(lo.settings.surface.nx, lim.surface.nx[0]);
     assert.equal(lo.settings.surface.ny, lim.surface.ny[0]);
     assert.equal(lo.settings.surface.leClustering, 0);
@@ -69,18 +82,28 @@ describe("validation and clamping", () => {
     assert.equal(lo.settings.volume.shockClustering, 0);
     assert.equal(lo.settings.volume.shockWidth, lim.volume.shockWidth[0]);
     assert.equal(lo.clamped, true);
-    const hi = validateRefinement({ preset: "custom", volume: { wallClustering: 99, shockClustering: 99, shockWidth: 5 } });
+    const hi = validateRefinement({
+      preset: "custom",
+      volume: { wallClustering: 99, shockClustering: 99, shockWidth: 5 },
+    });
     assert.equal(hi.settings.volume.wallClustering, lim.volume.wallClustering[1]);
     assert.equal(hi.settings.volume.shockClustering, lim.volume.shockClustering[1]);
     assert.equal(hi.settings.volume.shockWidth, lim.volume.shockWidth[1]);
-    const r = validateRefinement({ preset: "custom", volume: { nStream: 100.6, nCross: 30.2, iters: 301.5 } });
+    const r = validateRefinement({
+      preset: "custom",
+      volume: { nStream: 100.6, nCross: 30.2, iters: 301.5 },
+    });
     assert.equal(r.settings.volume.nStream, 101);
     assert.equal(r.settings.volume.nCross, 30);
     assert.equal(r.settings.volume.iters, 302);
   });
 
   it("NaN / Infinity / wrong types fall back to the medium value with a warning", () => {
-    const v = validateRefinement({ preset: "custom", surface: { nx: NaN }, volume: { nStream: Infinity, iters: "x" as never } });
+    const v = validateRefinement({
+      preset: "custom",
+      surface: { nx: NaN },
+      volume: { nStream: Infinity, iters: "x" as never },
+    });
     assert.equal(v.settings.surface.nx, LEGACY.surface.nx);
     assert.equal(v.settings.volume.nStream, LEGACY.wedge.ni);
     assert.equal(v.settings.volume.iters, LEGACY.wedge.iters);
@@ -110,9 +133,16 @@ describe("caps", () => {
       const v = validateRefinement({ preset: "custom", volume: ask });
       const c = estimateCost(v.settings);
       assert.ok(c.wedgeCells <= L.maxCells, `cells ${c.wedgeCells} for ${JSON.stringify(ask)}`);
-      assert.ok(Math.max(c.wedgeWork, c.stripWork) <= L.maxWork, `work ${Math.max(c.wedgeWork, c.stripWork)} for ${JSON.stringify(ask)}`);
+      assert.ok(
+        Math.max(c.wedgeWork, c.stripWork) <= L.maxWork,
+        `work ${Math.max(c.wedgeWork, c.stripWork)} for ${JSON.stringify(ask)}`,
+      );
       assert.ok(c.withinCaps);
-      assert.ok(v.settings.volume.nStream >= L.nStream[0] && v.settings.volume.nCross >= L.nCross[0] && v.settings.volume.iters >= L.iters[0]);
+      assert.ok(
+        v.settings.volume.nStream >= L.nStream[0] &&
+          v.settings.volume.nCross >= L.nCross[0] &&
+          v.settings.volume.iters >= L.iters[0],
+      );
     }
     const big = validateRefinement({ preset: "custom", volume: { nStream: 400, nCross: 160 } });
     assert.ok(big.clamped);
@@ -129,7 +159,10 @@ describe("caps", () => {
     const c = (["coarse", "medium", "fine"] as const).map((id) => estimateCost(presetSettings(id)));
     for (const x of c) assert.ok(x.withinCaps);
     assert.ok(c[0].wedgeCells < c[1].wedgeCells && c[1].wedgeCells < c[2].wedgeCells);
-    assert.ok(c[0].surfaceTrianglesApprox < c[1].surfaceTrianglesApprox && c[1].surfaceTrianglesApprox < c[2].surfaceTrianglesApprox);
+    assert.ok(
+      c[0].surfaceTrianglesApprox < c[1].surfaceTrianglesApprox &&
+        c[1].surfaceTrianglesApprox < c[2].surfaceTrianglesApprox,
+    );
     assert.ok(c[1].stripSeconds < c[2].stripSeconds);
   });
 
@@ -154,7 +187,10 @@ describe("clustering", () => {
               assert.equal(c.length, n + 1);
               assert.equal(c[0], 0);
               assert.equal(c[n], 1);
-              assert.ok(spacingStats(c).strictlyIncreasing, `n=${n} wall=${wall} shock=${shock} pos=${pos} w=${w}`);
+              assert.ok(
+                spacingStats(c).strictlyIncreasing,
+                `n=${n} wall=${wall} shock=${shock} pos=${pos} w=${w}`,
+              );
             }
           }
         }
@@ -174,15 +210,34 @@ describe("clustering", () => {
     while (c[jShock + 1] < 0.4) jShock++;
     assert.ok(d(jShock) < 0.4 * uniform, `shock spacing ${d(jShock)}`);
     assert.ok(d(n - 1) > uniform, "far field is coarser than uniform");
-    assert.ok(spacingStats(c).maxAdjacentRatio < 1.7, `adjacent ratio ${spacingStats(c).maxAdjacentRatio}`);
+    assert.ok(
+      spacingStats(c).maxAdjacentRatio < 1.7,
+      `adjacent ratio ${spacingStats(c).maxAdjacentRatio}`,
+    );
   });
 
   it("preset clustering stays smooth (adjacent cells differ < 2x); extreme custom values draw a warning", () => {
     const f = presetSettings("fine").volume;
-    const c = clusterCoordinates(f.nCross, { wall: f.wallClustering, shock: f.shockClustering, shockPos: 0.3, shockWidth: f.shockWidth });
-    assert.ok(spacingStats(c).maxAdjacentRatio < 2, `fine preset ratio ${spacingStats(c).maxAdjacentRatio}`);
-    assert.ok(!validateRefinement({ preset: "custom", volume: { nCross: 32, shockClustering: 6, wallClustering: 2 } }).warnings.some((w) => w.includes("Aggressive")));
-    const x = validateRefinement({ preset: "custom", volume: { nCross: 32, shockClustering: 30, shockWidth: 0.02 } });
+    const c = clusterCoordinates(f.nCross, {
+      wall: f.wallClustering,
+      shock: f.shockClustering,
+      shockPos: 0.3,
+      shockWidth: f.shockWidth,
+    });
+    assert.ok(
+      spacingStats(c).maxAdjacentRatio < 2,
+      `fine preset ratio ${spacingStats(c).maxAdjacentRatio}`,
+    );
+    assert.ok(
+      !validateRefinement({
+        preset: "custom",
+        volume: { nCross: 32, shockClustering: 6, wallClustering: 2 },
+      }).warnings.some((w) => w.includes("Aggressive")),
+    );
+    const x = validateRefinement({
+      preset: "custom",
+      volume: { nCross: 32, shockClustering: 30, shockWidth: 0.02 },
+    });
     assert.ok(x.warnings.some((w) => w.includes("Aggressive")));
   });
 
@@ -199,7 +254,11 @@ describe("clustering", () => {
     const n = 40;
     const base = new Float64Array(n);
     for (let i = 0; i < n; i++) base[i] = 0.5 * (1 - Math.cos((Math.PI * i) / (n - 1)));
-    assert.equal(clusterFractionsToLE(base, 0), base, "strength 0 returns the input array untouched");
+    assert.equal(
+      clusterFractionsToLE(base, 0),
+      base,
+      "strength 0 returns the input array untouched",
+    );
     let prev = base[1] - base[0];
     for (const s of [0.2, 0.5, 0.8, 1]) {
       const f = clusterFractionsToLE(base, s);
@@ -235,7 +294,12 @@ describe("medium == baseline (captured from b5fdccc before any change)", () => {
       const [family, alpha] = key.split("|");
       const want = fixture.vehicles[key];
       for (const refinement of [undefined, presetSettings("medium")]) {
-        const params = { ...DEFAULT_PARAMS, family: family as WaveriderFamily, alphaDeg: Number(alpha), refinement };
+        const params = {
+          ...DEFAULT_PARAMS,
+          family: family as WaveriderFamily,
+          alphaDeg: Number(alpha),
+          refinement,
+        };
         const b = buildVehicle(params);
         const q = analyzeMesh(b.mesh);
         assert.equal(q.triangles, want.triangles, key);
@@ -245,14 +309,25 @@ describe("medium == baseline (captured from b5fdccc before any change)", () => {
         assert.equal(fnv(b.mesh.positions), want.posHash, `${key} positions`);
         assert.equal(fnv(Array.from(b.mesh.indices)), want.idxHash, `${key} indices`);
         const atm = atmosphere(params.altKm, params.mach, params.gamma);
-        const a = panelAero(b.mesh, params, atm, Number(alpha), 0, Math.max(b.aero.planformArea, 1e-6), params.length);
+        const a = panelAero(
+          b.mesh,
+          params,
+          atm,
+          Number(alpha),
+          0,
+          Math.max(b.aero.planformArea, 1e-6),
+          params.length,
+        );
         assert.equal(a.cl, want.cl, key);
         assert.equal(a.cd, want.cd, key);
         assert.equal(a.cm, want.cm, key);
         assert.equal(a.ca, want.ca, key);
         assert.equal(fnv(Array.from(a.cp)), want.cpHash, `${key} cp`);
         assert.equal(a.method, want.method);
-        assert.ok(!a.notes.some((n) => n.startsWith("Mesh refinement")), "medium adds no refinement note");
+        assert.ok(
+          !a.notes.some((n) => n.startsWith("Mesh refinement")),
+          "medium adds no refinement note",
+        );
       }
     }
   });
@@ -285,21 +360,38 @@ describe("medium == baseline (captured from b5fdccc before any change)", () => {
       const res = ex.euler_solve(ptr, n, 8, 1.4, alpha);
       const cp = new Float64Array(ex.memory.buffer, ptr + n * 16, n);
       const ts = solveStrip(x, z, 8, 1.4, alpha, legacyStripGrid());
-      for (let i = 0; i < n; i++) assert.ok(Math.abs(cp[i] - ts.cp[i]) < 1e-12, `${name} cp[${i}] wasm ${cp[i]} ts ${ts.cp[i]}`);
+      for (let i = 0; i < n; i++)
+        assert.ok(
+          Math.abs(cp[i] - ts.cp[i]) < 1e-12,
+          `${name} cp[${i}] wasm ${cp[i]} ts ${ts.cp[i]}`,
+        );
       assert.ok(Math.abs(res - ts.residual) < 1e-9 * Math.max(1, Math.abs(res)), name);
     }
   });
 
   it("cross-language goldens match the Rust crate tests", () => {
     const c = clusterCoordinates(10, { wall: 2, shock: 6, shockPos: 0.3, shockWidth: 0.09 });
-    const want = [0, 0.0913287796753181, 0.19645591394704617, 0.24861662385687627, 0.2831088829975087, 0.3140255579974827, 0.3483595736980215, 0.40178301370276004, 0.5627519821242225, 0.7805946023081516, 1];
+    const want = [
+      0, 0.0913287796753181, 0.19645591394704617, 0.24861662385687627, 0.2831088829975087,
+      0.3140255579974827, 0.3483595736980215, 0.40178301370276004, 0.5627519821242225,
+      0.7805946023081516, 1,
+    ];
     for (let j = 0; j <= 10; j++) assert.ok(Math.abs(c[j] - want[j]) < 1e-12, `j=${j}`);
     const n = 60;
     const x = Array.from({ length: n }, (_, i) => (4 * i) / (n - 1));
     const z = x.map((v) => v * Math.tan((8 * Math.PI) / 180));
     const ni = 64;
     const shockS = new Float64Array(ni + 1).map((_, i) => 0.1 + (0.4 * i) / ni);
-    const r = solveStrip(x, z, 8, 1.4, 0, { ...legacyStripGrid(), ni, nj: 20, iters: 150, wallClustering: 2, shockClustering: 6, shockWidth: 0.09, shockS });
+    const r = solveStrip(x, z, 8, 1.4, 0, {
+      ...legacyStripGrid(),
+      ni,
+      nj: 20,
+      iters: 150,
+      wallClustering: 2,
+      shockClustering: 6,
+      shockWidth: 0.09,
+      shockS,
+    });
     assert.ok(Math.abs(r.cp[5] - 0.07180176310553892) < 1e-9);
     assert.ok(Math.abs(r.cp[30] - 0.06338922395989954) < 1e-9);
     assert.ok(Math.abs(r.cp[55] - 0.06307605241013038) < 1e-9);
@@ -313,7 +405,10 @@ describe("surface presets", () => {
     for (const fam of ["caret", "osculating", "cone"]) {
       const r = rows.filter((x) => x.family === fam);
       assert.equal(r.length, 3);
-      assert.ok(r[0].triangles < r[1].triangles && r[1].triangles < r[2].triangles, `${fam} ${r.map((x) => x.triangles)}`);
+      assert.ok(
+        r[0].triangles < r[1].triangles && r[1].triangles < r[2].triangles,
+        `${fam} ${r.map((x) => x.triangles)}`,
+      );
       for (const x of r) {
         assert.ok(x.watertight, `${fam} ${x.preset} watertight`);
         assert.equal(x.openEdges, 0);
@@ -326,7 +421,15 @@ describe("surface presets", () => {
   });
 
   it("LE clustering makes the first streamwise cell finer and keeps the mesh closed", () => {
-    for (const family of ["caret", "osculating", "cone", "viscopt", "elliptic", "inward", "busemann"] as WaveriderFamily[]) {
+    for (const family of [
+      "caret",
+      "osculating",
+      "cone",
+      "viscopt",
+      "elliptic",
+      "inward",
+      "busemann",
+    ] as WaveriderFamily[]) {
       const firstGap = (le: number) => {
         const r = presetSettings("fine");
         r.surface.leClustering = le;
@@ -349,7 +452,12 @@ describe("surface presets", () => {
       const base = buildVehicle({ ...DEFAULT_PARAMS, family, flowThrough: family === "ramjet" });
       const r = presetSettings("medium");
       r.surface.leClustering = 1;
-      const clustered = buildVehicle({ ...DEFAULT_PARAMS, family, flowThrough: family === "ramjet", refinement: r });
+      const clustered = buildVehicle({
+        ...DEFAULT_PARAMS,
+        family,
+        flowThrough: family === "ramjet",
+        refinement: r,
+      });
       assert.equal(fnv(clustered.mesh.positions), fnv(base.mesh.positions), family);
     }
   });
@@ -369,44 +477,67 @@ describe("grid convergence vs exact oblique shock (M=8)", () => {
       const med = find(th, "medium");
       assert.ok(fine.pErrPct < 1, `${th} deg fine p err ${fine.pErrPct}`);
       assert.ok(Math.abs(fine.shockErrDeg) < 0.5, `${th} deg fine beta err ${fine.shockErrDeg}`);
-      assert.ok(fine.pErrPct <= med.pErrPct, `${th} deg fine ${fine.pErrPct} vs medium ${med.pErrPct}`);
+      assert.ok(
+        fine.pErrPct <= med.pErrPct,
+        `${th} deg fine ${fine.pErrPct} vs medium ${med.pErrPct}`,
+      );
       assert.ok(fine.cells > med.cells);
     }
   });
   it("medium reproduces the known baseline error (13.5 % / 36.2 %) - the legacy grid is under-resolved", () => {
     assert.ok(Math.abs(find(8, "medium").pErrPct - 13.518) < 0.01);
-    assert.ok(Math.abs(find(30, "medium").pErrPct - 36.230) < 0.01);
+    assert.ok(Math.abs(find(30, "medium").pErrPct - 36.23) < 0.01);
   });
   it("converged residuals are small on the refined grids", () => {
-    for (const th of [8, 30]) assert.ok(find(th, "fine").residual < 1e-3, `${th} residual ${find(th, "fine").residual}`);
+    for (const th of [8, 30])
+      assert.ok(find(th, "fine").residual < 1e-3, `${th} residual ${find(th, "fine").residual}`);
   });
-  it("shock clustering at the medium cell count already beats the uniform medium grid", { timeout: 60000 }, () => {
-    const vol: VolumeRefinement = { ...MEDIUM.volume, iters: 1600, shockClustering: 6 };
-    for (const th of [8, 30]) {
-      const r = eulerWedge(8, th, 1.4, vol);
-      assert.equal(r.ni, 72);
-      assert.equal(r.nj, 24);
-      assert.ok(r.relErr * 100 < 1, `${th} deg 72x24 clustered err ${r.relErr * 100}`);
-      assert.ok(r.relErr * 100 < find(th, "medium").pErrPct / 10);
-    }
-  });
-  it("adaptive re-cluster recovers a badly placed static shock estimate", { timeout: 120000 }, () => {
-    const vol: VolumeRefinement = { nStream: 72, nCross: 24, iters: 1600, wallClustering: 0, shockClustering: 8, shockWidth: 0.06, adaptive: false };
-    for (const th of [8, 30]) {
-      for (const bias of [0.5, 1.8]) {
-        wedgeShockBias.value = bias;
-        const st = eulerWedge(8, th, 1.4, vol);
-        const ad = eulerWedge(8, th, 1.4, { ...vol, adaptive: true });
-        wedgeShockBias.value = 1;
-        assert.equal(ad.passes, 2);
-        assert.equal(st.passes, 1);
-        assert.ok(ad.relErr * 100 < 0.5, `${th} bias ${bias}: adaptive err ${ad.relErr * 100}`);
-        assert.ok(Math.abs((ad.shockAngleDeg ?? NaN) - (ad.exactShockAngleDeg ?? 0)) < 0.2);
-        // Adaptive is not always better than a lucky static guess; it must never be bad, and must beat a bad one.
-        assert.ok(ad.relErr <= Math.max(st.relErr, 0.003), `${th} bias ${bias}: adaptive ${ad.relErr} static ${st.relErr}`);
+  it(
+    "shock clustering at the medium cell count already beats the uniform medium grid",
+    { timeout: 60000 },
+    () => {
+      const vol: VolumeRefinement = { ...MEDIUM.volume, iters: 1600, shockClustering: 6 };
+      for (const th of [8, 30]) {
+        const r = eulerWedge(8, th, 1.4, vol);
+        assert.equal(r.ni, 72);
+        assert.equal(r.nj, 24);
+        assert.ok(r.relErr * 100 < 1, `${th} deg 72x24 clustered err ${r.relErr * 100}`);
+        assert.ok(r.relErr * 100 < find(th, "medium").pErrPct / 10);
       }
-    }
-  });
+    },
+  );
+  it(
+    "adaptive re-cluster recovers a badly placed static shock estimate",
+    { timeout: 120000 },
+    () => {
+      const vol: VolumeRefinement = {
+        nStream: 72,
+        nCross: 24,
+        iters: 1600,
+        wallClustering: 0,
+        shockClustering: 8,
+        shockWidth: 0.06,
+        adaptive: false,
+      };
+      for (const th of [8, 30]) {
+        for (const bias of [0.5, 1.8]) {
+          wedgeShockBias.value = bias;
+          const st = eulerWedge(8, th, 1.4, vol);
+          const ad = eulerWedge(8, th, 1.4, { ...vol, adaptive: true });
+          wedgeShockBias.value = 1;
+          assert.equal(ad.passes, 2);
+          assert.equal(st.passes, 1);
+          assert.ok(ad.relErr * 100 < 0.5, `${th} bias ${bias}: adaptive err ${ad.relErr * 100}`);
+          assert.ok(Math.abs((ad.shockAngleDeg ?? NaN) - (ad.exactShockAngleDeg ?? 0)) < 0.2);
+          // Adaptive is not always better than a lucky static guess; it must never be bad, and must beat a bad one.
+          assert.ok(
+            ad.relErr <= Math.max(st.relErr, 0.003),
+            `${th} bias ${bias}: adaptive ${ad.relErr} static ${st.relErr}`,
+          );
+        }
+      }
+    },
+  );
 });
 
 describe("symmetry-plane kernel convergence vs exact oblique shock (M=8)", () => {

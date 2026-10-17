@@ -11,7 +11,15 @@ import { buildVehicle } from "./generate";
 import { eulerWedge } from "./euler2d";
 import { DEG, betaFromThetaM, obliqueShock } from "./math";
 import { analyzeMesh } from "./mesh";
-import { LEGACY, estimateShockHeights, presetSettings, shockFractionFromHeight, stripDims, type RefinementPreset, type RefinementSettings } from "./refinement";
+import {
+  LEGACY,
+  estimateShockHeights,
+  presetSettings,
+  shockFractionFromHeight,
+  stripDims,
+  type RefinementPreset,
+  type RefinementSettings,
+} from "./refinement";
 import { legacyStripGrid, solveStrip, stripDomain } from "./strip-euler";
 import { DEFAULT_PARAMS, type WaveriderFamily } from "./types";
 
@@ -30,7 +38,11 @@ export interface WedgeRow {
   residual: number;
 }
 
-export function wedgeStudy(mach = 8, thetas = [8, 30], ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"]): WedgeRow[] {
+export function wedgeStudy(
+  mach = 8,
+  thetas = [8, 30],
+  ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"],
+): WedgeRow[] {
   const rows: WedgeRow[] = [];
   for (const thetaDeg of thetas) {
     for (const id of ids) {
@@ -71,7 +83,11 @@ export interface StripRow {
 }
 
 /** Straight wedge wall, L=1, M given, alpha 0: mean wall Cp over 0.3 < x < 0.8 and the fitted shock angle. */
-export function stripStudy(mach = 8, thetas = [8, 30], ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"]): StripRow[] {
+export function stripStudy(
+  mach = 8,
+  thetas = [8, 30],
+  ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"],
+): StripRow[] {
   const rows: StripRow[] = [];
   const n = 80;
   for (const thetaDeg of thetas) {
@@ -83,9 +99,19 @@ export function stripStudy(mach = 8, thetas = [8, 30], ids: Exclude<RefinementPr
       const set: RefinementSettings = presetSettings(id);
       const d = stripDims(set.volume);
       const dom = stripDomain(x, z);
-      const grid = { ...legacyStripGrid(), ni: d.ni, nj: d.nj, iters: d.iters, wallClustering: set.volume.wallClustering, shockClustering: set.volume.shockClustering, shockWidth: set.volume.shockWidth } as ReturnType<typeof legacyStripGrid> & { shockS?: Float64Array };
+      const grid = {
+        ...legacyStripGrid(),
+        ni: d.ni,
+        nj: d.nj,
+        iters: d.iters,
+        wallClustering: set.volume.wallClustering,
+        shockClustering: set.volume.shockClustering,
+        shockWidth: set.volume.shockWidth,
+      } as ReturnType<typeof legacyStripGrid> & { shockS?: Float64Array };
       if (set.volume.shockClustering > 0) {
-        const xs = new Float64Array(d.ni + 1).map((_, i) => dom.xmin + ((dom.xmax - dom.xmin) * i) / d.ni);
+        const xs = new Float64Array(d.ni + 1).map(
+          (_, i) => dom.xmin + ((dom.xmax - dom.xmin) * i) / d.ni,
+        );
         const h = estimateShockHeights(x, z, xs, mach, 1.4, 0, 1, 0);
         grid.shockS = h.map((v) => shockFractionFromHeight(v, dom.hFar, grid.wallExp));
       }
@@ -94,7 +120,12 @@ export function stripStudy(mach = 8, thetas = [8, 30], ids: Exclude<RefinementPr
       const ms = performance.now() - t0;
       let sum = 0;
       let c = 0;
-      for (let i = 0; i < n; i++) if (x[i] > 0.3 && x[i] < 0.8) (sum += r.cp[i]), c++;
+      for (let i = 0; i < n; i++) {
+        if (x[i] > 0.3 && x[i] < 0.8) {
+          sum += r.cp[i];
+          c++;
+        }
+      }
       const xs: number[] = [];
       const ys: number[] = [];
       for (let i = 0; i < r.shock.x.length; i++) {
@@ -116,7 +147,19 @@ export function stripStudy(mach = 8, thetas = [8, 30], ids: Exclude<RefinementPr
         });
         ang = Math.atan(sxy / sxx) / DEG;
       }
-      rows.push({ preset: id, thetaDeg, grid: `${d.ni}x${d.nj}x${d.iters}`, cells: d.ni * d.nj, ms, cp: sum / c, exactCp, cpErrPct: (Math.abs(sum / c - exactCp) / exactCp) * 100, shockDeg: ang, exactShockDeg: beta / DEG, residual: r.residual });
+      rows.push({
+        preset: id,
+        thetaDeg,
+        grid: `${d.ni}x${d.nj}x${d.iters}`,
+        cells: d.ni * d.nj,
+        ms,
+        cp: sum / c,
+        exactCp,
+        cpErrPct: (Math.abs(sum / c - exactCp) / exactCp) * 100,
+        shockDeg: ang,
+        exactShockDeg: beta / DEG,
+        residual: r.residual,
+      });
     }
   }
   return rows;
@@ -135,14 +178,34 @@ export interface SurfaceRow {
   nonManifoldEdges: number;
 }
 
-export function surfaceStudy(families: WaveriderFamily[] = ["caret"], ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"]): SurfaceRow[] {
+export function surfaceStudy(
+  families: WaveriderFamily[] = ["caret"],
+  ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"],
+): SurfaceRow[] {
   const rows: SurfaceRow[] = [];
   for (const family of families) {
     for (const id of ids) {
       const r = presetSettings(id);
-      const b = buildVehicle({ ...DEFAULT_PARAMS, family, nx: r.surface.nx, ny: r.surface.ny, refinement: r });
+      const b = buildVehicle({
+        ...DEFAULT_PARAMS,
+        family,
+        nx: r.surface.nx,
+        ny: r.surface.ny,
+        refinement: r,
+      });
       const q = analyzeMesh(b.mesh);
-      rows.push({ preset: id, family, nx: r.surface.nx, ny: r.surface.ny, triangles: q.triangles, vertices: q.vertices, watertight: q.watertight, manifold: q.manifold, openEdges: q.openEdges, nonManifoldEdges: q.nonManifoldEdges });
+      rows.push({
+        preset: id,
+        family,
+        nx: r.surface.nx,
+        ny: r.surface.ny,
+        triangles: q.triangles,
+        vertices: q.vertices,
+        watertight: q.watertight,
+        manifold: q.manifold,
+        openEdges: q.openEdges,
+        nonManifoldEdges: q.nonManifoldEdges,
+      });
     }
   }
   return rows;
@@ -151,17 +214,32 @@ export function surfaceStudy(families: WaveriderFamily[] = ["caret"], ids: Exclu
 export function formatTables(): string {
   const f = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : "n/a");
   const lines: string[] = [];
-  lines.push("Wedge anchor (euler2d.ts), M=8, gamma=1.4 - pressure ratio and shock angle vs exact oblique shock");
-  lines.push("theta preset  grid          cells  time_ms  p2/p1   exact   p_err%  beta_deg  exact  beta_err_deg");
-  for (const r of wedgeStudy()) lines.push(`${String(r.thetaDeg).padEnd(5)} ${r.preset.padEnd(7)} ${r.grid.padEnd(13)} ${String(r.cells).padEnd(6)} ${f(r.ms, 0).padEnd(8)} ${f(r.p2p1, 3).padEnd(7)} ${f(r.exactP, 3).padEnd(7)} ${f(r.pErrPct).padEnd(7)} ${f(r.shockDeg).padEnd(9)} ${f(r.exactShockDeg).padEnd(6)} ${f(r.shockErrDeg)}`);
+  lines.push(
+    "Wedge anchor (euler2d.ts), M=8, gamma=1.4 - pressure ratio and shock angle vs exact oblique shock",
+  );
+  lines.push(
+    "theta preset  grid          cells  time_ms  p2/p1   exact   p_err%  beta_deg  exact  beta_err_deg",
+  );
+  for (const r of wedgeStudy())
+    lines.push(
+      `${String(r.thetaDeg).padEnd(5)} ${r.preset.padEnd(7)} ${r.grid.padEnd(13)} ${String(r.cells).padEnd(6)} ${f(r.ms, 0).padEnd(8)} ${f(r.p2p1, 3).padEnd(7)} ${f(r.exactP, 3).padEnd(7)} ${f(r.pErrPct).padEnd(7)} ${f(r.shockDeg).padEnd(9)} ${f(r.exactShockDeg).padEnd(6)} ${f(r.shockErrDeg)}`,
+    );
   lines.push("");
-  lines.push("Symmetry-plane kernel on a straight wedge wall (medium = shipped 88x28x42), M=8: mean wall Cp 0.3<x<0.8 and shock angle");
+  lines.push(
+    "Symmetry-plane kernel on a straight wedge wall (medium = shipped 88x28x42), M=8: mean wall Cp 0.3<x<0.8 and shock angle",
+  );
   lines.push("theta preset  grid          cells  time_ms  Cp      exact   Cp_err% beta_deg  exact");
-  for (const r of stripStudy()) lines.push(`${String(r.thetaDeg).padEnd(5)} ${r.preset.padEnd(7)} ${r.grid.padEnd(13)} ${String(r.cells).padEnd(6)} ${f(r.ms, 0).padEnd(8)} ${f(r.cp, 4).padEnd(7)} ${f(r.exactCp, 4).padEnd(7)} ${f(r.cpErrPct, 1).padEnd(7)} ${f(r.shockDeg).padEnd(9)} ${f(r.exactShockDeg)}`);
+  for (const r of stripStudy())
+    lines.push(
+      `${String(r.thetaDeg).padEnd(5)} ${r.preset.padEnd(7)} ${r.grid.padEnd(13)} ${String(r.cells).padEnd(6)} ${f(r.ms, 0).padEnd(8)} ${f(r.cp, 4).padEnd(7)} ${f(r.exactCp, 4).padEnd(7)} ${f(r.cpErrPct, 1).padEnd(7)} ${f(r.shockDeg).padEnd(9)} ${f(r.exactShockDeg)}`,
+    );
   lines.push("");
   lines.push("Surface mesh, caret M8 default design");
   lines.push("preset  nx x ny  triangles  vertices  watertight  manifold  open  nonManifold");
-  for (const r of surfaceStudy()) lines.push(`${r.preset.padEnd(7)} ${`${r.nx}x${r.ny}`.padEnd(8)} ${String(r.triangles).padEnd(10)} ${String(r.vertices).padEnd(9)} ${String(r.watertight).padEnd(11)} ${String(r.manifold).padEnd(9)} ${String(r.openEdges).padEnd(5)} ${r.nonManifoldEdges}`);
+  for (const r of surfaceStudy())
+    lines.push(
+      `${r.preset.padEnd(7)} ${`${r.nx}x${r.ny}`.padEnd(8)} ${String(r.triangles).padEnd(10)} ${String(r.vertices).padEnd(9)} ${String(r.watertight).padEnd(11)} ${String(r.manifold).padEnd(9)} ${String(r.openEdges).padEnd(5)} ${r.nonManifoldEdges}`,
+    );
   return lines.join("\n");
 }
 

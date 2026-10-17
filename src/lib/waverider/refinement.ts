@@ -88,17 +88,41 @@ const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> =
   coarse: {
     preset: "coarse",
     surface: { nx: 24, ny: 16, leClustering: 0 },
-    volume: { nStream: 48, nCross: 16, iters: 400, wallClustering: 0, shockClustering: 0, shockWidth: DEFAULT_SHOCK_WIDTH, adaptive: false },
+    volume: {
+      nStream: 48,
+      nCross: 16,
+      iters: 400,
+      wallClustering: 0,
+      shockClustering: 0,
+      shockWidth: DEFAULT_SHOCK_WIDTH,
+      adaptive: false,
+    },
   },
   medium: {
     preset: "medium",
     surface: { nx: LEGACY.surface.nx, ny: LEGACY.surface.ny, leClustering: 0 },
-    volume: { nStream: LEGACY.wedge.ni, nCross: LEGACY.wedge.nj, iters: LEGACY.wedge.iters, wallClustering: 0, shockClustering: 0, shockWidth: DEFAULT_SHOCK_WIDTH, adaptive: false },
+    volume: {
+      nStream: LEGACY.wedge.ni,
+      nCross: LEGACY.wedge.nj,
+      iters: LEGACY.wedge.iters,
+      wallClustering: 0,
+      shockClustering: 0,
+      shockWidth: DEFAULT_SHOCK_WIDTH,
+      adaptive: false,
+    },
   },
   fine: {
     preset: "fine",
     surface: { nx: 96, ny: 32, leClustering: 0.6 },
-    volume: { nStream: 96, nCross: 32, iters: 1500, wallClustering: 2, shockClustering: 6, shockWidth: DEFAULT_SHOCK_WIDTH, adaptive: false },
+    volume: {
+      nStream: 96,
+      nCross: 32,
+      iters: 1500,
+      wallClustering: 2,
+      shockClustering: 6,
+      shockWidth: DEFAULT_SHOCK_WIDTH,
+      adaptive: false,
+    },
   },
 };
 
@@ -108,6 +132,16 @@ export function presetSettings(id: Exclude<RefinementPreset, "custom">): Refinem
 }
 
 export const MEDIUM: RefinementSettings = presetSettings("medium");
+
+/** Effective settings for a design: refinement (or medium) with the surface counts mirrored from params.nx / params.ny (those sliders are the source of truth). */
+export function refinementOf(p: {
+  refinement?: RefinementSettings;
+  nx: number;
+  ny: number;
+}): RefinementSettings {
+  const r = p.refinement ?? MEDIUM;
+  return { ...r, surface: { ...r.surface, nx: p.nx, ny: p.ny } };
+}
 
 export interface ValidatedRefinement {
   settings: RefinementSettings;
@@ -139,14 +173,22 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
   if (id === "coarse" || id === "medium" || id === "fine") {
     return { settings: presetSettings(id), warnings, clamped: false };
   }
-  if (id !== undefined && id !== "custom") warnings.push(`Unknown preset "${String(id)}" - using medium.`);
+  if (id !== undefined && id !== "custom")
+    warnings.push(`Unknown preset "${String(id)}" - using medium.`);
   if (id !== "custom") return { settings: presetSettings("medium"), warnings, clamped: false };
 
   const base = PRESETS.medium;
   const s = input?.surface ?? {};
   const v = input?.volume ?? {};
   let clamped = false;
-  const fit = (label: string, raw: unknown, def: number, lo: number, hi: number, integer: boolean) => {
+  const fit = (
+    label: string,
+    raw: unknown,
+    def: number,
+    lo: number,
+    hi: number,
+    integer: boolean,
+  ) => {
     let x = num(raw, def);
     if (typeof raw !== "number" || !Number.isFinite(raw)) {
       if (raw !== undefined) {
@@ -175,36 +217,98 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
   const surface: SurfaceRefinement = {
     nx: fit("surface nx", s.nx, base.surface.nx, L.surface.nx[0], L.surface.nx[1], true),
     ny: fit("surface ny", s.ny, base.surface.ny, L.surface.ny[0], L.surface.ny[1], true),
-    leClustering: fit("LE clustering", s.leClustering, 0, L.surface.leClustering[0], L.surface.leClustering[1], false),
+    leClustering: fit(
+      "LE clustering",
+      s.leClustering,
+      0,
+      L.surface.leClustering[0],
+      L.surface.leClustering[1],
+      false,
+    ),
   };
   if (surface.nx * surface.ny > L.surface.maxPoints) {
     const k = Math.sqrt(L.surface.maxPoints / (surface.nx * surface.ny));
     surface.nx = Math.max(L.surface.nx[0], Math.floor(surface.nx * k));
     surface.ny = Math.max(L.surface.ny[0], Math.floor(surface.ny * k));
-    warnings.push(`Surface grid capped at ${L.surface.maxPoints} points per sheet: now ${surface.nx} x ${surface.ny}.`);
+    warnings.push(
+      `Surface grid capped at ${L.surface.maxPoints} points per sheet: now ${surface.nx} x ${surface.ny}.`,
+    );
     clamped = true;
   }
 
   const volume: VolumeRefinement = {
-    nStream: fit("volume cells streamwise", v.nStream, base.volume.nStream, L.volume.nStream[0], L.volume.nStream[1], true),
-    nCross: fit("volume cells across shock layer", v.nCross, base.volume.nCross, L.volume.nCross[0], L.volume.nCross[1], true),
-    iters: fit("Euler iterations", v.iters, base.volume.iters, L.volume.iters[0], L.volume.iters[1], true),
-    wallClustering: fit("wall clustering", v.wallClustering, 0, L.volume.wallClustering[0], L.volume.wallClustering[1], false),
-    shockClustering: fit("shock clustering", v.shockClustering, 0, L.volume.shockClustering[0], L.volume.shockClustering[1], false),
-    shockWidth: fit("shock cluster width", v.shockWidth, DEFAULT_SHOCK_WIDTH, L.volume.shockWidth[0], L.volume.shockWidth[1], false),
+    nStream: fit(
+      "volume cells streamwise",
+      v.nStream,
+      base.volume.nStream,
+      L.volume.nStream[0],
+      L.volume.nStream[1],
+      true,
+    ),
+    nCross: fit(
+      "volume cells across shock layer",
+      v.nCross,
+      base.volume.nCross,
+      L.volume.nCross[0],
+      L.volume.nCross[1],
+      true,
+    ),
+    iters: fit(
+      "Euler iterations",
+      v.iters,
+      base.volume.iters,
+      L.volume.iters[0],
+      L.volume.iters[1],
+      true,
+    ),
+    wallClustering: fit(
+      "wall clustering",
+      v.wallClustering,
+      0,
+      L.volume.wallClustering[0],
+      L.volume.wallClustering[1],
+      false,
+    ),
+    shockClustering: fit(
+      "shock clustering",
+      v.shockClustering,
+      0,
+      L.volume.shockClustering[0],
+      L.volume.shockClustering[1],
+      false,
+    ),
+    shockWidth: fit(
+      "shock cluster width",
+      v.shockWidth,
+      DEFAULT_SHOCK_WIDTH,
+      L.volume.shockWidth[0],
+      L.volume.shockWidth[1],
+      false,
+    ),
     adaptive: v.adaptive === true,
   };
   if (volume.nStream * volume.nCross > L.volume.maxCells) {
     const k = Math.sqrt(L.volume.maxCells / (volume.nStream * volume.nCross));
     volume.nStream = Math.max(L.volume.nStream[0], Math.floor(volume.nStream * k));
     volume.nCross = Math.max(L.volume.nCross[0], Math.floor(volume.nCross * k));
-    warnings.push(`Volume grid capped at ${L.volume.maxCells} cells: now ${volume.nStream} x ${volume.nCross}.`);
+    warnings.push(
+      `Volume grid capped at ${L.volume.maxCells} cells: now ${volume.nStream} x ${volume.nCross}.`,
+    );
     clamped = true;
   }
   if (volume.wallClustering > 0 || volume.shockClustering > 0) {
-    const ratio = spacingStats(clusterCoordinates(volume.nCross, { wall: volume.wallClustering, shock: volume.shockClustering, shockPos: 0.3, shockWidth: volume.shockWidth })).maxAdjacentRatio;
+    const ratio = spacingStats(
+      clusterCoordinates(volume.nCross, {
+        wall: volume.wallClustering,
+        shock: volume.shockClustering,
+        shockPos: 0.3,
+        shockWidth: volume.shockWidth,
+      }),
+    ).maxAdjacentRatio;
     if (ratio > MAX_SMOOTH_STRETCH) {
-      warnings.push(`Aggressive clustering: neighbouring cell sizes differ by up to ${ratio.toFixed(1)}x (> ${MAX_SMOOTH_STRETCH}). Add cells across the layer or lower the clustering strength, or expect a noisier shock.`);
+      warnings.push(
+        `Aggressive clustering: neighbouring cell sizes differ by up to ${ratio.toFixed(1)}x (> ${MAX_SMOOTH_STRETCH}). Add cells across the layer or lower the clustering strength, or expect a noisier shock.`,
+      );
     }
   }
   // Work cap applies to the larger of the wedge-anchor march and the two symmetry-plane wall solves.
@@ -216,16 +320,23 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
   if (work > L.volume.maxWork) {
     const k = L.volume.maxWork / work;
     const it = Math.max(L.volume.iters[0], Math.floor(volume.iters * k));
-    warnings.push(`Work cap ${(L.volume.maxWork / 1e6).toFixed(0)} M cell-updates: iterations lowered ${volume.iters} -> ${it}.`);
+    warnings.push(
+      `Work cap ${(L.volume.maxWork / 1e6).toFixed(0)} M cell-updates: iterations lowered ${volume.iters} -> ${it}.`,
+    );
     volume.iters = it;
     clamped = true;
     work = workOf(volume);
-    while (work > L.volume.maxWork && (volume.nStream > L.volume.nStream[0] || volume.nCross > L.volume.nCross[0])) {
+    while (
+      work > L.volume.maxWork &&
+      (volume.nStream > L.volume.nStream[0] || volume.nCross > L.volume.nCross[0])
+    ) {
       volume.nStream = Math.max(L.volume.nStream[0], Math.floor(volume.nStream * 0.9));
       volume.nCross = Math.max(L.volume.nCross[0], Math.floor(volume.nCross * 0.9));
       work = workOf(volume);
     }
-    warnings.push(`Work cap: grid reduced to ${volume.nStream} x ${volume.nCross}, ${volume.iters} iterations.`);
+    warnings.push(
+      `Work cap: grid reduced to ${volume.nStream} x ${volume.nCross}, ${volume.iters} iterations.`,
+    );
   }
   return { settings: { preset: "custom", surface, volume }, warnings, clamped };
 }
@@ -259,7 +370,8 @@ export function isSurfaceBaseline(r?: RefinementSettings | null): boolean {
 export function stripDims(v: VolumeRefinement): { ni: number; nj: number; iters: number } {
   const a = LEGACY.wedge;
   const s = LEGACY.strip;
-  if (isBaseline({ preset: "medium", surface: MEDIUM.surface, volume: v })) return { ni: s.ni, nj: s.nj, iters: s.iters };
+  if (isBaseline({ preset: "medium", surface: MEDIUM.surface, volume: v }))
+    return { ni: s.ni, nj: s.nj, iters: s.iters };
   return {
     ni: Math.max(8, Math.round((s.ni * v.nStream) / a.ni)),
     nj: Math.max(6, Math.round((s.nj * v.nCross) / a.nj)),
@@ -329,7 +441,8 @@ export function estimateCost(r: RefinementSettings): CostEstimate {
 
 export function describeCost(r: RefinementSettings): string {
   const c = estimateCost(r);
-  const sec = (x: number) => (x < 0.095 ? "<0.1 s" : x < 10 ? `${x.toFixed(1)} s` : `${Math.round(x)} s`);
+  const sec = (x: number) =>
+    x < 0.095 ? "<0.1 s" : x < 10 ? `${x.toFixed(1)} s` : `${Math.round(x)} s`;
   const d = stripDims(r.volume);
   return `Surface ${r.surface.nx}x${r.surface.ny} (~${c.surfaceTrianglesApprox.toLocaleString("en-US")} tris) · Euler ${d.ni}x${d.nj}x${d.iters} on the symmetry plane (~${sec(c.stripSeconds)}), wedge anchor ${r.volume.nStream}x${r.volume.nCross}x${r.volume.iters} (${c.wedgeCells.toLocaleString("en-US")} cells, ~${sec(c.wedgeSeconds)})`;
 }
@@ -374,7 +487,7 @@ export function clusterCoordinates(n: number, spec: ClusterSpec): Float64Array {
   let prev = monitor(0, spec.wall, lw, spec.shock, c, w);
   for (let k = 1; k <= M; k++) {
     const m = monitor(k / M, spec.wall, lw, spec.shock, c, w);
-    cum[k] = cum[k - 1] + 0.5 * (prev + m) / M;
+    cum[k] = cum[k - 1] + (0.5 * (prev + m)) / M;
     prev = m;
   }
   const total = cum[M];
@@ -397,7 +510,12 @@ function monitor(s: number, wall: number, lw: number, shock: number, c: number, 
 }
 
 /** Largest ratio of adjacent spacings (smoothness) and smallest / largest spacing of a coordinate set. */
-export function spacingStats(x: ArrayLike<number>): { strictlyIncreasing: boolean; minSpacing: number; maxSpacing: number; maxAdjacentRatio: number } {
+export function spacingStats(x: ArrayLike<number>): {
+  strictlyIncreasing: boolean;
+  minSpacing: number;
+  maxSpacing: number;
+  maxAdjacentRatio: number;
+} {
   let inc = true;
   let mn = Infinity;
   let mx = 0;
@@ -494,7 +612,8 @@ export function estimateShockHeights(
     const slope = (zAt(x) - z0) / run;
     const theta = Math.max(side * (Math.atan(slope) - alpha), 1e-3);
     let beta = betaFromThetaM(mach, theta, gamma);
-    if (!Number.isFinite(beta)) beta = Math.min(1.45, Math.asin(Math.min(1, 1 / mach)) + 1.6 * theta);
+    if (!Number.isFinite(beta))
+      beta = Math.min(1.45, Math.asin(Math.min(1, 1 / mach)) + 1.6 * theta);
     const hw = side * (Math.tan(alpha + side * beta) - Math.tan(alpha + side * theta)) * run;
     const nose = dn * Math.exp(-run / (12 * Math.max(noseRadius, 1e-6)));
     out[q] = Math.max(hw, 0) + nose;
@@ -527,8 +646,6 @@ export function detectShockFractions(
   const raw = new Float64Array(ni).fill(NaN);
   for (let i = 0; i < ni; i++) {
     // Scan from the far field (j = nj-1, freestream) toward the wall, find where density first rises.
-    let best = -1;
-    let bestJump = 0;
     const rhoMax = (() => {
       let m = 0;
       for (let j = 0; j < nj; j++) m = Math.max(m, rho[j * ni + i]);
@@ -544,19 +661,19 @@ export function detectShockFractions(
         const s0 = sOfRow(i, j);
         const s1 = sOfRow(i, j + 1);
         raw[i] = s0 + (s1 - s0) * t;
-        best = j;
-        bestJump = a - b;
         break;
       }
     }
-    void best;
-    void bestJump;
   }
   return raw;
 }
 
 /** Fill NaN gaps by nearest valid neighbour, then smooth with a 3-point filter (end values held). */
-export function smoothFractions(raw: Float64Array, fallback: ArrayLike<number>, passes = 6): Float64Array {
+export function smoothFractions(
+  raw: Float64Array,
+  fallback: ArrayLike<number>,
+  passes = 6,
+): Float64Array {
   const n = raw.length;
   const out = new Float64Array(n);
   for (let i = 0; i < n; i++) out[i] = Number.isFinite(raw[i]) ? raw[i] : fallback[i];
@@ -566,4 +683,3 @@ export function smoothFractions(raw: Float64Array, fallback: ArrayLike<number>, 
   }
   return out;
 }
-

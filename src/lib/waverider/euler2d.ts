@@ -383,7 +383,7 @@ function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: Volu
     run = march(nodeS, ITERS);
     passes = 2;
   }
-  const { U, residual, nodesY, colS, load, cid } = run;
+  const { U, residual, nodesY, load, cid } = run;
 
   let pSum = 0;
   let nSum = 0;

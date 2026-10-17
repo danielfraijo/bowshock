@@ -28,7 +28,15 @@ export interface StripGrid {
 }
 
 export function legacyStripGrid(): StripGrid {
-  return { ni: LEGACY.strip.ni, nj: LEGACY.strip.nj, iters: LEGACY.strip.iters, wallExp: LEGACY.strip.wallExp, wallClustering: 0, shockClustering: 0, shockWidth: 0.09 };
+  return {
+    ni: LEGACY.strip.ni,
+    nj: LEGACY.strip.nj,
+    iters: LEGACY.strip.iters,
+    wallExp: LEGACY.strip.wallExp,
+    wallClustering: 0,
+    shockClustering: 0,
+    shockWidth: 0.09,
+  };
 }
 
 const CFL = 0.5;
@@ -56,14 +64,31 @@ export function stripDomain(xw: ArrayLike<number>, zw: ArrayLike<number>) {
   const xTe = xw[n - 1];
   const length = Math.max(Math.abs(xTe - xNose), 1e-4);
   const sign = zw[Math.floor(n / 2)] < -1e-8 ? -1 : 1;
-  return { xmin: xNose - 0.12 * length, xmax: xTe + 0.02 * length, hFar: 0.55 * length, sign, length };
+  return {
+    xmin: xNose - 0.12 * length,
+    xmax: xTe + 0.02 * length,
+    hFar: 0.55 * length,
+    sign,
+    length,
+  };
 }
-
 
 const F = new Float64Array(4);
 const NB = new Float64Array(4);
 
-function hllc(rL: number, uL: number, vL: number, pL: number, rR: number, uR: number, vR: number, pR: number, ax: number, ay: number, gamma: number) {
+function hllc(
+  rL: number,
+  uL: number,
+  vL: number,
+  pL: number,
+  rR: number,
+  uR: number,
+  vR: number,
+  pR: number,
+  ax: number,
+  ay: number,
+  gamma: number,
+) {
   const area = Math.sqrt(ax * ax + ay * ay);
   if (area < 1e-14) {
     F[0] = F[1] = F[2] = F[3] = 0;
@@ -84,7 +109,10 @@ function hllc(rL: number, uL: number, vL: number, pL: number, rR: number, uR: nu
   const sl = Math.min(unL, unR) - Math.max(aL, aR);
   const sr = Math.max(unL, unR) + Math.max(aL, aR);
   const den = rL * (sl - unL) - rR * (sr - unR);
-  const sm = Math.abs(den) < 1e-14 ? 0.5 * (unL + unR) : (pR - pL + rL * unL * (sl - unL) - rR * unR * (sr - unR)) / den;
+  const sm =
+    Math.abs(den) < 1e-14
+      ? 0.5 * (unL + unR)
+      : (pR - pL + rL * unL * (sl - unL) - rR * unR * (sr - unR)) / den;
   let fr: number;
   let fun: number;
   let fut: number;
@@ -161,7 +189,14 @@ export function solveStrip(
     if (clustered) {
       for (let i = 0; i <= NI; i++) {
         const sc = shockS ? Math.min(Math.max(shockS[i], 0.04), 0.92) : 0.3;
-        colS.push(clusterCoordinates(NJ, { wall: g.wallClustering, shock: shockS ? shockAmp : 0, shockPos: sc, shockWidth: g.shockWidth }));
+        colS.push(
+          clusterCoordinates(NJ, {
+            wall: g.wallClustering,
+            shock: shockS ? shockAmp : 0,
+            shockPos: sc,
+            shockWidth: g.shockWidth,
+          }),
+        );
       }
     }
     for (let j = 0; j < npz; j++) {
@@ -209,7 +244,8 @@ export function solveStrip(
         fn[id * 2 + 1] = px[ne] - px[nw];
       }
     }
-    const len = (arr: Float64Array, id: number) => Math.sqrt(arr[id * 2] * arr[id * 2] + arr[id * 2 + 1] * arr[id * 2 + 1]);
+    const len = (arr: Float64Array, id: number) =>
+      Math.sqrt(arr[id * 2] * arr[id * 2] + arr[id * 2 + 1] * arr[id * 2 + 1]);
     const U = new Float64Array(nc * 4);
     for (let c = 0; c < nc; c++) {
       U[c * 4] = rhoInf;
@@ -243,31 +279,45 @@ export function solveStrip(
           let d1 = 0;
           let d2 = 0;
           let d3 = 0;
-          if (i === 0) hllc(r, uu, vv, pp, rhoInf, uInf, vInf, pInf, fw[id * 2], fw[id * 2 + 1], gamma);
+          if (i === 0)
+            hllc(r, uu, vv, pp, rhoInf, uInf, vInf, pInf, fw[id * 2], fw[id * 2 + 1], gamma);
           else {
             prim((id - 1) * 4);
             hllc(r, uu, vv, pp, NB[0], NB[1], NB[2], NB[3], fw[id * 2], fw[id * 2 + 1], gamma);
           }
-          d0 += F[0]; d1 += F[1]; d2 += F[2]; d3 += F[3];
+          d0 += F[0];
+          d1 += F[1];
+          d2 += F[2];
+          d3 += F[3];
           if (i + 1 === NI) hllc(r, uu, vv, pp, r, uu, vv, pp, fe[id * 2], fe[id * 2 + 1], gamma);
           else {
             prim((id + 1) * 4);
             hllc(r, uu, vv, pp, NB[0], NB[1], NB[2], NB[3], fe[id * 2], fe[id * 2 + 1], gamma);
           }
-          d0 += F[0]; d1 += F[1]; d2 += F[2]; d3 += F[3];
-          if (j + 1 === NJ) hllc(r, uu, vv, pp, rhoInf, uInf, vInf, pInf, fn[id * 2], fn[id * 2 + 1], gamma);
+          d0 += F[0];
+          d1 += F[1];
+          d2 += F[2];
+          d3 += F[3];
+          if (j + 1 === NJ)
+            hllc(r, uu, vv, pp, rhoInf, uInf, vInf, pInf, fn[id * 2], fn[id * 2 + 1], gamma);
           else {
             prim((id + NI) * 4);
             hllc(r, uu, vv, pp, NB[0], NB[1], NB[2], NB[3], fn[id * 2], fn[id * 2 + 1], gamma);
           }
-          d0 += F[0]; d1 += F[1]; d2 += F[2]; d3 += F[3];
+          d0 += F[0];
+          d1 += F[1];
+          d2 += F[2];
+          d3 += F[3];
           if (j === 0) {
             d1 += pp * fs[id * 2];
             d2 += pp * fs[id * 2 + 1];
           } else {
             prim((id - NI) * 4);
             hllc(r, uu, vv, pp, NB[0], NB[1], NB[2], NB[3], fs[id * 2], fs[id * 2 + 1], gamma);
-            d0 += F[0]; d1 += F[1]; d2 += F[2]; d3 += F[3];
+            d0 += F[0];
+            d1 += F[1];
+            d2 += F[2];
+            d3 += F[3];
           }
           const spec = Math.sqrt(uu * uu + vv * vv) + Math.sqrt((gamma * pp) / r);
           const per = Math.max(len(fw, id), len(fe, id), len(fs, id), len(fn, id), 1e-8);
@@ -302,13 +352,16 @@ export function solveStrip(
     const half = march(g.shockS, Math.max(10, Math.round(g.iters * 0.5)));
     const rho = new Float64Array(nc);
     for (let c = 0; c < nc; c++) rho[c] = half.U[c * 4];
-    const sOfRow = (i: number, j: number) => 0.25 * (half.colS[i][j] + half.colS[i][j + 1] + half.colS[i + 1][j] + half.colS[i + 1][j + 1]);
+    const sOfRow = (i: number, j: number) =>
+      0.25 *
+      (half.colS[i][j] + half.colS[i][j + 1] + half.colS[i + 1][j] + half.colS[i + 1][j + 1]);
     const raw = detectShockFractions(rho, NI, NJ, sOfRow, rhoInf, 0.35);
     const fb = new Float64Array(NI);
     for (let i = 0; i < NI; i++) fb[i] = 0.5 * (g.shockS[i] + g.shockS[i + 1]);
     const sm = smoothFractions(raw, fb, 8);
     const nodeS = new Float64Array(NI + 1);
-    for (let i = 0; i <= NI; i++) nodeS[i] = i === 0 ? sm[0] : i === NI ? sm[NI - 1] : 0.5 * (sm[i - 1] + sm[i]);
+    for (let i = 0; i <= NI; i++)
+      nodeS[i] = i === 0 ? sm[0] : i === NI ? sm[NI - 1] : 0.5 * (sm[i - 1] + sm[i]);
     run = march(nodeS, g.iters);
     passes = 2;
   } else {
@@ -339,10 +392,17 @@ export function solveStrip(
   const rhoF = new Float64Array(nc);
   for (let c = 0; c < nc; c++) rhoF[c] = U[c * 4];
   const sRow = (i: number, j: number) =>
-    run.colS.length ? 0.25 * (run.colS[i][j] + run.colS[i][j + 1] + run.colS[i + 1][j] + run.colS[i + 1][j + 1]) : (j + 0.5) / NJ;
+    run.colS.length
+      ? 0.25 * (run.colS[i][j] + run.colS[i][j + 1] + run.colS[i + 1][j] + run.colS[i + 1][j + 1])
+      : (j + 0.5) / NJ;
   const sShock = detectShockFractions(rhoF, NI, NJ, sRow, rhoInf, 0.35);
   const height = new Float64Array(NI);
-  for (let i = 0; i < NI; i++) height[i] = Number.isFinite(sShock[i]) ? Math.pow(sShock[i], g.wallExp) * hFar : NaN;
-  return { cp, residual: run.residual, grid: { ni: NI, nj: NJ, iters: g.iters, passes }, shock: { x: xc.slice(0, NI), height } };
+  for (let i = 0; i < NI; i++)
+    height[i] = Number.isFinite(sShock[i]) ? Math.pow(sShock[i], g.wallExp) * hFar : NaN;
+  return {
+    cp,
+    residual: run.residual,
+    grid: { ni: NI, nj: NJ, iters: g.iters, passes },
+    shock: { x: xc.slice(0, NI), height },
+  };
 }
-
