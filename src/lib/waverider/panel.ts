@@ -359,7 +359,12 @@ export function panelAero(
     // Hayes–Probstein: p/p_inviscid = pVisc. Applied to the absolute pressure ratio, not to Cp
     // (the old `cpi *= pVisc` scaled the gauge coefficient, so a flat plate at 0° got no rise
     // and an 8° wedge got +0.31χ̄ of Cp instead of of p/p∞).
-    if (windward && applyVisc) cpi = ((1 + cpi * 0.5 * g * M * M) * pVisc - 1) / (0.5 * g * M * M);
+    if (windward && applyVisc) {
+      // Cap at the Newtonian/pitot Cp: a wall cannot sit above the post-normal-shock stagnation pressure, and the
+      // p/p_inv correlation is unbounded (χ̄ ≳ 50 at 100 km, M20 gave p/p∞ ≈ 29 → Cp 17 at α = −30°).
+      const viscCp = ((1 + cpi * 0.5 * g * M * M) * pVisc - 1) / (0.5 * g * M * M);
+      cpi = Math.min(viscCp, Math.max(cpi, cpMax));
+    }
     if (wRare > 1e-4) {
       const fm = 2 * sinth * sinth;
       cpi = (1 - wRare) * cpi + wRare * fm;

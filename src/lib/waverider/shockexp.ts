@@ -406,7 +406,7 @@ export function integrateShockExpansion(
   const accum = (face: Face, cpiIn: number, v: Vec3, Medge = NaN, visc = true) => {
     const ndv0 = face.n[0] * v[0] + face.n[1] * v[1] + face.n[2] * v[2];
     const surfBase = face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle;
-    const cpi = visc && method !== "newtonian" && ndv0 < -0.02 && !surfBase && qInf > 0 ? ((1 + cpiIn * qInf) * pVisc - 1) / qInf : cpiIn;
+    const cpi = visc && method !== "newtonian" && ndv0 < -0.02 && !surfBase && qInf > 0 ? Math.min(((1 + cpiIn * qInf) * pVisc - 1) / qInf, Math.max(cpiIn, cpMax)) : cpiIn;
     paint(cp, face, cpi);
     const dFx = -cpi * face.area * face.n[0];
     const dFy = -cpi * face.area * face.n[1];
@@ -544,7 +544,9 @@ export function integrateShockExpansion(
           } else {
             pRatio *= sh.p2p1;
             Mloc = sh.M2;
-            cpi = (pRatio - 1) / qInf;
+            // successive shocks cannot exceed the pitot (post-normal-shock stagnation) pressure; unbounded chains gave Cp 25+ at extreme camber
+            cpi = Math.min((pRatio - 1) / qInf, cpMax);
+            if (pRatio > 1 + cpMax * qInf) pRatio = 1 + cpMax * qInf;
           }
         } else {
           // Expansion (dth < 0) or a turn too small for a shock (|dth| ≤ 0.15°):

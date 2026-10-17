@@ -262,7 +262,9 @@ export function withSymmetryEuler(
       const center = Math.exp(-((yN / 0.34) ** 2)) * gCenter;
       const nose = cx < 3.2 * Rn ? Math.exp(-((yN / 0.7) ** 2)) * gNose : 0;
       const w = Math.max(center, nose);
-      cp[t] = base.cp[t] * (1 - w) + eCp * w;
+      // Physical bound (Dina, flagged): a steady wall pressure cannot exceed the pitot (post-normal-shock stagnation) Cp.
+      // The centreline solve gave up to 2.9 (pitot 1.7) at M3, α = −30° on the lift body.
+      cp[t] = Math.min(base.cp[t] * (1 - w) + eCp * w, Math.max(base.cpMax, base.cp[t]));
     }
     const cpi = cp[t];
     const dFx = -cpi * area * n0;
