@@ -112,7 +112,7 @@ export function resetEulerForTest() {
 }
 
 /** How the live instance was created (diagnostics). */
-export let wasmSource: "none" | "streaming" | "fetch" | "embedded" = "none";
+export let wasmSource: "none" | "streaming" | "fetch" | "file" | "embedded" = "none";
 
 export function eulerLoaded(): boolean {
   return exportsRef !== null;
@@ -284,6 +284,6 @@ export async function eulerFromBytes(bytes: ArrayBuffer | Uint8Array): Promise<E
   const buf = bytes instanceof Uint8Array ? (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer) : bytes;
   const mod = await WebAssembly.compile(buf);
   const inst = await WebAssembly.instantiate(mod, {});
-  if (!exportsRef) wasmSource = "fetch";
+  if (!exportsRef) wasmSource = "file";
   return exportsRef ?? adopt(inst);
 }

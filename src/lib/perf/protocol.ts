@@ -34,4 +34,4 @@ export type WorkerReply =
   | { type: "export"; id: number; files: { name: string; blob: Blob }[]; ms: number }
   | { type: "stats"; id: number; stats: unknown }
   | { type: "error"; id: number; message: string }
-  | { type: "ready"; wasm: "none" | "streaming" | "fetch" | "embedded" };
+  | { type: "ready"; wasm: "none" | "streaming" | "fetch" | "file" | "embedded" };
