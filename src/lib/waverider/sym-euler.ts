@@ -70,7 +70,7 @@ type Kern = {
   alloc: (n: number) => number;
   solve: (ptr: number, n: number, mach: number, gamma: number, alpha: number) => number;
   /** [mesh-refinement] present only in a wasm rebuilt from the updated crate; the shipped binary has no `euler_solve_ex`. */
-  solveEx?: (ptr: number, n: number, mach: number, gamma: number, alpha: number, ni: number, nj: number, iters: number, wallAmp: number, shockAmp: number, shockWidth: number) => number;
+  solveEx?: (ptr: number, n: number, mach: number, gamma: number, alpha: number, ni: number, nj: number, iters: number, wallAmp: number, shockAmp: number, shockWidth: number, tol: number, sequence: number, cfl: number) => number;
   memory: WebAssembly.Memory;
   ptr: number;
   cap: number;
@@ -112,8 +112,8 @@ function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: nu
   }
   // Rebuilt wasm (has euler_solve_ex): run the clustered static grid there. Not exercised by the shipped
   // binary; any failure falls through to the TypeScript solver, which is cross-checked against the Rust tests.
-  // the wasm entry point knows fixed-iteration first-order solves only; tolerance / second-order / sequencing run in TypeScript
-  if (!adaptive && !(v.tol && v.tol > 0) && (v.order ?? 1) === 1) {
+  // the (rebuilt) wasm entry point does first-order solves with the tolerance stop + sequencing; MUSCL and the adaptive re-cluster run in TypeScript
+  if (!adaptive && (v.order ?? 1) === 1) {
     try {
       const k = kernel();
       if (k.solveEx) {
@@ -129,7 +129,7 @@ function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: nu
           view[i * 2 + 1] = wall.z[i];
         }
         for (let i = 0; i <= d.ni; i++) view[n * 3 + i] = shockS ? shockS[i] : 0.3;
-        const res = k.solveEx(k.ptr, n, mach, gamma, alpha, d.ni, d.nj, d.iters, v.wallClustering, shockS ? v.shockClustering : 0, v.shockWidth);
+        const res = k.solveEx(k.ptr, n, mach, gamma, alpha, d.ni, d.nj, d.iters, v.wallClustering, shockS ? v.shockClustering : 0, v.shockWidth, v.tol ?? 0, v.sequence ?? 0, 0);
         if (res >= 0 && Number.isFinite(res)) return new Float64Array(new Float64Array(k.memory.buffer, k.ptr + n * 16, n));
       }
     } catch {
