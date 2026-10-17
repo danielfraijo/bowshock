@@ -229,6 +229,13 @@ function sample2(tab: GasTables, M: number, th: number): { p2p1: number; M2: num
   const { mach, theta, p2, m2 } = tab;
   if (th <= 1e-8) return { p2p1: 1, M2: M };
   if (M < mach[0] || th > theta[theta.length - 1]) return null;
+  if (M > mach[mach.length - 1]) {
+    // above the table (the marched Mach can reach 40): exact shock instead of extrapolating the grid
+    const b = betaFromThetaM(M, th, tab.gamma);
+    if (!Number.isFinite(b)) return null;
+    const sh = obliqueShock(M, b, tab.gamma);
+    return { p2p1: sh.p2p1, M2: Math.max(sh.M2, 1.01) };
+  }
   let i1 = 1;
   while (i1 < mach.length - 1 && mach[i1] < M) i1++;
   const i0 = i1 - 1;
@@ -358,10 +365,10 @@ export function integrateShockExpansion(
   const chiBar = viscousChi(M, Math.max(atm.ReL * params.length, 1), Tw, atm.T);
   const pVisc = viscousInteractionPressure(chiBar);
 
-  const accum = (face: Face, cpiIn: number, v: Vec3, Medge = NaN) => {
+  const accum = (face: Face, cpiIn: number, v: Vec3, Medge = NaN, visc = true) => {
     const ndv0 = face.n[0] * v[0] + face.n[1] * v[1] + face.n[2] * v[2];
     const surfBase = face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle;
-    const cpi = ndv0 < -0.02 && !surfBase && qInf > 0 ? ((1 + cpiIn * qInf) * pVisc - 1) / qInf : cpiIn;
+    const cpi = visc && method !== "newtonian" && ndv0 < -0.02 && !surfBase && qInf > 0 ? ((1 + cpiIn * qInf) * pVisc - 1) / qInf : cpiIn;
     paint(cp, face, cpi);
     const dFx = -cpi * face.area * face.n[0];
     const dFy = -cpi * face.area * face.n[1];
@@ -436,6 +443,10 @@ export function integrateShockExpansion(
     }
     if (method === "newtonian") return { cp: cpMax * Math.sin(inc) ** 2, attached: true };
     if (useCone) {
+      // Taylor–Maccoll has no solution past the detachment angle; solveConeShock then returns a spurious
+      // β ≈ 70° and garbage Cp (sphere nose: CD 0.07 vs 0.88). Use the same wedge-detachment test as the
+      // panel loop and fall back to Newtonian there (physics-accuracy change, Dina).
+      if (!sample2(tab, vM, inc)) return { cp: cpMax * Math.sin(inc) ** 2, attached: false, Me: normalShock(M, g).M2 };
       const st = coneSurfaceState(M, inc, g);
       return { cp: st.cp, attached: true, Me: st.M };
     }
@@ -461,11 +472,15 @@ export function integrateShockExpansion(
       const inc = turning(vf, face.n);
       let cpi: number;
       let Me = NaN;
+      let visc = true;
       if (!marching) {
         const hit = impact(inc, M);
         cpi = hit.cp;
         Me = hit.Me ?? NaN;
-        if (!hit.attached) nDetached++;
+        if (!hit.attached) {
+          nDetached++;
+          visc = false;
+        }
       } else if (face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle) {
         cpi = -1 / (M * M);
       } else {
@@ -473,23 +488,24 @@ export function integrateShockExpansion(
         if (dth > 0.15 * DEG) {
           const fromFree = virgin;
           virgin = false;
-          if (useCone && fromFree) {
+          const sh = sample2(tab, Mloc, dth);
+          if (!sh) {
+            // detached: Newtonian here, and the rest of the strip is impact-based (no isentropic march
+            // from a subsonic post-shock state)
+            cpi = cpMax * Math.sin(Math.max(inc, 0)) ** 2;
+            nDetached++;
+            marching = false;
+            visc = false;
+            Me = normalShock(M, g).M2;
+          } else if (useCone && fromFree) {
             const st = coneSurfaceState(M, Math.max(dth, 1e-4), g);
             pRatio = st.pRatio;
             Mloc = st.M;
             cpi = st.cp;
           } else {
-            const sh = sample2(tab, Mloc, dth);
-            if (!sh) {
-              cpi = cpMax * Math.sin(Math.max(inc, 0)) ** 2;
-              nDetached++;
-              marching = false;
-              Me = normalShock(M, g).M2;
-            } else {
-              pRatio *= sh.p2p1;
-              Mloc = sh.M2;
-              cpi = (pRatio - 1) / qInf;
-            }
+            pRatio *= sh.p2p1;
+            Mloc = sh.M2;
+            cpi = (pRatio - 1) / qInf;
           }
         } else {
           // Expansion (dth < 0) or a turn too small for a shock (|dth| ≤ 0.15°):
@@ -509,7 +525,7 @@ export function integrateShockExpansion(
         vcur = norm([vf[0] + sn * face.n[0], vf[1] + sn * face.n[1], vf[2] + sn * face.n[2]]);
         if (!Number.isFinite(Me)) Me = Mloc;
       }
-      accum(face, cpi, v, Me);
+      accum(face, cpi, v, Me, visc);
     }
   };
 
@@ -523,7 +539,7 @@ export function integrateShockExpansion(
     const inc = turning(v, face.n);
     const hit = impact(inc, M);
     if (!hit.attached) nDetached++;
-    accum(face, hit.cp, v, hit.Me ?? NaN);
+    accum(face, hit.cp, v, hit.Me ?? NaN, hit.attached);
   }
 
   const qStag = qStag0;
