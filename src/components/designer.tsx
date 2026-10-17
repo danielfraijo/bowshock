@@ -384,7 +384,7 @@ export function Designer() {
             <WaveriderViewer built={built} study={study} opts={opts} />
             <ViewportChrome />
             <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-bg/70 to-transparent" />
-            <div className="hud-chip-info absolute top-5 left-5 flex items-center gap-1 px-3 py-1.5 font-mono text-[11px] text-muted">
+            <div className="hud-chip-info absolute top-5 left-5 flex items-center gap-1 px-3 py-1.5 font-mono text-[11px] text-muted max-sm:hidden">
               <span className="hud-led mr-1.5" aria-hidden />
               <span className="font-display font-semibold tracking-[0.1em] text-accent uppercase">{fam.label}</span>
               <span className="mx-1.5 text-subtle">/</span>
@@ -434,7 +434,7 @@ export function Designer() {
                 </div>
               ) : null}
             </div>
-            <div className="hud-chip-info absolute right-5 bottom-5 flex items-end gap-5 px-4 py-2">
+            <div className="hud-chip-info absolute right-5 bottom-5 flex items-end gap-5 px-4 py-2 max-sm:hidden">
               <Readout label="L/D" value={fmt(study.aero.ld, 2)} />
               <Readout label="CoP" value={fmt(study.aero.xCp / Math.max(params.length, 1e-8), 2)} unit="L" />
               {hydrated ? <Readout size="sm" label="Solve" value={fmt(study.elapsedMs, 0)} unit="ms" /> : null}
@@ -852,9 +852,9 @@ export function Designer() {
             : (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough
               ? "Flow-through duct — inlet & nozzle open"
               : "Open mesh — raise resolution"}
-          <span className="mx-2 text-line">·</span>
+          <span className="mx-2 text-subtle" aria-hidden>·</span>
           CL {fmt(study.aero.cl, 3)} · L/D {fmt(study.aero.ld, 2)} · q̇s {fmt(study.aero.qStag, 2)} W/cm²
-          <span className="mx-2 text-line">·</span>
+          <span className="mx-2 text-subtle" aria-hidden>·</span>
           {fmt(study.mass.mass, 0)} kg
         </span>
         <span className="font-mono tabular-nums">
