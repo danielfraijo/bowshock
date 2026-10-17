@@ -38,6 +38,8 @@ export interface TopoOptions {
   weldRel?: number;
   /** Streamwise x extent considered "nose" for maxJumpNose. */
   noseX?: number;
+  /** |y| beyond this fraction of the max |y| is the wing-tip zone (excluded from G1 maxima). */
+  tipFrac?: number;
 }
 
 function tri(mesh: TriMesh, t: number) {
@@ -94,6 +96,8 @@ export function topoMetrics(mesh: TriMesh, opt: TopoOptions = {}): TopoMetrics {
   const diag = nv ? Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) : 1;
   const weld = (opt.weldRel ?? 1e-9) * diag;
   const noseX = opt.noseX ?? 0.08 * (max[0] - min[0]);
+  // tip zone: planform tips are knife edges by design (collapsed to the mid-surface); G1 stats skip them
+  const tipY = (opt.tipFrac ?? 0.96) * Math.max(Math.abs(min[1]), Math.abs(max[1]));
 
   // duplicate (unwelded) verts: distinct indices at the same position
   const q = 1 / Math.max(weld, 1e-300);
@@ -108,7 +112,7 @@ export function topoMetrics(mesh: TriMesh, opt: TopoOptions = {}): TopoMetrics {
     else seen.set(key, i);
   }
 
-  type E = { n: number; t0: number; t1: number; f: number; b: number };
+  type E = { n: number; t0: number; t1: number; f: number; b: number; lo: number; hi: number };
   const edges = new Map<number, E>();
   const K = nv + 1;
   let minAngle = 180;
@@ -142,7 +146,7 @@ export function topoMetrics(mesh: TriMesh, opt: TopoOptions = {}): TopoMetrics {
         e.t1 = t;
         if (fwd) e.f++;
         else e.b++;
-      } else edges.set(key, { n: 1, t0: t, t1: -1, f: fwd ? 1 : 0, b: fwd ? 0 : 1 });
+      } else edges.set(key, { n: 1, t0: t, t1: -1, f: fwd ? 1 : 0, b: fwd ? 0 : 1, lo, hi });
     }
   }
   let open = 0, nonMan = 0, incons = 0;
@@ -156,10 +160,13 @@ export function topoMetrics(mesh: TriMesh, opt: TopoOptions = {}): TopoMetrics {
       const n0 = triNormal(mesh, e.t0);
       const n1 = triNormal(mesh, e.t1);
       if (n0[3] === 0 || n1[3] === 0) continue;
+
       const ang = (Math.acos(Math.max(-1, Math.min(1, n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]))) * 180) / Math.PI;
       const s0 = mesh.surfaces[e.t0];
       const s1 = mesh.surfaces[e.t1];
       if (ang > 60) sharp++;
+      const inTip = Math.abs(mesh.positions[e.lo * 3 + 1]) > tipY && Math.abs(mesh.positions[e.hi * 3 + 1]) > tipY;
+      if (inTip) continue;
       if (s0 === s1 && ang > jumpSame) jumpSame = ang;
       const le = (s0 === S.leading && (s1 === S.upper || s1 === S.lower)) || (s1 === S.leading && (s0 === S.upper || s0 === S.lower));
       if (le && ang > jumpLE) jumpLE = ang;
@@ -392,4 +399,35 @@ export function badEdges(mesh: TriMesh): { kind: "open" | "nonManifold" | "incon
     else if (e.dirs[0] === e.dirs[1]) out.push({ kind: "inconsistent", a, b, surfaces });
   }
   return out;
+}
+
+/** Edges (both faces present) sorted by dihedral angle, with location + surface ids. For debugging. */
+export function worstDihedrals(mesh: TriMesh, n = 10, filter?: (s0: number, s1: number) => boolean) {
+  const nt = mesh.indices.length / 3;
+  const nv = mesh.positions.length / 3;
+  const K = nv + 1;
+  const map = new Map<number, number[]>();
+  for (let t = 0; t < nt; t++)
+    for (let k = 0; k < 3; k++) {
+      const u = mesh.indices[t * 3 + k];
+      const v = mesh.indices[t * 3 + ((k + 1) % 3)];
+      const key = Math.min(u, v) * K + Math.max(u, v);
+      const a = map.get(key);
+      if (a) a.push(t);
+      else map.set(key, [t]);
+    }
+  const out: { ang: number; a: number[]; b: number[]; s: number[] }[] = [];
+  for (const [key, ts] of map) {
+    if (ts.length !== 2) continue;
+    const s0 = mesh.surfaces[ts[0]], s1 = mesh.surfaces[ts[1]];
+    if (filter && !filter(s0, s1)) continue;
+    const n0 = triNormal(mesh, ts[0]);
+    const n1 = triNormal(mesh, ts[1]);
+    if (!n0[3] || !n1[3]) continue;
+    const ang = (Math.acos(Math.max(-1, Math.min(1, n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]))) * 180) / Math.PI;
+    const lo = Math.floor(key / K), hi = key % K;
+    out.push({ ang, a: [mesh.positions[lo * 3], mesh.positions[lo * 3 + 1], mesh.positions[lo * 3 + 2]], b: [mesh.positions[hi * 3], mesh.positions[hi * 3 + 1], mesh.positions[hi * 3 + 2]], s: [s0, s1] });
+  }
+  out.sort((x, y) => y.ang - x.ang);
+  return out.slice(0, n);
 }

@@ -37,7 +37,7 @@ function liftStations(ny: number, half: boolean): number[] {
   return ys;
 }
 
-function spanStations(ny: number, s: number, half: boolean): number[] {
+function baseSpanStations(ny: number, s: number, half: boolean): number[] {
   // Stay off y = ±s (zero-chord pole) but keep the tip close to the planform
   // edge so the TE does not look chopped. Always include y = 0 for Pointwise.
   if (half) {
@@ -58,6 +58,56 @@ function spanStations(ny: number, s: number, half: boolean): number[] {
   ys[n - 1] = yMax;
   ys[(n - 1) >> 1] = 0;
   return ys;
+}
+
+/**
+ * Span stations. With `nose` set (a rounded planform vertex of half-width `w` at y = 0)
+ * the same number of stations is re-distributed so the vertex region is sampled at
+ * about `dy` (adaptive sampling on the high-curvature part of the planform); the tips
+ * and y = 0 stay fixed and the station count is unchanged.
+ */
+function spanStations(ny: number, s: number, half: boolean, nose?: { w: number; dy: number }): number[] {
+  const base = baseSpanStations(ny, s, half);
+  if (!nose || !(nose.w > 0) || !(nose.dy > 0)) return base;
+  const n = base.length;
+  // work on the half range [0, yMax] and mirror
+  const mid = half ? 0 : (n - 1) >> 1;
+  const pos = base.slice(mid).map((y) => Math.abs(y));
+  const m = pos.length;
+  if (m < 4) return base;
+  const dy0 = pos[1] - pos[0];
+  const B = Math.min(14, Math.max(0, dy0 / nose.dy - 1));
+  if (B < 0.05) return base;
+  const yMax = pos[m - 1];
+  // density = base density (1/spacing, piecewise) * (1 + B g(y))
+  const NS = 4000;
+  const cum = new Float64Array(NS + 1);
+  let k = 0;
+  for (let i = 1; i <= NS; i++) {
+    const y = (yMax * (i - 0.5)) / NS;
+    while (k < m - 2 && pos[k + 1] < y) k++;
+    const rho = 1 / Math.max(pos[k + 1] - pos[k], 1e-12);
+    const g = Math.exp(-((y / nose.w) ** 2));
+    cum[i] = cum[i - 1] + (rho * (1 + B * g) * yMax) / NS;
+  }
+  const total = cum[NS];
+  const out: number[] = [0];
+  let c = 0;
+  for (let j = 1; j < m - 1; j++) {
+    const target = (total * j) / (m - 1);
+    while (c < NS - 1 && cum[c + 1] < target) c++;
+    const u = (target - cum[c]) / Math.max(cum[c + 1] - cum[c], 1e-300);
+    out.push((yMax * (c + clamp(u, 0, 1))) / NS);
+  }
+  out.push(yMax);
+  if (half) return out;
+  const res: number[] = new Array(n);
+  for (let j = 0; j < m; j++) {
+    res[mid + j] = out[j];
+    res[mid - j] = -out[j];
+  }
+  res[mid] = 0;
+  return res;
 }
 
 function xLeading(
@@ -300,6 +350,78 @@ function resolveShock(params: DesignParams): { theta: number; beta: number; atta
   return { theta, beta, attached, notes };
 }
 
+/**
+ * Round the planform vertex (the V where a delta LE meets the centerline) with a circle of
+ * radius rho in plan view: morphological opening of the planform region by a disk, which
+ * leaves straight LE segments untouched and replaces the corner by an exact circular arc.
+ * The fillet that follows then rolls over a smooth LE curve, so the nose has no crease.
+ * Returns the original function when the LE has no real vertex (smooth or blunt planforms).
+ */
+function roundPlanformVertex(g: (t: number) => number, s: number, rho: number): (y: number) => number {
+  const N = 1200;
+  const dt = s / N;
+  const gs = new Float64Array(N + 1);
+  for (let i = 0; i <= N; i++) gs[i] = g(i * dt);
+  const k0 = (gs[2] - gs[0]) / (2 * dt);
+  if (!(rho > 4 * dt) || !(k0 > 0.2)) return (y) => g(Math.abs(y));
+  // inward offset (right branch): points (xo, yo)
+  const xo = new Float64Array(N + 1);
+  const yo = new Float64Array(N + 1);
+  for (let i = 0; i <= N; i++) {
+    const a = Math.max(0, i - 1);
+    const b = Math.min(N, i + 1);
+    const gp = (gs[b] - gs[a]) / ((b - a) * dt);
+    const nn = Math.sqrt(1 + gp * gp);
+    xo[i] = gs[i] + rho / nn;
+    yo[i] = i * dt - (rho * gp) / nn;
+  }
+  const slope0 = k0;
+  const hR = (yc: number): number => {
+    if (yc <= yo[0]) return xo[0] + slope0 * (yc - yo[0]);
+    if (yc >= yo[N]) return xo[N] + ((xo[N] - xo[N - 1]) / (yo[N] - yo[N - 1])) * (yc - yo[N]);
+    let lo = 0;
+    let hi = N;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (yo[m] <= yc) lo = m;
+      else hi = m;
+    }
+    const u = (yc - yo[lo]) / Math.max(yo[hi] - yo[lo], 1e-300);
+    return xo[lo] + u * (xo[hi] - xo[lo]);
+  };
+  const M = N;
+  const h = new Float64Array(2 * M + 1); // yc from -s..s
+  for (let m = -M; m <= M; m++) {
+    const yc = m * dt;
+    h[m + M] = Math.max(hR(yc), hR(-yc));
+  }
+  const W = Math.ceil(rho / dt);
+  const out = new Float64Array(N + 1);
+  for (let i = 0; i <= N; i++) {
+    let best = Infinity;
+    for (let w = -W; w <= W; w++) {
+      const m = i + w;
+      if (m < -M || m > M) continue;
+      const dy = w * dt;
+      const v = h[m + M] - Math.sqrt(Math.max(rho * rho - dy * dy, 0));
+      if (v < best) best = v;
+    }
+    out[i] = best;
+  }
+  // far from the vertex the opening reproduces g; pin that exactly so tips are untouched
+  const tCut = 2.2 * rho;
+  return (y: number) => {
+    const t = Math.min(Math.abs(y), s);
+    if (t >= tCut) return g(t);
+    const f = t / dt;
+    const i0 = Math.min(Math.floor(f), N - 1);
+    const u = f - i0;
+    const xr = out[i0] + u * (out[i0 + 1] - out[i0]);
+    const wgt = t <= 1.4 * rho ? 1 : 1 - (t - 1.4 * rho) / (0.8 * rho);
+    return wgt * xr + (1 - wgt) * g(t);
+  };
+}
+
 function lofts(
   params: DesignParams,
   zBase: (y: number) => number,
@@ -311,10 +433,13 @@ function lofts(
 ): { upper: SurfaceGrid; lower: SurfaceGrid; shock: SurfaceGrid[] } {
   const L = params.length;
   const s = params.span / 2;
-  const ys = spanStations(params.ny, s, params.halfModel);
+  const Rle = effectiveLeRadius(params);
+  const rhoPlan = Rle > 0 && planform !== "rect" ? Math.min(3.5 * Rle, 0.04 * L, 0.2 * s) : 0;
+  const xleRaw = (t: number) => xLeading(t, L, s, planform, power, spat);
+  const xle = rhoPlan > 0 ? roundPlanformVertex(xleRaw, s, rhoPlan) : xleRaw;
+  const ys = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / 12 } : undefined);
   const nx = Math.max(8, params.nx);
   const nj = ys.length;
-  const xle = (y: number) => xLeading(y, L, s, planform, power, spat);
   const zPow = Math.max(0.6, zExp);
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
   const cam = (params.camber || 0) * params.height;
