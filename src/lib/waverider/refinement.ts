@@ -421,6 +421,33 @@ export function isBaseline(r?: RefinementSettings | null): boolean {
   );
 }
 
+/** Typical cost of one wall solve in cell-sweeps (a converged run stops well before its cap). */
+function stripCostOf(v: VolumeRefinement): number {
+  const d = stripDims(v);
+  const typ = v.tol && v.tol > 0 ? Math.min(d.iters, 900) : d.iters;
+  return d.ni * d.nj * typ * ((v.order ?? 1) === 2 ? 2 : 1) * (v.adaptive ? 1.5 : 1);
+}
+
+/**
+ * Live-preview fidelity (used while a slider is being dragged): the `coarse` solver settings, or the selection itself if it is
+ * already cheaper. The surface mesh is not touched. Legacy stays legacy (already a ~20 ms wasm run).
+ */
+export function previewOf(r: RefinementSettings): RefinementSettings {
+  if (isBaseline(r)) return r;
+  const c = PRESETS.coarse.volume;
+  return stripCostOf(r.volume) <= stripCostOf(c) ? r : { ...r, volume: { ...c } };
+}
+
+/**
+ * Fidelity for the *sweep* points of a study (stability derivatives, polar: ~40 extra angles of attack). Never more expensive
+ * than `medium`; the angle of attack the user asked for always uses the selected setting.
+ */
+export function sweepOf(r: RefinementSettings): RefinementSettings {
+  if (isBaseline(r)) return r;
+  const m = PRESETS.medium.volume;
+  return stripCostOf(r.volume) <= stripCostOf(m) ? r : { ...r, volume: { ...m } };
+}
+
 export function isSurfaceBaseline(r?: RefinementSettings | null): boolean {
   return !r || (r.surface.leClustering === 0 && !(r.surface.curvature && r.surface.curvature > 0));
 }

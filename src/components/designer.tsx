@@ -22,6 +22,9 @@ import { HudTabs } from "@/components/ui/hud-tabs"; // [ui-redesign]
 import { Readout, ViewportChrome } from "@/components/ui/hud"; // [ui-redesign]
 import { computeDataPackAsync } from "@/lib/waverider/datapack";
 import { buildVehicle } from "@/lib/waverider/generate";
+import { safeBuild, studyProgressive } from "@/lib/waverider/progressive-study"; // [mesh-refinement]
+import { PanelBoundary } from "@/components/error-boundary"; // [mesh-refinement]
+import { useStudy } from "@/components/use-study"; // [mesh-refinement]
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import kernelSource from "../../native/bowshock_kernel.c?raw";
 import { fmt } from "@/lib/waverider/math";
@@ -37,6 +40,7 @@ import {
   type CowlSide,
   type DesignParams,
   type FlowDomain,
+  type BuiltVehicle,
   type FuelKind,
   type LengthUnit,
   type LidFace,
@@ -178,29 +182,35 @@ export function Designer() {
   };
 
   const gKey = geomKey(params);
-  const built = useMemo(() => buildVehicle(params), [gKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const study = useMemo(
-    // built.params is frozen at the last *geometry* change; alpha, altitude, Mach, method etc. are
-    // not in geomKey, so pass the live params or the study (and the Data tab) read stale values.
-    () => studyVehicle({ ...built, params }, { quick: dragging || !hydrated }),
-    [
-      built,
-      params.flightMach,
-      params.lockFlight,
-      params.alphaDeg,
-      params.betaDeg,
-      params.altKm,
-      params.cgFrac,
-      params.aeroMethod,
-      params.twK,
-      params.fuel,
-      params.phi,
-      params.gammaDeg,
-      params.rhoKgM3,
-      params.massKg,
-      dragging,
-      hydrated,
-    ], // eslint-disable-line react-hooks/exhaustive-deps
+  // [mesh-refinement] safe build (a shape the generator rejects keeps the last good vehicle) + non-blocking study
+  const lastGood = useRef<BuiltVehicle | null>(null);
+  const builtRes = useMemo(() => safeBuild(params, lastGood.current), [gKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const built = builtRes.built;
+  if (!builtRes.error) lastGood.current = built;
+  const studyDeps = [
+    params.flightMach,
+    params.lockFlight,
+    params.alphaDeg,
+    params.betaDeg,
+    params.altKm,
+    params.cgFrac,
+    params.aeroMethod,
+    params.twK,
+    params.fuel,
+    params.phi,
+    params.gammaDeg,
+    params.rhoKgM3,
+    params.massKg,
+  ];
+  // built.params is frozen at the last *geometry* change; alpha, altitude, Mach, method etc. are not in geomKey,
+  // so hand the study the live params or it (and the Data tab) read stale values.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const studyBuilt = useMemo(() => ({ ...built, params }), [built, ...studyDeps]);
+  const { study, status: studyStatus } = useStudy(
+    studyBuilt,
+    studyDeps,
+    dragging,
+    hydrated,
   );
   const q = built.quality;
   const a = built.aero;
@@ -235,9 +245,9 @@ export function Designer() {
       const cadKinds = new Set(["stl", "stl-ascii", "stl-regions", "step", "step-nurbs", "step-tess", "step-facet", "iges", "plot3d", "obj", "kit"]);
       const src =
         cadKinds.has(kind)
-          ? buildVehicle({ ...params, nx: Math.max(params.nx, 96), ny: Math.max(params.ny, 72) })
+          ? safeBuild({ ...params, nx: Math.max(params.nx, 96), ny: Math.max(params.ny, 72) }, built).built
           : built;
-      const aero = cadKinds.has(kind) && src !== built ? studyVehicle(src, { quick: true }).aero : study.aero;
+      const aero = cadKinds.has(kind) && src !== built ? (await studyProgressive(src, { quick: true })).study.aero : study.aero; // [mesh-refinement] non-blocking
       const files = fileBlobs(src, {
         cp: aero.cp,
         heat: aero.heat,
@@ -274,7 +284,7 @@ export function Designer() {
           src,
           python,
           cSrc,
-          studyJson(src, studyVehicle(src, { quick: true })),
+          studyJson(src, (await studyProgressive(src, { quick: true })).study),
           cppSrc,
           {
             cp: aero.cp,
@@ -290,6 +300,9 @@ export function Designer() {
         );
         downloadBlob(zip, `${n}_cfd_kit.zip`);
       }
+    } catch (err) {
+      console.error("[export]", err);
+      window.alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`); // [mesh-refinement]
     } finally {
       setBusy(null);
     }
@@ -381,7 +394,19 @@ export function Designer() {
 
         <section className="hud-viewport relative order-1 min-h-0 overflow-hidden lg:order-2">
           <div className="absolute inset-0">
-            <WaveriderViewer built={built} study={study} opts={opts} />
+            <PanelBoundary label="3D viewer" resetKey={built}>
+              <WaveriderViewer built={built} study={study} opts={opts} />
+            </PanelBoundary>
+            {builtRes.error || studyStatus.error || studyStatus.warnings.length > 0 || studyStatus.busy ? (
+              <div data-testid="study-status" className="absolute right-3 top-3 max-w-xs rounded-md bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur-sm">
+                {builtRes.error ? <div className="text-amber-300">{builtRes.error} Showing the last valid shape.</div> : null}
+                {studyStatus.error ? <div className="text-amber-300">Background solve failed ({studyStatus.error}); instant numbers shown.</div> : null}
+                {studyStatus.warnings.map((w) => (
+                  <div key={w} className="text-amber-300">{w}</div>
+                ))}
+                {studyStatus.busy ? <div>Refining the Euler solve in the background...</div> : null}
+              </div>
+            ) : null}
             <ViewportChrome />
             <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-bg/70 to-transparent" />
             <div className="hud-chip-info absolute top-5 left-5 flex items-center gap-1 px-3 py-1.5 font-mono text-[11px] text-muted max-sm:hidden">
@@ -448,7 +473,7 @@ export function Designer() {
             {!hydrated ? (
               <p className="text-sm leading-relaxed text-muted">{fam.blurb}</p>
             ) : (
-              <>
+              <PanelBoundary label="This panel" resetKey={`${tab}|${gKey}`}>
             {tab === "geom" ? (
               <div className="space-y-4">
                 <p className="hidden text-sm leading-relaxed text-muted lg:block">{fam.blurb}</p>
@@ -834,7 +859,7 @@ export function Designer() {
                 </p>
               </div>
             ) : null}
-              </>
+              </PanelBoundary>
             )}
           </div>
         </aside>
