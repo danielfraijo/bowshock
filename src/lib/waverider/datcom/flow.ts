@@ -44,6 +44,7 @@ export function flowConditions(f: FlightSpec, i: number): Flow {
   const altKm = pick(f.altKm, i, 0);
   const atm = atmosphere(altKm, mach, gamma);
   const ren = f.renPerM !== undefined ? pick(f.renPerM, i, atm.ReL) : atm.ReL;
+  const renSafe = Number.isFinite(ren) && ren > 0 ? ren : Math.max(atm.ReL, 1);
   return {
     mach,
     gamma,
@@ -55,7 +56,7 @@ export function flowConditions(f: FlightSpec, i: number): Flow {
     mu: atm.mu,
     V: atm.V,
     q: atm.q,
-    renPerM: ren,
+    renPerM: renSafe,
     beta: Math.sqrt(Math.abs(1 - mach * mach)),
   };
 }

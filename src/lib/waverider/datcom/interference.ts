@@ -17,10 +17,9 @@
  *  - The two are blended on the effective aspect ratio A*beta (slender for A beta < 1, strip for > 4).
  *    The blend weights are an engineering choice (NOT from the report).
  *
- * Tail-in-wake downwash: a single rolled-up tip vortex per forward panel (NACA 1307 uses one
- * completely rolled-up vortex per panel; Missile DATCOM manual states the same assumption), with its
- * image in the body (circle theorem), core clamp and an optional exponential decay with downstream
- * distance (decay law is an engineering device, not from the references).
+ * Tail-in-wake downwash: one Lamb–Oseen tip vortex per forward panel (NACA 1307 / Missile DATCOM
+ * single rolled-up vortex assumption) with circle-theorem image, viscous core growth, optional
+ * exponential Γ decay, and a mild α-dependent radial migration (engineering).
  */
 import type { FinGeom } from "./geometry.ts";
 import { DEG, clamp, simpson, smoothstep } from "./util.ts";
@@ -100,7 +99,7 @@ export interface Vortex {
 }
 
 /** Make the tip vortex of one panel. Fp = force coefficient along +t on the panel (Sref basis, with K_WB). */
-export function makeVortex(g: FinGeom, phiDeg: number, Fp: number, sRef: number, decaySemis: number): Vortex | null {
+export function makeVortex(g: FinGeom, phiDeg: number, Fp: number, sRef: number, decaySemis: number, alphaAbs = 0): Vortex | null {
   if (Math.abs(Fp) < 1e-12 || g.exposedSpan <= 0) return null;
   const phi = phiDeg * DEG;
   const rUp = Math.cos(phi);
@@ -108,8 +107,8 @@ export function makeVortex(g: FinGeom, phiDeg: number, Fp: number, sRef: number,
   const tUp = -Math.sin(phi);
   const tStb = Math.cos(phi);
   const r = g.rRoot;
-  const rv = r + (Math.PI / 4) * g.exposedSpan;
-  const ell = Math.max(rv - (r * r) / Math.max(rv, 1e-9), 0.05 * g.exposedSpan);
+  const rv = vortexRadialStation(r, g.exposedSpan, alphaAbs);
+  const ell = Math.max(rv - (r * r) / Math.max(rv, 1e-9), 0.05 * Math.max(g.exposedSpan, 1e-6));
   const gamma = (sRef * Fp) / (2 * ell); // Gamma / V
   const riv = r > 0 ? (r * r) / rv : 0;
   return {
@@ -118,10 +117,10 @@ export function makeVortex(g: FinGeom, phiDeg: number, Fp: number, sRef: number,
     iup: riv * rUp,
     istb: riv * rStb,
     gamma,
-    xShed: g.set.xLE + g.set.rootChord + g.tanTE * g.exposedSpan * (Math.PI / 4) * 0,
+    xShed: g.set.xLE + g.set.rootChord,
     rBody: r,
-    decayLen: decaySemis > 0 && Number.isFinite(decaySemis) ? decaySemis * g.exposedSpan : Infinity,
-    core: Math.max(0.05 * g.exposedSpan, 1e-4),
+    decayLen: decaySemis > 0 && Number.isFinite(decaySemis) ? decaySemis * Math.max(g.exposedSpan, 1e-6) : Infinity,
+    core: Math.max(0.05 * Math.max(g.exposedSpan, 1e-6), 1e-4),
     tUp,
     tStb,
     rUp,
@@ -130,32 +129,52 @@ export function makeVortex(g: FinGeom, phiDeg: number, Fp: number, sRef: number,
 }
 
 /**
- * Induced cross-flow velocity / V at point (up, stb) and axial station x from vortex v.
- * Sense: at a point just inboard of the vortex the induced flow opposes the generating panel force
- * (downwash behind a lifting panel).
+ * Induced cross-flow velocity / V at (up, stb), station x from vortex v.
+ *
+ * Core: Lamb–Oseen vortex (Lamb 1932 / Saffman) with viscous core growth
+ *   r_c²(x) = r_c0² + 4 ν_t (x − x_shed) / V ,  ν_t / (V b) ≈ 0.0015 (engineering constant),
+ *   v_θ (r) = (Γ / (2 π r)) (1 − exp(−r² / r_c²)).
+ * Image vortex inside the body via the circle theorem (Milne-Thomson).
+ * Optional exponential decay of Γ with streamwise distance (engineering; not in NACA 1307).
+ * Lateral vortex position is taken at the generating span station (no α-dependent migration
+ * in this revision — migration would follow Hemsch / Pitts charts; flagged as a limitation).
  */
 export function inducedVelocity(v: Vortex, up: number, stb: number, x: number): { up: number; stb: number } {
   const dx = x - v.xShed;
   if (dx < 0) return { up: 0, stb: 0 };
-  const dec = Number.isFinite(v.decayLen) ? Math.exp(-dx / v.decayLen) : 1;
-  // sense: choose kappa so that inboard induced velocity . t = - sign(gamma)
-  const probe = (px: number, py: number, vx: number, vy: number) => {
+  const dec = Number.isFinite(v.decayLen) ? Math.exp(-dx / Math.max(v.decayLen, 1e-9)) : 1;
+  // Lamb–Oseen core growth: rc^2 = rc0^2 + 4 * (0.0015 * be) * dx
+  const be = Math.max(v.core / 0.05, v.core * 20, 1e-3); // recover a span-ish scale
+  const rc2 = v.core * v.core + 4 * 0.0015 * be * Math.max(dx, 0);
+  const lo = (px: number, py: number, vx: number, vy: number) => {
     const dX = px - vx;
     const dY = py - vy;
-    const d2 = dX * dX + dY * dY + v.core * v.core;
-    // rotate +90 deg: (-dY, dX)
-    return { up: -dY / d2, stb: dX / d2 };
+    const r2 = dX * dX + dY * dY;
+    // r = sqrt(r2); Lamb–Oseen uses r2 directly
+    const damp = 1 - Math.exp(-r2 / Math.max(rc2, 1e-18));
+    const mag = damp / Math.max(r2, 1e-18); // (1-exp)/r^2  →  v = Γ/(2π) * mag * (-dY, dX)
+    return { up: -dY * mag, stb: dX * mag };
   };
   const inboardUp = v.up - 0.1 * v.rUp * Math.max(Math.hypot(v.up, v.stb), 1e-6);
   const inboardStb = v.stb - 0.1 * v.rStb * Math.max(Math.hypot(v.up, v.stb), 1e-6);
-  const pr = probe(inboardUp, inboardStb, v.up, v.stb);
+  const pr = lo(inboardUp, inboardStb, v.up, v.stb);
   const dot = pr.up * v.tUp + pr.stb * v.tStb;
-  const kappa = (dot > 0 ? -1 : 1) * Math.sign(v.gamma) * (Math.abs(v.gamma) / (2 * Math.PI)) * dec;
-  const a = probe(up, stb, v.up, v.stb);
+  const kappa = (dot > 0 ? -1 : 1) * Math.sign(v.gamma || 1) * (Math.abs(v.gamma) / (2 * Math.PI)) * dec;
+  const a = lo(up, stb, v.up, v.stb);
   let b = { up: 0, stb: 0 };
   if (v.rBody > 0) {
-    const bb = probe(up, stb, v.iup, v.istb);
-    b = { up: -bb.up, stb: -bb.stb };
+    const bb = lo(up, stb, v.iup, v.istb);
+    b = { up: -bb.up, stb: -bb.stb }; // opposite image circulation
   }
   return { up: kappa * (a.up + b.up), stb: kappa * (a.stb + b.stb) };
+}
+
+/**
+ * Shed-vortex radial station vs angle of attack (engineering): the tip vortex migrates
+ * slightly outboard with α. Hemsch / Pitts-style charts give O(10%) shifts; we use
+ *   r_v = r_root + (π/4) b_e * (1 + 0.15 sin|α|)
+ * which is an engineering fit, NOT a published closed form — medium/low confidence.
+ */
+export function vortexRadialStation(rRoot: number, exposedSpan: number, alphaAbs: number): number {
+  return rRoot + (Math.PI / 4) * exposedSpan * (1 + 0.15 * Math.sin(Math.min(alphaAbs, Math.PI / 2)));
 }

@@ -299,14 +299,14 @@ export function finGeom(set: FinSet, body: BodyProfile | null): FinGeom {
   const rRoot = body ? radiusAt(body, xMid) : 0;
   const be = set.semispan - rRoot;
   if (be <= 0) warnings.push(`${set.name}: semispan ${set.semispan} <= body radius ${rRoot.toFixed(4)} at the root — panel is buried`);
-  const bE = Math.max(be, 1e-6);
+  const bE = Math.max(be, 1e-8);
   const cr = set.rootChord;
   const ct = set.tipChord;
   const tanLE = Math.tan(set.sweepLE * DEG);
   const chordAt = (eta: number) => cr + (ct - cr) * eta;
   const xLEAt = (eta: number) => set.xLE + tanLE * bE * eta;
-  const area = (bE * (cr + ct)) / 2;
-  const aspect = (2 * bE * bE) / Math.max(area, 1e-12);
+  const area = Math.max((bE * (cr + ct)) / 2, 1e-16);
+  const aspect = clamp((2 * bE * bE) / area, 1e-4, 100);
   const taper = cr > 0 ? ct / cr : 0;
   let sc = 0;
   let sc2 = 0;

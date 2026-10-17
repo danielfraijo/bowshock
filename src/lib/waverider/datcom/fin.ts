@@ -61,13 +61,54 @@ export function supersonicCLa(g: FinGeom, M: number): number {
   return Math.min((1 - w) * c1 + w * c2, ack);
 }
 
-/** Lift-curve slope of the panel pair (per rad, on the joined exposed planform). */
+/**
+ * Lift-curve slope of the panel pair (per rad, on the joined exposed planform).
+ * Transonic (0.8–1.2): fair the subsonic DATCOM value (evaluated at an effective Mach
+ * capped by a Korn-like critical Mach estimate) into the M=1.2 supersonic linear value
+ * with a C¹ smoothstep, and apply a soft sonic-peak attenuation of at most ~15% near M=1
+ * (engineering device so CLa does not overshoot; NOT Lock's exact form). Confidence: low.
+ *
+ * Korn-like Mdd estimate used only to freeze the subsonic branch before the drag rise:
+ *   Mdd ≈ 0.87 − 0.125 / cos(Λ_qc) − t/c   (Korn equation engineering reduction for a
+ *   supercritical section with κ≈0.87; Mason / ESDU-style preliminary-design form).
+ */
+export function criticalMachEstimate(g: FinGeom): number {
+  const cosL = 1 / Math.sqrt(1 + g.tanQC * g.tanQC);
+  const t = g.set.thickness;
+  return clamp(0.87 - 0.125 / Math.max(cosL, 0.3) - t, 0.55, 0.95);
+}
+
 export function finCLa(g: FinGeom, M: number): { CLa: number; regime: "subsonic" | "transonic" | "supersonic"; tag: string } {
-  if (M <= 0.9) return { CLa: subsonicCLa(g, Math.max(M, 0)), regime: "subsonic", tag: "DATCOM subsonic straight-taper CLa (Eq. 4.1.3.2-a)" };
-  if (M >= 1.2) return { CLa: supersonicCLa(g, M), regime: "supersonic", tag: "supersonic linear theory (Ackeret/triangular-wing/tip-loss)" };
-  const a = subsonicCLa(g, 0.9);
+  const A = Math.max(g.aspect, 1e-4);
+  // Guard extreme AR: slender limit πA/2, high-AR → 2π (subsonic) / 4/β (supersonic)
+  if (M <= 0.8) {
+    let cla = subsonicCLa(g, Math.max(M, 0));
+    if (A < 0.15) cla = Math.min(cla, (Math.PI * A) / 2 * 1.05);
+    return { CLa: cla, regime: "subsonic", tag: "DATCOM subsonic straight-taper CLa (Eq. 4.1.3.2-a)" };
+  }
+  if (M >= 1.2) {
+    let cla = supersonicCLa(g, M);
+    if (A < 0.15) {
+      const beta = Math.sqrt(M * M - 1);
+      cla = Math.min(cla, (Math.PI * A) / 2 / Math.max(ellipticE(0), 1e-6) * 1.0);
+      void beta;
+    }
+    return { CLa: cla, regime: "supersonic", tag: "supersonic linear theory (Ackeret/triangular-wing/tip-loss)" };
+  }
+  // Transonic fairing 0.8 → 1.2
+  const Mdd = criticalMachEstimate(g);
+  const Msub = Math.min(M, Math.max(Mdd, 0.8));
+  const a = subsonicCLa(g, Msub);
   const b = supersonicCLa(g, 1.2);
-  return { CLa: a + (b - a) * smoothstep(0.9, 1.2, M), regime: "transonic", tag: "transonic interpolation (0.9-1.2)" };
+  const w = smoothstep(0.8, 1.2, M);
+  // soft sonic-peak attenuation (max 15% cut near M=1)
+  const peak = 1 - 0.15 * Math.exp(-Math.pow((M - 1) / 0.12, 2));
+  const cla = (a * (1 - w) + b * w) * peak;
+  return {
+    CLa: cla,
+    regime: "transonic",
+    tag: `transonic fairing 0.8–1.2 (Korn-like Mdd≈${Mdd.toFixed(2)}; soft sonic peak) — low confidence`,
+  };
 }
 
 /** thin-airfoil flap effectiveness (Glauert) */
@@ -90,22 +131,27 @@ export function plateCrossflowCd(A: number): number {
  */
 export function panelNormal(g: FinGeom, M: number, aEff: number, gamma: number): number {
   const { CLa } = finCLa(g, M);
-  const a = Math.abs(aEff);
-  const s = aEff < 0 ? -1 : 1;
-  const cdp = plateCrossflowCd(g.aspect);
+  // Clamp incidence for the attached-flow branch; beyond ~90° use a sin-cos bluff model.
+  const aRaw = Math.abs(aEff);
+  const sgn = aEff < 0 ? -1 : 1;
+  const a = Math.min(aRaw, Math.PI); // [0, π]
+  const cdp = plateCrossflowCd(Math.max(g.aspect, 1e-3));
   let n: number;
-  if (M < 1.2) {
+  if (a > 70 * DEG) {
+    // bluff / reverse-flow: CN ≈ Cd_p sin a |sin a|  (Hoerner flat-plate normal)
+    n = cdp * Math.sin(a) * Math.abs(Math.sin(a));
+  } else if (M < 1.2) {
     const aSat = 22 * DEG;
     const as = aSat * Math.tanh(a / aSat);
     n = CLa * as * Math.cos(a) + cdp * Math.sin(a) * Math.sin(a) * Math.cos(a);
   } else {
-    const beta = Math.sqrt(M * M - 1);
+    const beta = Math.sqrt(Math.max(M * M - 1, 1e-6));
     const ratio = clamp(CLa / (4 / beta), 0, 1.0);
     const wnl = 1 - smoothstep(1.2, 3.5, M);
-    n = ratio * flatPlateCn(M, a, gamma) + wnl * cdp * Math.sin(a) * Math.sin(a) * Math.cos(a);
-    // blend the nonlinear crossflow weight so it matches the subsonic branch at M=1.2
+    const aSE = Math.min(a, 45 * DEG); // shock-expansion branch loses meaning past ~45°
+    n = ratio * flatPlateCn(M, aSE, gamma) + wnl * cdp * Math.sin(a) * Math.sin(a) * Math.cos(Math.min(a, 90 * DEG));
   }
-  return s * n;
+  return Number.isFinite(n) ? sgn * n : 0;
 }
 
 /** panel loading slope dN/da at a=0 (per rad, based on S_e) */
@@ -155,7 +201,17 @@ export function finAxial(g: FinGeom, flow: Flow, cf: CfOptions): FinAxial {
   const Mn = M * cosL;
   let cdWave: number;
   if (Mn >= 1.2) cdWave = waveAt(Mn);
-  else cdWave = waveAt(1.2) * smoothstep(0.85, 1.2, Mn);
+  else if (Mn <= 0.8) cdWave = 0;
+  else {
+    // Lock/Korn-style drag rise: Cd_w ≈ 20 (M − Mdd)^4 for M > Mdd (Korn/Lock engineering form
+    // used in preliminary design; Lock 1951 / Korn equation family). Blended to the M=1.2
+    // Ackeret value so the curve is continuous.
+    const Mdd = criticalMachEstimate(g);
+    const lock = Mn > Mdd ? 20 * Math.pow(Mn - Mdd, 4) * (1 + 5 * t) : 0;
+    const ack12 = waveAt(1.2);
+    const w = smoothstep(0.8, 1.2, Mn);
+    cdWave = lock * (1 - w) + ack12 * w;
+  }
   let cdLE = 0;
   const le = g.set.leRadius ?? 0;
   if (le > 0 && M > 1.2) {

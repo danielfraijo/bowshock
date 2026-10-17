@@ -145,10 +145,12 @@ export function cpSurface2D(M: number, theta: number, g = GAMMA_AIR): { cp: numb
 }
 /** Exact flat-plate section normal-force coefficient cn(alpha, M) (shock-expansion, both surfaces). */
 export function flatPlateCn(M: number, alpha: number, g = GAMMA_AIR): number {
-  const a = Math.abs(alpha);
+  if (!(M > 1.01) || !Number.isFinite(alpha)) return 0;
+  const a = Math.min(Math.abs(alpha), 60 * (Math.PI / 180));
   const lower = cpSurface2D(M, a, g).cp;
   const upper = cpSurface2D(M, -a, g).cp;
-  return Math.sign(alpha) * (lower - upper) * Math.cos(a);
+  const n = Math.sign(alpha) * (lower - upper) * Math.cos(a);
+  return Number.isFinite(n) ? n : 0;
 }
 /** Ackeret linear section lift-curve slope 4/beta (per rad). */
 export function ackeretClAlpha(M: number): number {
