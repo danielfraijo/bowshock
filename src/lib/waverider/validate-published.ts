@@ -11,6 +11,9 @@
  *    58 of 192 case headers parsed, 51 agree with an independent RK4 Taylor–Maccoll to < 0.005° and are used,
  *    7 were OCR-garbled (differences of 0.03°–30°) and are NOT used.
  *  - Tolerances are the rounding of the printed digits (half a unit in the last place, ×1.2), not engineering slack.
+ *  - The oblique-shock table values (OBL / FastCalc M2 θ10) came from web-search result snippets of those pages; a direct
+ *    fetch of the aerodynamics4students page returned 404, so they were not read from the page itself. They agree with the
+ *    exact θ-β-M solution to the printed digits, which is what the checks assert.
  * Nothing here is wind-tunnel or flight data.
  */
 import type { Check } from "./validate";
@@ -117,8 +120,6 @@ const NACA_ROWS: { M: number; pPt: number; AR: number; nu: number; mu: number; M
   { M: 5, pPt: NaN, AR: 25.0, nu: 76.92, mu: 11.54, M2: 0.4152, p21: 29.0, r21: 5.0, T21: 5.8, pt21: 0.06172 },
   { M: 10, pPt: NaN, AR: NaN, nu: 102.32, mu: NaN, M2: 0.3876, p21: 116.5, r21: NaN, T21: NaN, pt21: NaN },
 ];
-
-const rel = (printed: number, sig: number) => 0.6 * Math.pow(10, -sig) / Math.abs(printed) * Math.pow(10, Math.ceil(Math.log10(Math.abs(printed))));
 
 export function publishedChecks(): Check[] {
   const out: Check[] = [];

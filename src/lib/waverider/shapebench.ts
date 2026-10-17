@@ -10,7 +10,7 @@
  * Reference formulas are re-derived here from NACA 1135 / Anderson, not taken from panel.ts.
  */
 import { atmosphere } from "./atmosphere";
-import { MeshBuilder, makeGrid, orientOutward, stitchGrid } from "./mesh";
+import { MeshBuilder, makeGrid, stitchGrid } from "./mesh";
 import { panelAero, type PanelAero } from "./panel";
 import { betaFromThetaM, coneSurfaceStateExact, DEG, invPrandtlMeyer, isentropic, newtonianCpMax, obliqueShock, prandtlMeyer } from "./math";
 import { DEFAULT_PARAMS, SURFACE_ID, type AeroMethod, type DesignParams, type TriMesh } from "./types";
