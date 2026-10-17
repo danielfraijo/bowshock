@@ -797,7 +797,7 @@ export function solveStrip(
 
 /**
  * Same result as `solveStrip`, but yields to the event loop every `chunk` sweeps so a UI thread stays
- * responsive. `signal` aborts (rejects with an AbortError); `onProgress` gets 0..1 per level chunk.
+ * responsive. `signal` aborts (rejects with an AbortError); `onProgress` gets a non-decreasing 0..1 (the running maximum of the per-level fractions; 1 on completion).
  */
 export async function solveStripAsync(
   xw: ArrayLike<number>,
@@ -809,11 +809,16 @@ export async function solveStripAsync(
   opts: { chunk?: number; signal?: { aborted: boolean }; onProgress?: (p: number) => void } = {},
 ): Promise<StripResult> {
   const it = stripGen(xw, zw, mach, gamma, alpha, g, opts.chunk ?? 40);
+  let shown = 0; // progress is per grid level / pass; report the running maximum so it never goes backwards
   for (;;) {
     if (opts.signal?.aborted) throw new DOMException("Euler solve aborted", "AbortError");
     const r = it.next();
-    if (r.done) return r.value;
-    opts.onProgress?.(r.value);
+    if (r.done) {
+      opts.onProgress?.(1);
+      return r.value;
+    }
+    shown = Math.max(shown, Math.min(r.value, 0.99));
+    opts.onProgress?.(shown);
     await new Promise<void>((res) => setTimeout(res, 0));
   }
 }

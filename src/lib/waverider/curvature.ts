@@ -258,7 +258,7 @@ export function curvatureStations(ys: number[], strength: number, curveAt: (y: n
   const res = new Array<number>(n);
   for (let k = 0; k < m; k++) {
     res[i0 + k] = out[k];
-    res[i0 - k] = -out[k];
+    res[i0 - k] = k === 0 ? 0 : -out[k];
   }
   return res;
 }

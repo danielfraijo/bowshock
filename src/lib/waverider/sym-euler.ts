@@ -175,6 +175,11 @@ function remember(key: string, value: Float64Array) {
   }
 }
 
+/** Cache size / capacity / keys oldest-first (tests). */
+export function symmetryEulerCacheInfo() {
+  return { size: solved.size, max: SOLVE_CACHE_MAX, keys: [...solved.keys()] };
+}
+
 /** Clears the solve cache (tests / memory pressure). */
 export function clearSymmetryEulerCache() {
   solved.clear();
