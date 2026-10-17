@@ -46,6 +46,13 @@ function Num({ label, value, onChange, step = 1 }: { label: string; value: numbe
   );
 }
 
+/** UI-only number display: ≤ 6 significant figures, exponent always kept (CSV/JSON stay full precision). */
+function displayNumber(c: number, full: string): string {
+  if (!Number.isFinite(c)) return full;
+  if (full.length <= 10) return full;
+  return String(Number(c.toPrecision(6)));
+}
+
 export function DataPanel({ params, paused }: { params: DesignParams; paused: boolean }) {
   const [opts, setOpts] = useState<DataPackOptions>({
     alphaSweep: { ...DEFAULT_OPTIONS.alphaSweep },
@@ -219,8 +226,8 @@ export function DataPanel({ params, paused }: { params: DesignParams; paused: bo
                       const text = formatCell(c);
                       const isPass = table.columns[j]?.key === "pass";
                       return (
-                        <td key={j} className={`max-w-[18rem] truncate px-1.5 py-0.5 ${isPass ? (c ? "text-ok" : "text-warn") : "text-fg"}`} title={text}>
-                          {text.length > 14 && typeof c === "number" ? text.slice(0, 12) : text}
+                        <td key={j} className={`max-w-[18rem] whitespace-nowrap px-1.5 py-0.5 ${isPass ? (c ? "text-ok" : "text-warn") : "text-fg"}`} title={text}>
+                          {typeof c === "number" ? displayNumber(c, text) : text}
                         </td>
                       );
                     })}
