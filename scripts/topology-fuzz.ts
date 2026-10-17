@@ -3,11 +3,12 @@
 // export validity (STL/Plot3D/IGES/STEP) and runtime blowups. Defects are grouped by root-cause signature.
 import { writeFileSync } from "node:fs";
 import { buildVehicle } from "../src/lib/waverider/generate";
-import { topoMetrics, checkBinaryStl, checkIges, checkPlot3d, checkStep, stepBrepVolume } from "../src/lib/waverider/geom-quality";
+import { topoMetrics, checkBinaryStl, checkIges, checkPlot3d, checkStep, stepBrepVolume, ductFlowVolume } from "../src/lib/waverider/geom-quality";
 import { meshToBinaryStl } from "../src/lib/waverider/export-stl";
 import { gridsToPlot3d } from "../src/lib/waverider/export-plot3d";
 import { gridsToIges } from "../src/lib/waverider/export-iges";
 import { gridsToNurbsStep } from "../src/lib/waverider/export-step";
+import { refineGrids } from "../src/lib/waverider/mesh";
 import { DEFAULT_PARAMS, type DesignParams, type WaveriderFamily, type PlanformKind } from "../src/lib/waverider/types";
 
 export const FAMILIES: WaveriderFamily[] = ["caret", "cone", "osculating", "viscopt", "elliptic", "wedgecone", "star", "liftbody", "ramjet", "scramjet", "busemann", "inward", "integrated"];
@@ -115,7 +116,8 @@ export function runCase(c: FuzzCase, slowMs = 6000): Defect[] {
     const stl = checkBinaryStl(meshToBinaryStl(mesh, "f"), nt);
     if (!stl.ok) add("export-stl", stl.errors.join("; ").slice(0, 100));
     const light = built.grids.reduce((s, g) => s + g.ni * g.nj, 0) < 6000;
-    const grids = built.grids;
+    // what export-kit hands the surface writers
+    const grids = light ? refineGrids(built.grids, 3, 2) : built.grids;
     const p3 = checkPlot3d(gridsToPlot3d(grids));
     if (!p3.ok) add("export-plot3d", p3.errors.join("; ").slice(0, 100));
     const iges = checkIges(gridsToIges(grids, "f", "m"));
@@ -124,9 +126,12 @@ export function runCase(c: FuzzCase, slowMs = 6000): Defect[] {
       const step = gridsToNurbsStep(grids, "f", "m");
       const cs = checkStep(step);
       if (!cs.ok) add("export-step", cs.errors.join("; ").slice(0, 100));
-      else if (m.signedVolume > 0 && !(duct && m.openEdges)) {
-        const v = stepBrepVolume(step, 24);
-        if (!(v > 0) || Math.abs(v - m.signedVolume) > 0.08 * m.signedVolume) add("export-step-volume", `${v.toFixed(4)} vs mesh ${m.signedVolume.toFixed(4)}`);
+      else {
+        const ref = duct ? ductFlowVolume(built.grids) : m.signedVolume;
+        if (ref > 0) {
+          const v = stepBrepVolume(step, 24);
+          if (!(v > 0) || Math.abs(v - ref) > 0.08 * ref) add("export-step-volume", `${v.toFixed(4)} vs ${duct ? "duct flow path" : "mesh"} ${ref.toFixed(4)}`);
+        }
       }
     }
   } catch (e) {

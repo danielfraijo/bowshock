@@ -612,3 +612,31 @@ export function stepBrepVolume(text: string, n = 20): number {
   }
   return vol;
 }
+
+/**
+ * Volume of the flow path of a flow-through duct (between the cowl and the floor grids), by cell-wise mean
+ * height times projected (x, y) area. The duct mesh itself is open at inlet and nozzle, so its divergence volume
+ * is not this number; the STEP solid (capped by planar inlet / nozzle faces) should match it.
+ */
+export function ductFlowVolume(grids: { name: string; ni: number; nj: number; xyz: Float64Array | number[] }[]): number {
+  const up = grids.find((g) => g.name === "cowl");
+  const lo = grids.find((g) => g.name === "lower");
+  if (!up || !lo || up.ni !== lo.ni || up.nj !== lo.nj) return NaN;
+  const P = (g: { nj: number; xyz: Float64Array | number[] }, i: number, j: number) => (i * g.nj + j) * 3;
+  let v = 0;
+  for (let i = 0; i < up.ni - 1; i++)
+    for (let j = 0; j < up.nj - 1; j++) {
+      const idx = [P(up, i, j), P(up, i + 1, j), P(up, i + 1, j + 1), P(up, i, j + 1)];
+      const lidx = [P(lo, i, j), P(lo, i + 1, j), P(lo, i + 1, j + 1), P(lo, i, j + 1)];
+      let area = 0;
+      for (let k = 0; k < 4; k++) {
+        const a = idx[k], b = idx[(k + 1) % 4];
+        area += up.xyz[a] * up.xyz[b + 1] - up.xyz[b] * up.xyz[a + 1];
+      }
+      area = Math.abs(area) / 2;
+      let h = 0;
+      for (let k = 0; k < 4; k++) h += up.xyz[idx[k] + 2] - lo.xyz[lidx[k] + 2];
+      v += (h / 4) * area;
+    }
+  return v;
+}

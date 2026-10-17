@@ -188,7 +188,10 @@ function patchVolumeTerm(net: NurbsNet, n = 24): number {
  * global distance uncertainty is the worst matched deviation actually measured (not a hopeful constant).
  */
 export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: LengthUnit): string {
-  const usable = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2);
+  // Flow-through ducts export the flow-path solid: cowl, floor, side walls and planar inlet / nozzle caps. The
+  // rounded cowl lip hangs outside that volume (it would be a free sheet), so it is left out of the B-rep.
+  const hasCaps = grids.some((g) => g.name === "inlet") && grids.some((g) => g.name === "nozzle");
+  const usable = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2 && !(hasCaps && g.name === "cowl_lip"));
   const empty = () =>
     meshToFacetedStep({ positions: new Float64Array(), indices: new Uint32Array(), surfaces: new Uint8Array() }, name, unit);
   if (!usable.length) return empty();
@@ -228,7 +231,7 @@ export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: Lengt
     for (let k = 0; k < B.length; k += 4) g = Math.max(g, toPoly(B[k], A));
     return g;
   };
-  const matchTol = 4e-4 * extent;
+  const matchTol = 2.5e-3 * extent; // boundary iso-curves of neighbouring interpolants differ by the parametrisation (nose clustering)
   let worstMatch = 0;
   const edges: Edge[] = [];
   const edgeOf: { edge: number; dir: 1 | -1 }[][] = faces.map(() => []);
@@ -247,6 +250,7 @@ export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: Lengt
         const rev = close3(a, eb, tol) && close3(b, ea, tol);
         if (!fwd && !rev) continue;
         const gap = curveGap(poly, edges[e].poly);
+        if (process.env.DBGSTEP && gap > matchTol) console.log('endpoints match, curve gap', (gap / extent).toExponential(2), 'faces', faces[fi].name, edges[e].uses.map((u) => faces[u.face].name));
         if (gap > matchTol) continue;
         worstMatch = Math.max(worstMatch, gap);
         found = e;
@@ -261,6 +265,7 @@ export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: Lengt
       edgeOf[fi][si] = { edge: found, dir };
     });
   });
+  if (process.env.DBGSTEP) for (const e of edges) if (e.uses.length !== 2) console.log('edge uses', e.uses.length, e.uses.map((u) => faces[u.face].name + ':' + u.side), pointAt(e.geom, 0).map((v) => v.toFixed(4)).join(','), '->', pointAt(e.geom, 1).map((v) => v.toFixed(4)).join(','));
   // the file declares the accuracy it actually achieves: worst edge-to-edge deviation of matched boundaries
   const declared = Math.max(1e-6 * extent, 1.5 * worstMatch, tol * 0.5);
 
