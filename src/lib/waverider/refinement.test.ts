@@ -31,7 +31,7 @@ import { legacyStripGrid, solveStrip } from "./strip-euler";
 import { DEFAULT_PARAMS, type WaveriderFamily } from "./types";
 
 const fixture = JSON.parse(
-  readFileSync(new URL("./__baseline__/baseline-b5fdccc.json", import.meta.url), "utf8"),
+  readFileSync(new URL("./__baseline__/baseline-topology-physics-45e7c83.json", import.meta.url), "utf8"),
 );
 
 function fnv(arr: ArrayLike<number>): string {
@@ -273,7 +273,7 @@ describe("clustering", () => {
   });
 });
 
-describe("medium == baseline (captured from b5fdccc before any change)", () => {
+describe("medium == baseline (captured from 45e7c83 = topology + physics-datapack, before the refinement merge)", () => {
   it("wedge anchor: default and explicit-medium results are bitwise identical to the base", () => {
     for (const key of Object.keys(fixture.wedge)) {
       const [M, th] = key.split("|").map(Number);
