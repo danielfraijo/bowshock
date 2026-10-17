@@ -29,7 +29,10 @@
     "format": "prettier --write .",
     "test:datcom": "node scripts/datcom-run-tests.mjs",
     "datcom": "node scripts/datcom-run.mjs",
-    "bench": "tsx scripts/bench.ts"
+    "bench": "tsx scripts/bench.ts",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "test:perf": "tsx src/lib/perf/perf.test.ts",
+    "test:fidelity": "tsx src/lib/waverider/fidelity.test.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

@@ -8,6 +8,7 @@
 import { DEG, betaFromThetaM, obliqueShock } from "./math";
 // [mesh-refinement] grid dimensions / clustering are now caller-selectable; defaults are the legacy 72x24x280.
 import { LEGACY, clusterCoordinates, detectShockFractions, isBaseline, smoothFractions, type VolumeRefinement } from "./refinement";
+import { wedgeMarch } from "../perf/euler-kernel";
 
 export interface EulerAnchor {
   mach: number;
@@ -150,7 +151,7 @@ export function eulerWedge(M: number, thetaDeg: number, gamma = 1.4, vol?: Volum
   return solved;
 }
 
-function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: VolumeRefinement): EulerAnchor {
+export function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: VolumeRefinement): EulerAnchor {
   const t0 = performance.now();
   const theta = thetaDeg * DEG;
   const beta = betaFromThetaM(M, theta, gamma);
@@ -177,6 +178,26 @@ function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: Volu
   const tanBeta = Math.tan(beta);
   const tanTheta = Math.tan(theta);
   const yTop = tanBeta * (Lx - x0) * 1.45 + 0.08;
+  // perf hook: the default (legacy 72x24x280, no clustering, no tolerance stop) march runs on the Rust/wasm
+  // kernel (same scheme, grid and sweep order); the TS march below stays as the reference/fallback and still
+  // serves every refined / clustered / adaptive / tolerance-stopped setting.
+  if (!volSet || (volKey(volSet) === "" && !tolW)) {
+    const fast = wedgeMarch(M, theta, gamma, yTop);
+    if (fast) {
+      return {
+        mach: M,
+        thetaDeg,
+        p2p1: fast.p2,
+        exactP,
+        relErr: Math.abs(fast.p2 - exactP) / Math.max(exactP, 1e-9),
+        cp: (fast.p2 - 1) / q,
+        exactCp,
+        residual: fast.residual,
+        iters: ITERS,
+        ms: performance.now() - t0,
+      };
+    }
+  }
   const yWall = (x: number) => (x <= x0 ? 0 : (x - x0) * Math.tan(theta));
 
   /** One full march on a grid. shockS = per-node-column shock position in s (null: theory line). */

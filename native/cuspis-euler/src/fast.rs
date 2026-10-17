@@ -459,12 +459,12 @@ pub fn solve_wedge(m: f64, theta: f64, gamma: f64, y_top: f64, res: &mut f64) ->
 /// Uses the default grid / iteration count of the reference solver.
 #[no_mangle]
 pub extern "C" fn euler_solve_fast(ptr: *mut u8, n: i32, mach: f64, gamma: f64, alpha: f64) -> f64 {
-    euler_solve_ex(ptr, n, mach, gamma, alpha, DEF_NI as i32, DEF_NJ as i32, DEF_ITERS as i32)
+    euler_solve_grid(ptr, n, mach, gamma, alpha, DEF_NI as i32, DEF_NJ as i32, DEF_ITERS as i32)
 }
 
 /// As `euler_solve_fast` with explicit grid size and sweep count (coarse previews, refinement).
 #[no_mangle]
-pub extern "C" fn euler_solve_ex(
+pub extern "C" fn euler_solve_grid(
     ptr: *mut u8,
     n: i32,
     mach: f64,
