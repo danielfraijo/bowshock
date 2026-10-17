@@ -28,7 +28,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test:datcom": "node scripts/datcom-run-tests.mjs",
-    "datcom": "node scripts/datcom-run.mjs"
+    "datcom": "node scripts/datcom-run.mjs",
+    "bench": "tsx scripts/bench.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",
@@ -102,6 +103,7 @@
     "nitro": "3.0.260610-beta",
     "playwright": "^1.62.0",
     "prettier": "^3.4.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.56.1",
     "vite": "^8.2.0"
