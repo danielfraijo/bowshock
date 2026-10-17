@@ -278,6 +278,8 @@ export function hasCachedWallCp(x: Float64Array, z: Float64Array, mach: number, 
 
 export function storeCachedWallCp(x: Float64Array, z: Float64Array, mach: number, gamma: number, alpha: number, extra: string, cp: Float64Array) {
   eulerCache.set(extraKey(x, z, mach, gamma, alpha, extra), cp, cp.byteLength);
+}
+
 /** Node/CLI/desktop: instantiate the shipped `cuspis_euler.wasm` file bytes (instead of the embedded copy). */
 export async function eulerFromBytes(bytes: ArrayBuffer | Uint8Array): Promise<EulerExports> {
   if (exportsRef) return exportsRef;
