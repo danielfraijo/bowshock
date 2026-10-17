@@ -55,7 +55,7 @@ export function AeroBlock({ study }: { study: StudyResult }) {
           expr="nose: oblique shock or Taylor–Maccoll    later turns: Prandtl–Meyer"
           note="Mixed marches strips. Base Love Cp = −1/M²."
         />
-        <Formula name="Skin friction" expr="Cf = Cfi / Fc     van Driest II, Cfi = 0.455/(log₁₀ Re)²" note="Hopkins–Inouye. Compressibility via Taw, Tw." />
+        <Formula name="Skin friction" expr="Cf = Cfi / Fc     van Driest II, Cfi = 0.455/(log₁₀ Re)^2.58" note="Hopkins–Inouye. Compressibility via Taw, Tw." />
       </div>
     </div>
   );
@@ -350,8 +350,10 @@ export function ChecksBlock({ study }: { study: StudyResult }) {
     <div>
       <Stat k="Kernel" v={`${pass}/${n} pass`} ok={pass === n} />
       <p className="mt-2 mb-3 text-xs leading-relaxed text-muted">
-        Gas identities (Anderson, NACA 1135, Sims, US76, Kantrowitz), an 8° wedge strip, a turning ramp
-        against analytic shock-expansion, and a 2D HLLC Euler shock. The percent is |got − expected| / |expected|.
+        Gas identities (Anderson, NACA 1135, US76, Kantrowitz), Taylor–Maccoll against an independent RK4, Prandtl–Meyer,
+        skin-friction and heating correlations against independent implementations, an 8° wedge strip, a turning ramp
+        against analytic shock-expansion, and a 2D HLLC Euler shock. The percent is |got − expected| / |expected|
+        (checks with reference 0 report the absolute error against the bound). Full table: Data tab → validation.
       </p>
       {shown.map((c) => (
         <div key={c.id} className="border-b border-border/80 py-2 last:border-0">
@@ -361,7 +363,7 @@ export function ChecksBlock({ study }: { study: StudyResult }) {
           </div>
           <p className="mt-1 font-mono text-[10px] leading-snug text-subtle">{c.formula}</p>
           <p className="mt-0.5 font-mono text-[10px] text-muted">
-            got {fmt(c.got, 4)} · expect {fmt(c.expected, 4)} · err {(c.relErr * 100).toFixed(2)}% · {c.source}
+            got {fmt(c.got, 4)} · expect {fmt(c.expected, 4)} · err {(c.relErr * 100).toFixed(2)}% (tol {c.tol < 0.01 ? c.tol.toExponential(0) : `${(c.tol * 100).toFixed(1)}%`}, {c.basis}) · {c.source}
           </p>
         </div>
       ))}

@@ -365,7 +365,15 @@ export function integrateShockExpansion(
   let aUpper = 0;
   let aWet = 0;
 
-  const accum = (face: Face, cpi: number, v: Vec3, Medge = NaN) => {
+  // Viscous interaction (Hayes–Probstein): windward static pressure × p/p_inv, as in the panel loop.
+  const kn = knudsen(atm.T, atm.p, Math.max(params.length, 1e-6));
+  const chiBar = viscousChi(M, Math.max(atm.ReL * params.length, 1), Tw, atm.T);
+  const pVisc = viscousInteractionPressure(chiBar);
+
+  const accum = (face: Face, cpiIn: number, v: Vec3, Medge = NaN) => {
+    const ndv0 = face.n[0] * v[0] + face.n[1] * v[1] + face.n[2] * v[2];
+    const surfBase = face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle;
+    const cpi = ndv0 < -0.02 && !surfBase && qInf > 0 ? ((1 + cpiIn * qInf) * pVisc - 1) / qInf : cpiIn;
     paint(cp, face, cpi);
     const dFx = -cpi * face.area * face.n[0];
     const dFy = -cpi * face.area * face.n[1];
@@ -533,9 +541,6 @@ export function integrateShockExpansion(
   const qStag = qStag0;
   const qRad = tauberSutton(atm.rho, atm.V, Rn);
   if (qStag > qMax) qMax = qStag;
-  const kn = knudsen(atm.T, atm.p, Math.max(params.length, 1e-6));
-  const chiBar = viscousChi(M, Math.max(atm.ReL * params.length, 1), Tw, atm.T);
-  const pVisc = viscousInteractionPressure(chiBar);
   const gammaEq = postShockT(M, atm.T, g).gammaEq;
   const regime = flowRegime(kn);
   const q = atm.q || 1;
@@ -572,7 +577,7 @@ export function integrateShockExpansion(
     );
   }
   if (nDetached > 12) notes.push(`${nDetached} strips detached — Newtonian on those panels.`);
-  notes.push("Heating: Eckert/Zoby + Tauber + Lees on the marched edge state (same model as the panel loop). Viscous interaction and rarefaction bridging are reported, not applied to Cp, in the marching method.");
+  notes.push("Heating: Eckert/Zoby + Tauber + Lees on the marched edge state (same model as the panel loop). Hayes–Probstein viscous-interaction p/p_inv is applied to windward pressure; rarefaction bridging is reported, not applied, in the marching method.");
   if (params.lockFlight) notes.push("Flight Mach locked to design Mach.");
 
   return {

@@ -34,6 +34,7 @@ import {
 } from "./math";
 import { panelAero, type PanelAero } from "./panel";
 import { runValidation, validationSummary, type Check } from "./validate";
+import { parametricSweep } from "./study";
 import { DEFAULT_PARAMS, SURFACE_ID, type BuiltVehicle, type DesignParams } from "./types";
 
 export const DATAPACK_FORMAT = "bowshock-datapack/1";
@@ -73,6 +74,8 @@ export interface DataPackOptions {
   carpet?: { alphaMin: number; alphaMax: number; na: number; machMin: number; machMax: number; nm: number };
   /** number of streamwise / spanwise stations */
   stations?: number;
+  /** optional one-variable parametric sweep (rebuilds the vehicle per value) */
+  parametric?: { variable: keyof DesignParams; min: number; max: number; n: number } | null;
   /** include the per-triangle surface table (can be thousands of rows) */
   panels?: boolean;
   /** provenance only — never part of the key */
@@ -91,6 +94,7 @@ export interface Provenance {
   aeroMethod: string;
   models: string[];
   options: Required<Pick<DataPackOptions, "stations" | "panels">> & {
+    parametric: DataPackOptions["parametric"] | null;
     alphaSweep: SweepSpec;
     machSweep: SweepSpec;
     carpet: NonNullable<DataPackOptions["carpet"]>;
@@ -114,6 +118,7 @@ export const DEFAULT_OPTIONS = {
   carpet: { alphaMin: -2, alphaMax: 10, na: 5, machMin: 4, machMax: 12, nm: 5 },
   stations: 20,
   panels: true,
+  parametric: null as DataPackOptions["parametric"] | null,
 };
 
 type ResolvedOptions = typeof DEFAULT_OPTIONS;
@@ -125,6 +130,7 @@ function resolveOptions(o?: DataPackOptions): ResolvedOptions {
     carpet: { ...DEFAULT_OPTIONS.carpet, ...(o?.carpet ?? {}) },
     stations: o?.stations ?? DEFAULT_OPTIONS.stations,
     panels: o?.panels ?? DEFAULT_OPTIONS.panels,
+    parametric: o?.parametric ?? null,
   };
 }
 
@@ -680,6 +686,13 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
     rows: mRows,
   });
 
+  /* ---- parametric */
+  if (o.parametric) {
+    yield { frac: 0.62, label: `parametric ${String(o.parametric.variable)}` };
+    const vals = linspace(o.parametric.min, o.parametric.max, o.parametric.n);
+    tables.push(parametricSweep(p, o.parametric.variable, vals));
+  }
+
   /* ---- carpet */
   const cs = o.carpet;
   if (cs.na > 0 && cs.nm > 0) {
@@ -865,7 +878,7 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
     family: p.family,
     aeroMethod: p.aeroMethod,
     models: modelList(p, aero),
-    options: { stations: o.stations, panels: o.panels, alphaSweep: o.alphaSweep, machSweep: o.machSweep, carpet: o.carpet },
+    options: { stations: o.stations, panels: o.panels, parametric: o.parametric, alphaSweep: o.alphaSweep, machSweep: o.machSweep, carpet: o.carpet },
   };
   tables.push({
     id: "provenance",
@@ -1013,11 +1026,13 @@ function designChecks(built: BuiltVehicle, p: DesignParams, aero: PanelAero, tri
       const beta = betaFromThetaM(M, th, p.gamma);
       if (Number.isFinite(beta)) {
         const sh = obliqueShock(M, beta, p.gamma);
-        const cpExact = (sh.p2p1 - 1) / (0.5 * p.gamma * M * M);
+        // panel methods multiply windward static pressure by the Hayes–Probstein p/p_inv
+        const qd = 0.5 * p.gamma * M * M;
+        const cpExact = (sh.p2p1 * aero.pVisc - 1) / qd;
         mk(
           "design-caret-cp",
           "Caret lower-face mean Cp vs exact oblique shock at the face's own inclination",
-          `Cp = (p₂/p₁ − 1)/(½γM²) at θ = ${(th * RAD).toFixed(3)}°`,
+          `Cp = (p₂/p₁·p/p_inv − 1)/(½γM²) at θ = ${(th * RAD).toFixed(3)}° (p/p_inv = ${aero.pVisc.toFixed(3)})`,
           cpExact,
           cpA / A,
           0.1,
@@ -1028,9 +1043,6 @@ function designChecks(built: BuiltVehicle, p: DesignParams, aero: PanelAero, tri
     }
   }
 
-  // 5. dynamic-pressure normalisation
-  const qNorm = 0.5 * 1.4 * M * M;
-  void qNorm;
   void qInf;
   return out;
 }

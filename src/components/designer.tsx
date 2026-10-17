@@ -15,6 +15,8 @@ import { Switch } from "@/components/ui/switch";
 import { WaveriderViewer, type ViewerOpts } from "@/components/viewer";
 import { NumberField, Seg, Stat } from "@/components/fields";
 import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
+import { DataPanel } from "@/components/data-panel";
+import { computeDataPackAsync } from "@/lib/waverider/datapack";
 import { buildVehicle } from "@/lib/waverider/generate";
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import kernelSource from "../../native/bowshock_kernel.c?raw";
@@ -39,7 +41,7 @@ import {
 } from "@/lib/waverider/types";
 import { downloadBlob } from "@/lib/utils";
 
-type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "cad";
+type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "data" | "cad";
 
 function LiveField(
   props: Omit<React.ComponentProps<typeof NumberField>, "onDragStart" | "onDragEnd"> & {
@@ -60,6 +62,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
       { id: "frontier", label: "Frontier" },
       { id: "sixdof", label: "6DOF" },
       { id: "checks", label: "Checks" },
+      { id: "data", label: "Data" },
       { id: "cad", label: "CAD" },
     ];
   }
@@ -259,6 +262,7 @@ export function Designer() {
         if (kernelSource) downloadBlob(new Blob([kernelSource], { type: "text/x-csrc" }), "bowshock_kernel.c");
         if (cppSrc) downloadBlob(new Blob([cppSrc], { type: "text/x-c++src" }), "bowshock.cpp");
       } else if (kind === "kit") {
+        const pack = await computeDataPackAsync(params);
         const zip = await cfdZip(
           src,
           python,
@@ -275,6 +279,7 @@ export function Designer() {
             impact: aero.impact,
           },
           kernelSource,
+          pack,
         );
         downloadBlob(zip, `${n}_cfd_kit.zip`);
       }
@@ -746,6 +751,7 @@ export function Designer() {
 
             {tab === "shocks" ? <ShocksBlock study={study} /> : null}
             {tab === "checks" ? <ChecksBlock study={study} /> : null}
+            {tab === "data" ? <DataPanel params={params} paused={dragging} /> : null}
 
             {tab === "traj" ? (
               <div className="space-y-4">
