@@ -130,6 +130,11 @@ export interface VehicleConfig {
   vortexDecaySemispans?: number;
   /** free-form notes carried into outputs */
   notes?: string[];
+  /** length units of the ORIGINAL input (deck DIM card); internal data is always metres */
+  units?: "m" | "ft" | "in" | "cm";
+  /** derivative output units in text tables (deck DERIV card) */
+  derivUnits?: "deg" | "rad";
+  caseId?: string;
 }
 
 export interface FlightSpec {

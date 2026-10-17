@@ -2,7 +2,7 @@
   "name": "bowshock",
   "version": "0.1.0",
   "private": true,
-  "description": "Cuspis — inverse-design waverider CAD. Blunt leading edge, watertight STL/STEP/IGES for Pointwise.",
+  "description": "Cuspis \u2014 inverse-design waverider CAD. Blunt leading edge, watertight STL/STEP/IGES for Pointwise.",
   "license": "MIT",
   "engines": {
     "node": ">=20"
@@ -24,7 +24,9 @@
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:datcom": "node scripts/datcom-run-tests.mjs",
+    "datcom": "node scripts/datcom-run.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

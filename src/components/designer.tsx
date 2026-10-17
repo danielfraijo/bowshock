@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { WaveriderViewer, type ViewerOpts } from "@/components/viewer";
 import { NumberField, Seg, Stat } from "@/components/fields";
 import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
+import { DatcomBlock } from "@/components/datcom-panel";
 import { buildVehicle } from "@/lib/waverider/generate";
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import kernelSource from "../../native/bowshock_kernel.c?raw";
@@ -39,7 +40,7 @@ import {
 } from "@/lib/waverider/types";
 import { downloadBlob } from "@/lib/utils";
 
-type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "cad";
+type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "cad" | "datcom";
 
 function LiveField(
   props: Omit<React.ComponentProps<typeof NumberField>, "onDragStart" | "onDragEnd"> & {
@@ -59,6 +60,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
       { id: "heat", label: "Heat" },
       { id: "frontier", label: "Frontier" },
       { id: "sixdof", label: "6DOF" },
+      { id: "datcom", label: "DATCOM" },
       { id: "checks", label: "Checks" },
       { id: "cad", label: "CAD" },
     ];
@@ -71,6 +73,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
     { id: "frontier", label: "Frontier" },
     { id: "stab", label: "Stab" },
     { id: "sixdof", label: "6DOF" },
+    { id: "datcom", label: "DATCOM" },
     { id: "traj", label: "Traj" },
     { id: "checks", label: "Checks" },
     { id: "cad", label: "CAD" },
@@ -713,6 +716,7 @@ export function Designer() {
             {tab === "frontier" ? <FrontierBlock study={study} /> : null}
             {tab === "stab" ? <StabBlock study={study} /> : null}
             {tab === "sixdof" ? <SixDofBlock study={study} /> : null}
+            {tab === "datcom" ? <DatcomBlock params={params} /> : null}
 
             {tab === "cycle" ? (
               <div className="space-y-4">

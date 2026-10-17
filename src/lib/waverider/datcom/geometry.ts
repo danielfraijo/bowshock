@@ -361,8 +361,8 @@ export function sectionSlopeIntegral(set: FinSet): number {
     case "flat":
       return 0;
     case "wedge":
-      // single wedge: upper surface flat, lower surface slope t over the whole chord; averaged over both surfaces
-      return (t * t) / 2;
+      // symmetric wedge with blunt trailing edge: each surface slopes (t/2)/c over the whole chord
+      return (t * t) / 4;
     case "biconvex":
       // z = 2 (t/2)... half-thickness parabola: z/c = 2(t/c) xi(1-xi) -> I = 4 t^2 / 3
       return (4 * t * t) / 3;
