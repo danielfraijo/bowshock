@@ -26,7 +26,9 @@
     "test:physics": "node --import ./scripts/ts-register.mjs src/lib/waverider/fidelity.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/physics.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/datapack.test.ts",
     "datapack": "node --import ./scripts/ts-register.mjs scripts/datapack-export.ts",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:datcom": "node scripts/datcom-run-tests.mjs",
+    "datcom": "node scripts/datcom-run.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",
