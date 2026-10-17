@@ -330,7 +330,10 @@ export function parseStep(text: string): Map<number, StepEnt> {
   return map;
 }
 
-/** Structural STEP checks: refs resolve, CLOSED_SHELL edges each used by exactly two oriented faces (opposite sense). */
+/**
+ * Structural STEP checks: refs resolve, CLOSED_SHELL edges each used by exactly two face loops, traversed in
+ * opposite directions (loop direction = ORIENTED_EDGE sense x FACE_BOUND sense; same_sense only concerns the normal).
+ */
 export function checkStep(text: string): ExportCheck {
   const errors: string[] = [];
   if (!text.startsWith("ISO-10303-21;") || !text.trimEnd().endsWith("END-ISO-10303-21;")) errors.push("bad envelope");
@@ -351,7 +354,6 @@ export function checkStep(text: string): ExportCheck {
     for (const f of faces) {
       const face = ents.get(f);
       if (!face) continue;
-      const faceSense = /,\.T\.\)$/.test(face.body) ? 1 : -1;
       const bounds = [...face.body.matchAll(/#(\d+)/g)].map((m) => ents.get(+m[1])).filter((x) => x && x.type === "FACE_OUTER_BOUND");
       for (const bd of bounds) {
         const loop = ents.get(+/#(\d+)/.exec(bd!.body)![1]);
@@ -360,7 +362,7 @@ export function checkStep(text: string): ExportCheck {
           const oe = ents.get(+m[1]);
           if (!oe || oe.type !== "ORIENTED_EDGE") continue;
           const edgeId = +/#(\d+),\.[TF]\.\)$/.exec(oe.body)![1];
-          const sense = (/,\.T\.\)$/.test(oe.body) ? 1 : -1) * faceSense;
+          const sense = (/,\.T\.\)$/.test(oe.body) ? 1 : -1) * (/,\.T\.\)$/.test(bd!.body) ? 1 : -1);
           const arr = use.get(edgeId) ?? [];
           arr.push(sense);
           use.set(edgeId, arr);
@@ -445,4 +447,169 @@ export function worstDihedrals(mesh: TriMesh, n = 10, filter?: (s0: number, s1: 
   }
   out.sort((x, y) => y.ang - x.ang);
   return out.slice(0, n);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Geometric export checks: read the B-spline surfaces back and compare with the mesh.
+// ---------------------------------------------------------------------------------------------
+
+import { evalSurface, type NurbsNet } from "./export-nurbs";
+
+/** Parse every Rational B-Spline Surface (128) of an IGES file back into control nets (i = U index, fastest). */
+export function parseIgesSurfaces(text: string): NurbsNet[] {
+  const lines = text.split("\n").filter((l) => l.length >= 73);
+  const dLines = lines.filter((l) => l[72] === "D");
+  const pLines = lines.filter((l) => l[72] === "P");
+  const out: NurbsNet[] = [];
+  for (let k = 0; k + 1 < dLines.length; k += 2) {
+    const pstart = parseInt(dLines[k].slice(8, 16), 10);
+    const pcount = parseInt(dLines[k + 1].slice(24, 32), 10);
+    const payload = pLines
+      .slice(pstart - 1, pstart - 1 + pcount)
+      .map((l) => l.slice(0, 64))
+      .join("")
+      .trim();
+    const v = payload.slice(0, -1).split(",").map((t) => +t.trim());
+    const k1 = v[1], k2 = v[2], m1 = v[3], m2 = v[4];
+    let o = 10;
+    const U = v.slice(o, o + k1 + m1 + 2);
+    o += U.length;
+    const V = v.slice(o, o + k2 + m2 + 2);
+    o += V.length;
+    o += (k1 + 1) * (k2 + 1); // weights
+    const ctrl: [number, number, number][][] = Array.from({ length: k1 + 1 }, () => new Array(k2 + 1));
+    for (let j = 0; j <= k2; j++)
+      for (let i = 0; i <= k1; i++) {
+        ctrl[i][j] = [v[o], v[o + 1], v[o + 2]];
+        o += 3;
+      }
+    out.push({ p: m1, q: m2, U, V, ctrl });
+  }
+  return out;
+}
+
+/** Parse the B_SPLINE_SURFACE_WITH_KNOTS faces of a STEP file: net, same_sense flag, face name. */
+export function parseStepSurfaces(text: string): { net: NurbsNet; sameSense: boolean; name: string }[] {
+  const ents = parseStep(text);
+  const out: { net: NurbsNet; sameSense: boolean; name: string }[] = [];
+  const pointOf = (id: number): [number, number, number] => {
+    const m = /\(\s*([^,()]+),([^,()]+),([^,()]+)\)\s*\)\s*$/.exec(ents.get(id)!.body)!;
+    return [+m[1], +m[2], +m[3]];
+  };
+  const expand = (mult: number[], kn: number[]) => {
+    const K: number[] = [];
+    mult.forEach((m, i) => { for (let r = 0; r < m; r++) K.push(kn[i]); });
+    return K;
+  };
+  for (const e of ents.values()) {
+    if (e.type !== "ADVANCED_FACE") continue;
+    const sameSense = /,\.T\.\)$/.test(e.body);
+    const name = /^ADVANCED_FACE\('([^']*)'/.exec(e.body)?.[1] ?? "";
+    const surfId = [...e.body.matchAll(/#(\d+)/g)].map((m) => +m[1]).map((id) => ents.get(id)).find((x) => x && x.type === "B_SPLINE_SURFACE_WITH_KNOTS");
+    if (!surfId) continue;
+    const b = surfId.body;
+    const head = /^B_SPLINE_SURFACE_WITH_KNOTS\('[^']*',(\d+),(\d+),\((.*?)\),\.[A-Z_]+\.,\.[TF]\.,\.[TF]\.,\.[TF]\.,\(([\d,]+)\),\(([\d,]+)\),\(([^)]*)\),\(([^)]*)\),\.[A-Z_]+\.\)$/s.exec(b);
+    if (!head) continue;
+    const rows = [...head[3].matchAll(/\(([^()]*)\)/g)].map((m) => [...m[1].matchAll(/#(\d+)/g)].map((r) => pointOf(+r[1])));
+    const mu = head[4].split(",").map(Number), mv = head[5].split(",").map(Number);
+    const ku = head[6].split(",").map(Number), kv = head[7].split(",").map(Number);
+    out.push({ net: { p: +head[1], q: +head[2], U: expand(mu, ku), V: expand(mv, kv), ctrl: rows }, sameSense, name });
+  }
+  return out;
+}
+
+/** Sample surfaces on an n x n parameter grid. */
+export function sampleSurfaces(nets: NurbsNet[], n = 12): [number, number, number][] {
+  const pts: [number, number, number][] = [];
+  for (const net of nets) for (let a = 0; a <= n; a++) for (let b = 0; b <= n; b++) pts.push(evalSurface(net, a / n, b / n));
+  return pts;
+}
+
+/** Largest distance from any sample point to the closest mesh triangle (brute force; keep meshes small). */
+export function maxDistanceToMesh(points: [number, number, number][], mesh: TriMesh): number {
+  const nt = mesh.indices.length / 3;
+  const T: number[][] = [];
+  for (let t = 0; t < nt; t++) {
+    const [a, b, c] = tri(mesh, t);
+    T.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]]);
+  }
+  let worst = 0;
+  for (const p of points) {
+    let best = Infinity;
+    for (const q of T) {
+      const d = pointTriDist(p, q);
+      if (d < best) best = d;
+      if (best < 1e-12) break;
+    }
+    if (best > worst) worst = best;
+  }
+  return worst;
+}
+
+function pointTriDist(p: number[], t: number[]): number {
+  // Ericson, Real-Time Collision Detection: closest point on triangle
+  const ab = [t[3] - t[0], t[4] - t[1], t[5] - t[2]];
+  const ac = [t[6] - t[0], t[7] - t[1], t[8] - t[2]];
+  const ap = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
+  const dot = (u: number[], v: number[]) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const d1 = dot(ab, ap), d2 = dot(ac, ap);
+  let cp: number[];
+  if (d1 <= 0 && d2 <= 0) cp = [t[0], t[1], t[2]];
+  else {
+    const bp = [p[0] - t[3], p[1] - t[4], p[2] - t[5]];
+    const d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3) cp = [t[3], t[4], t[5]];
+    else {
+      const vc = d1 * d4 - d3 * d2;
+      if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const v = d1 / (d1 - d3);
+        cp = [t[0] + v * ab[0], t[1] + v * ab[1], t[2] + v * ab[2]];
+      } else {
+        const cpv = [p[0] - t[6], p[1] - t[7], p[2] - t[8]];
+        const d5 = dot(ab, cpv), d6 = dot(ac, cpv);
+        if (d6 >= 0 && d5 <= d6) cp = [t[6], t[7], t[8]];
+        else {
+          const vb = d5 * d2 - d1 * d6;
+          if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+            const w = d2 / (d2 - d6);
+            cp = [t[0] + w * ac[0], t[1] + w * ac[1], t[2] + w * ac[2]];
+          } else {
+            const va = d3 * d6 - d5 * d4;
+            if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+              const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+              cp = [t[3] + w * (t[6] - t[3]), t[4] + w * (t[7] - t[4]), t[5] + w * (t[8] - t[5])];
+            } else {
+              const den = 1 / (va + vb + vc);
+              const v = vb * den, w = vc * den;
+              cp = [t[0] + ab[0] * v + ac[0] * w, t[1] + ab[1] * v + ac[1] * w, t[2] + ab[2] * v + ac[2] * w];
+            }
+          }
+        }
+      }
+    }
+  }
+  return Math.hypot(p[0] - cp[0], p[1] - cp[1], p[2] - cp[2]);
+}
+
+/** Enclosed volume of the STEP B-rep from its surfaces and same_sense flags (positive = outward). */
+export function stepBrepVolume(text: string, n = 20): number {
+  let vol = 0;
+  for (const f of parseStepSurfaces(text)) {
+    let sum = 0;
+    const h = 1e-5;
+    for (let a = 0; a < n; a++)
+      for (let b = 0; b < n; b++) {
+        const u = (a + 0.5) / n, v = (b + 0.5) / n;
+        const P = evalSurface(f.net, u, v);
+        const u1 = Math.min(1, u + h), u0 = Math.max(0, u - h), v1 = Math.min(1, v + h), v0 = Math.max(0, v - h);
+        const A1 = evalSurface(f.net, u1, v), A0 = evalSurface(f.net, u0, v), B1 = evalSurface(f.net, u, v1), B0 = evalSurface(f.net, u, v0);
+        const Su = [(A1[0] - A0[0]) / (u1 - u0), (A1[1] - A0[1]) / (u1 - u0), (A1[2] - A0[2]) / (u1 - u0)];
+        const Sv = [(B1[0] - B0[0]) / (v1 - v0), (B1[1] - B0[1]) / (v1 - v0), (B1[2] - B0[2]) / (v1 - v0)];
+        const nx = Su[1] * Sv[2] - Su[2] * Sv[1], ny = Su[2] * Sv[0] - Su[0] * Sv[2], nz = Su[0] * Sv[1] - Su[1] * Sv[0];
+        sum += (P[0] * nx + P[1] * ny + P[2] * nz) / 3;
+      }
+    vol += (f.sameSense ? 1 : -1) * (sum / (n * n));
+  }
+  return vol;
 }
