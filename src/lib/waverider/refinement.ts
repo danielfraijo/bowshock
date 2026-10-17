@@ -425,7 +425,7 @@ export function estimateCost(r: RefinementSettings): CostEstimate {
   const L = REFINEMENT_LIMITS;
   return {
     surfacePointsPerSheet: r.surface.nx * r.surface.ny,
-    surfaceTrianglesApprox: Math.round(4 * (r.surface.nx - 1) * (r.surface.ny - 1) * 1.04),
+    surfaceTrianglesApprox: Math.round(4 * (r.surface.nx - 1) * (r.surface.ny - 1)),
     wedgeCells,
     wedgeWork,
     wedgeSeconds: wedgeWork / COST_MODEL.jsRateWedge,
