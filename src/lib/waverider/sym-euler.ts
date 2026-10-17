@@ -8,6 +8,9 @@ import type { Atmosphere } from "./atmosphere";
 import { effectiveLeRadius } from "./blunt";
 import { EULER_WASM_B64 } from "./euler-wasm";
 import type { PanelAero } from "./panel";
+// [mesh-refinement]
+import { LEGACY, MEDIUM, estimateShockHeights, isBaseline, shockFractionFromHeight, stripDims, type RefinementSettings } from "./refinement";
+import { solveStrip, solveStripAsync, stripDomain, stripGridOf } from "./strip-euler";
 import { SURFACE_ID, type DesignParams, type SurfaceGrid, type TriMesh, type Vec3 } from "./types";
 
 export interface Centerline {
@@ -66,6 +69,8 @@ export function bindCenterline(mesh: TriMesh, upper: SurfaceGrid, lower: Surface
 type Kern = {
   alloc: (n: number) => number;
   solve: (ptr: number, n: number, mach: number, gamma: number, alpha: number) => number;
+  /** [mesh-refinement] present only in a wasm rebuilt from the updated crate; the shipped binary has no `euler_solve_ex`. */
+  solveEx?: (ptr: number, n: number, mach: number, gamma: number, alpha: number, ni: number, nj: number, iters: number, wallAmp: number, shockAmp: number, shockWidth: number, tol: number, sequence: number, cfl: number) => number;
   memory: WebAssembly.Memory;
   ptr: number;
   cap: number;
@@ -83,16 +88,119 @@ function kernel(): Kern {
   const exp = instance.exports as {
     euler_alloc: (n: number) => number;
     euler_solve: (ptr: number, n: number, mach: number, gamma: number, alpha: number) => number;
+    euler_solve_ex?: Kern["solveEx"];
     memory: WebAssembly.Memory;
   };
-  kern = { alloc: exp.euler_alloc, solve: exp.euler_solve, memory: exp.memory, ptr: 0, cap: 0 };
+  kern = { alloc: exp.euler_alloc, solve: exp.euler_solve, solveEx: exp.euler_solve_ex, memory: exp.memory, ptr: 0, cap: 0 };
   return kern;
 }
 
-function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, tag: string): Float64Array {
-  const key = `${tag}|${mach.toFixed(2)}|${gamma.toFixed(3)}|${alpha.toFixed(3)}|${wall.x.length}|${wall.x[0].toFixed(4)}|${wall.z[wall.z.length >> 1].toFixed(4)}|${wall.x[wall.x.length - 1].toFixed(4)}`;
+/** [mesh-refinement] Grid-refined solve in TypeScript (see strip-euler.ts). Used for every setting except the baseline. */
+function refinedPlan(wall: Centerline, mach: number, gamma: number, alpha: number, ref: RefinementSettings, noseR: number) {
+  const v = ref.volume;
+  const d = stripDims(v);
+  const dom = stripDomain(wall.x, wall.z);
+  const shockOn = v.shockClustering > 0 || v.adaptive;
+  let shockS: Float64Array | null = null;
+  if (shockOn) {
+    const xs = new Float64Array(d.ni + 1);
+    for (let i = 0; i <= d.ni; i++) xs[i] = dom.xmin + ((dom.xmax - dom.xmin) * i) / d.ni;
+    const h = estimateShockHeights(wall.x, wall.z, xs, Math.max(1.05, mach), gamma, alpha, dom.sign as 1 | -1, noseR);
+    shockS = new Float64Array(d.ni + 1);
+    for (let i = 0; i <= d.ni; i++) shockS[i] = shockFractionFromHeight(h[i], dom.hFar, LEGACY.strip.wallExp);
+  }
+  return { v, d, shockS };
+}
+
+function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: number, ref: RefinementSettings, noseR: number): Float64Array {
+  const { v, d, shockS } = refinedPlan(wall, mach, gamma, alpha, ref, noseR);
+  const adaptive = v.adaptive;
+  // Rebuilt wasm (has euler_solve_ex): run the clustered static grid there. Not exercised by the shipped
+  // binary; any failure falls through to the TypeScript solver, which is cross-checked against the Rust tests.
+  // the (rebuilt) wasm entry point does first-order solves with the tolerance stop + sequencing; MUSCL and the adaptive re-cluster run in TypeScript
+  if (!adaptive && (v.order ?? 1) === 1) {
+    try {
+      const k = kernel();
+      if (k.solveEx) {
+        const n = wall.x.length;
+        const need = (n * 3 + d.ni + 1 + 16) * 8;
+        if (k.cap < need) {
+          k.ptr = k.alloc(need);
+          k.cap = need;
+        }
+        const view = new Float64Array(k.memory.buffer, k.ptr, n * 3 + d.ni + 1);
+        for (let i = 0; i < n; i++) {
+          view[i * 2] = wall.x[i];
+          view[i * 2 + 1] = wall.z[i];
+        }
+        for (let i = 0; i <= d.ni; i++) view[n * 3 + i] = shockS ? shockS[i] : 0.3;
+        const res = k.solveEx(k.ptr, n, mach, gamma, alpha, d.ni, d.nj, d.iters, v.wallClustering, shockS ? v.shockClustering : 0, v.shockWidth, v.tol ?? 0, v.sequence ?? 0, 0);
+        if (res >= 0 && Number.isFinite(res)) return new Float64Array(new Float64Array(k.memory.buffer, k.ptr + n * 16, n));
+      }
+    } catch {
+      /* fall through to TypeScript */
+    }
+  }
+  return solveStrip(wall.x, wall.z, mach, gamma, alpha, stripGridOf(v, shockS)).cp;
+}
+
+function refKey(ref?: RefinementSettings): string {
+  if (!ref || isBaseline(ref)) return "";
+  const v = ref.volume;
+  return `|R${v.nStream}x${v.nCross}x${v.iters}w${v.wallClustering}s${v.shockClustering}u${v.shockWidth}a${v.adaptive ? 1 : 0}t${v.tol ?? 0}o${v.order ?? 1}q${v.sequence ?? 0}`;
+}
+
+/** [mesh-refinement] FNV-1a over the exact bytes of both wall arrays: the cache key sees the whole geometry, not three samples of it. */
+function wallHash(wall: Centerline): string {
+  let h = 0x811c9dc5;
+  for (const arr of [wall.x, wall.z]) {
+    const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    for (let i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+  }
+  return h.toString(16);
+}
+
+/** [mesh-refinement] true LRU (a hit moves the entry to the back); entries are tiny (one Cp array per wall). */
+const SOLVE_CACHE_MAX = 96;
+function remember(key: string, value: Float64Array) {
+  solved.delete(key);
+  solved.set(key, value);
+  while (solved.size > SOLVE_CACHE_MAX) {
+    const first = solved.keys().next().value;
+    if (first === undefined) break;
+    solved.delete(first);
+  }
+}
+
+/** Cache size / capacity / keys oldest-first (tests). */
+export function symmetryEulerCacheInfo() {
+  return { size: solved.size, max: SOLVE_CACHE_MAX, keys: [...solved.keys()] };
+}
+
+/** Clears the solve cache (tests / memory pressure). */
+export function clearSymmetryEulerCache() {
+  solved.clear();
+}
+
+function cpKey(wall: Centerline, mach: number, gamma: number, alpha: number, tag: string, ref?: RefinementSettings, noseR = 0): string {
+  return `${tag}|${mach.toFixed(2)}|${gamma.toFixed(3)}|${alpha.toFixed(3)}|${wall.x.length}|${wallHash(wall)}|${noseR.toFixed(5)}${refKey(ref)}`;
+}
+
+function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, tag: string, ref?: RefinementSettings, noseR = 0): Float64Array {
+  const key = cpKey(wall, mach, gamma, alpha, tag, ref, noseR);
   const hit = solved.get(key);
-  if (hit) return hit;
+  if (hit) {
+    remember(key, hit);
+    return hit;
+  }
+  if (ref && !isBaseline(ref)) {
+    const out = solveCpRefined(wall, mach, gamma, alpha, ref, noseR);
+    remember(key, out);
+    return out;
+  }
   const k = kernel();
   const n = wall.x.length;
   const need = (n * 3 + 16) * 8;
@@ -107,11 +215,7 @@ function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, t
   }
   k.solve(k.ptr, n, mach, gamma, alpha);
   const out = new Float64Array(new Float64Array(k.memory.buffer, k.ptr + n * 16, n));
-  solved.set(key, out);
-  if (solved.size > 256) {
-    const first = solved.keys().next().value;
-    if (first) solved.delete(first);
-  }
+  remember(key, out);
   return out;
 }
 
@@ -185,13 +289,19 @@ export function withSymmetryEuler(
       notes: [...base.notes, "Symmetry-plane Euler needs an upper/lower centerline — CBAERO coefficients kept."],
     };
   }
-  const mach = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
+  const machIn = params.lockFlight ? params.mach : params.flightMach;
+  if (!Number.isFinite(machIn) || !Number.isFinite(alphaDeg) || !Number.isFinite(params.gamma) || params.gamma <= 1) {
+    return { ...base, notes: [...base.notes, "Symmetry-plane Euler skipped: Mach / alpha / gamma is not a finite, valid number. CBAERO kept."] };
+  }
+  const mach = Math.max(1.05, machIn);
   const alpha = (alphaDeg * Math.PI) / 180;
   let up: Float64Array;
   let lo: Float64Array;
   try {
-    up = solveCp(walls.upper, mach, params.gamma, alpha, "u");
-    lo = solveCp(walls.lower, mach, params.gamma, alpha, "l");
+    const noseR = Math.max(effectiveLeRadius(params), 0.006 * params.length);
+    up = solveCp(walls.upper, mach, params.gamma, alpha, "u", params.refinement ?? MEDIUM, noseR);
+    lo = solveCp(walls.lower, mach, params.gamma, alpha, "l", params.refinement ?? MEDIUM, noseR);
+    if (!up.every(Number.isFinite) || !lo.every(Number.isFinite)) throw new Error("non-finite Cp");
   } catch (err) {
     return { ...base, notes: [...base.notes, `Euler kernel failed (${err instanceof Error ? err.message : "wasm"}). CBAERO kept.`] };
   }
@@ -317,6 +427,50 @@ export function withSymmetryEuler(
     notes: [
       ...base.notes.filter((n) => !n.startsWith("CBAERO-class") && !n.startsWith("Tangent") && !n.startsWith("Modified")),
       "Strip Euler: Rust HLLC on the symmetry plane (bow shock captured), blended into CBAERO off the centerline. Between a CBAERO panel run and Cart3D — not a volume mesh.",
+      ...(!isBaseline(params.refinement ?? MEDIUM)
+        ? [
+            `Mesh refinement "${(params.refinement ?? MEDIUM).preset}": symmetry-plane grid ${stripDims((params.refinement ?? MEDIUM).volume).ni}x${stripDims((params.refinement ?? MEDIUM).volume).nj}${(params.refinement ?? MEDIUM).volume.tol ? ` (converged to ${(params.refinement ?? MEDIUM).volume.tol} of peak residual, <= ${(params.refinement ?? MEDIUM).volume.iters} sweeps)` : ` x ${(params.refinement ?? MEDIUM).volume.iters} sweeps`}${(params.refinement ?? MEDIUM).volume.shockClustering > 0 || (params.refinement ?? MEDIUM).volume.wallClustering > 0 ? ", wall/shock clustering" : ""}${(params.refinement ?? MEDIUM).volume.adaptive ? " + adaptive re-cluster" : ""}${(params.refinement ?? MEDIUM).volume.order === 2 ? ", MUSCL" : ""} (TypeScript solver; choose "legacy" for the unconverged 88x28x42 wasm run of b5fdccc).`,
+          ]
+        : []),
     ],
   };
+}
+
+/**
+ * [mesh-refinement] Pre-solve both walls of a built vehicle into the solve cache without blocking the UI thread
+ * (the refined solver is chunked and yields to the event loop every `chunk` sweeps). A later synchronous
+ * `withSymmetryEuler` for the same geometry / flight condition / refinement is then a cache hit.
+ * Resolves to false when there is nothing to warm (baseline = the wasm run is already ~20 ms, or no centerline).
+ */
+export async function warmSymmetryEuler(
+  mesh: TriMesh,
+  params: DesignParams,
+  alphaDeg: number,
+  opts: { chunk?: number; signal?: { aborted: boolean }; onProgress?: (p: number) => void } = {},
+): Promise<boolean> {
+  const walls = wallsOf.get(mesh);
+  const ref = params.refinement ?? MEDIUM;
+  if (!walls || walls.upper.x.length < 4 || isBaseline(ref)) return false;
+  const machIn = params.lockFlight ? params.mach : params.flightMach;
+  if (!Number.isFinite(machIn) || !Number.isFinite(alphaDeg) || !Number.isFinite(params.gamma) || params.gamma <= 1) return false;
+  const mach = Math.max(1.05, machIn);
+  const alpha = (alphaDeg * Math.PI) / 180;
+  const noseR = Math.max(effectiveLeRadius(params), 0.006 * params.length);
+  let done = 0;
+  for (const [tag, wall] of [["u", walls.upper], ["l", walls.lower]] as const) {
+    const key = cpKey(wall, mach, params.gamma, alpha, tag, ref, noseR);
+    if (solved.has(key)) {
+      done++;
+      continue;
+    }
+    const { v, shockS } = refinedPlan(wall, mach, params.gamma, alpha, ref, noseR);
+    const r = await solveStripAsync(wall.x, wall.z, mach, params.gamma, alpha, stripGridOf(v, shockS), {
+      chunk: opts.chunk,
+      signal: opts.signal,
+      onProgress: (p) => opts.onProgress?.((done + p) / 2),
+    });
+    if (r.cp.every(Number.isFinite)) remember(key, r.cp);
+    done++;
+  }
+  return true;
 }

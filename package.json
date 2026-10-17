@@ -26,10 +26,14 @@
     "test:physics": "node --import ./scripts/ts-register.mjs src/lib/waverider/fidelity.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/physics.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/datapack.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/convergence.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/shapes.test.ts",
     "datapack": "node --import ./scripts/ts-register.mjs scripts/datapack-export.ts",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:datcom": "node scripts/datcom-run-tests.mjs",
+    "datcom": "node scripts/datcom-run.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",
+    "@fontsource/chakra-petch": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@hookform/resolvers": "^5.7.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",

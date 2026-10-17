@@ -215,7 +215,8 @@ export function panelAero(
   rates?: RateState,
 ): PanelAero {
   const notes: string[] = [];
-  const M = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
+  const machIn = params.lockFlight ? params.mach : params.flightMach;
+  const M = Math.max(1.05, Number.isFinite(machIn) ? machIn : 1.05); // [mesh-refinement] NaN Mach must not poison the totals
   const g = params.gamma;
   const method = params.aeroMethod;
   if (method === "euler") {

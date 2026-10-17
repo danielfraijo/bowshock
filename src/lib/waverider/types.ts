@@ -1,3 +1,6 @@
+// [mesh-refinement] optional user-selected mesh refinement (see refinement.ts). Absent = medium (same cell counts as the shipped run, but converged; "legacy" reproduces b5fdccc).
+import type { RefinementSettings } from "./refinement";
+
 export type WaveriderFamily =
   | "caret"
   | "cone"
@@ -48,6 +51,8 @@ export interface DesignParams {
   nx: number;
   ny: number;
   leRadius: number;
+  /** LE fillet blend: circular arc (G1, default) or a quintic blend with zero end curvature (G2). */
+  leBlend?: "circular" | "g2";
   leBlunt: boolean;
   halfModel: boolean;
   unit: LengthUnit;
@@ -79,6 +84,8 @@ export interface DesignParams {
   flowThrough: boolean;
   rhoKgM3: number;
   massKg: number;
+  /** [mesh-refinement] legacy / coarse / medium / fine / custom surface + Euler volume grid. Undefined = medium (converged). */
+  refinement?: RefinementSettings;
 }
 
 export const DEFAULT_PARAMS: DesignParams = {

@@ -58,9 +58,11 @@ export function cosineSpace(i: number, n: number) {
 
 /**
  * Chordwise sample fractions in [0, 1].
- * Cosine clustering is kept when its first gap is already at least `minGap`.
- * Otherwise the gaps are a geometric series whose first interval is
- * min(minGap, chord/(n-1)), so a swept tip cannot collapse into a sliver.
+ * Cosine clustering is kept when its first gap is already at least `minGap`. Otherwise the cosine
+ * distribution is blended continuously with the uniform one, f = (1-w) cos + w uniform, with w chosen so the
+ * first gap equals min(minGap, chord/(n-1)). The blend is continuous in `minGap` and `chord`, so
+ * neighbouring loft rows never switch grading regime (which twisted the cells between them into slivers),
+ * and the fractions stay strictly monotone.
  */
 export function chordFractions(n: number, chord: number, minGap: number): Float64Array {
   const out = new Float64Array(Math.max(n, 1));
@@ -71,42 +73,12 @@ export function chordFractions(n: number, chord: number, minGap: number): Float6
     out[k] = 1;
     return out;
   }
-  const cosGap = cosineSpace(1, n) * c;
-  if (cosGap >= minGap * 0.85) {
-    for (let i = 0; i < n; i++) out[i] = cosineSpace(i, n);
-    out[0] = 0;
-    out[k] = 1;
-    return out;
-  }
-  const uni = c / k;
-  const a = Math.min(Math.max(minGap, 0), uni);
-  if (!(a < uni * 0.98)) {
-    for (let i = 0; i < n; i++) out[i] = i / k;
-    return out;
-  }
-  const sum = (r: number) => (a * (r ** k - 1)) / (r - 1);
-  let lo = 1.0000001;
-  let hi = 1.2;
-  while (sum(hi) < c && hi < 4) hi = 1 + (hi - 1) * 2;
-  for (let it = 0; it < 48; it++) {
-    const mid = 0.5 * (lo + hi);
-    if (sum(mid) < c) lo = mid;
-    else hi = mid;
-  }
-  const r = 0.5 * (lo + hi);
+  const cosGap = cosineSpace(1, n);
+  const uniGap = 1 / k;
+  const want = Math.min(Math.max(minGap, 0) / c, uniGap);
+  const w = want <= cosGap || uniGap - cosGap < 1e-15 ? 0 : Math.min(1, (want - cosGap) / (uniGap - cosGap));
+  for (let i = 0; i < n; i++) out[i] = (1 - w) * cosineSpace(i, n) + w * (i / k);
   out[0] = 0;
-  let s = 0;
-  let gap = a;
-  for (let i = 1; i < n; i++) {
-    s += gap;
-    gap *= r;
-    out[i] = s / c;
-  }
-  const last = out[k] > 1e-15 ? out[k] : 1;
-  for (let i = 0; i < n; i++) out[i] /= last;
-  out[0] = 0;
-  out[k] = 1;
-  for (let i = 1; i < n; i++) if (out[i] < out[i - 1]) out[i] = out[i - 1];
   out[k] = 1;
   return out;
 }

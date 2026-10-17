@@ -1,7 +1,7 @@
 import type { LengthUnit, SurfaceGrid, TriMesh, Vec3 } from "./types";
 import { vcross, vnorm, vsub } from "./math";
-import { gridPoint } from "./mesh";
 import { surfacePatches } from "./export-plot3d";
+import { evalCurve, evalSurface, gridNet, interpolateNet, knotMultiplicities, type NurbsNet } from "./export-nurbs";
 
 function s(n: number): string {
   if (!Number.isFinite(n) || Math.abs(n) < 1e-15) return "0.";
@@ -32,7 +32,7 @@ ENDSEC;
 DATA;`;
 }
 
-function unitBlock(doc: StepDoc, unit: LengthUnit) {
+function unitBlock(doc: StepDoc, unit: LengthUnit, uncertainty = 1e-8) {
   const app = doc.add("APPLICATION_CONTEXT('automotive design')");
   doc.add(`APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2010,#${app})`);
   const pctx = doc.add(`PRODUCT_CONTEXT('',#${app},'mechanical')`);
@@ -54,7 +54,7 @@ function unitBlock(doc: StepDoc, unit: LengthUnit) {
   }
   const angle = doc.add("(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))");
   const solid = doc.add("(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())");
-  const uncVal = doc.add("LENGTH_MEASURE(1.E-8)");
+  const uncVal = doc.add(`LENGTH_MEASURE(${s(uncertainty)})`);
   const unc = doc.add(
     `UNCERTAINTY_MEASURE_WITH_UNIT(#${uncVal},#${lengthUnit},'distance_accuracy_value','closure')`,
   );
@@ -109,194 +109,229 @@ export function meshToFacetedStep(mesh: TriMesh, name: string, unit: LengthUnit)
   return `${stepHeader(name)}\n${doc.lines.join("\n")}\nENDSEC;\nEND-ISO-10303-21;\n`;
 }
 
-function splineKnots(nPoles: number, degree: number): { knots: number[]; mult: number[] } {
-  const p = Math.min(degree, Math.max(1, nPoles - 1));
-  const knots: number[] = [];
-  const mult: number[] = [];
-  knots.push(0);
-  mult.push(p + 1);
-  const internal = nPoles - p - 1;
-  for (let i = 1; i <= internal; i++) {
-    knots.push(i / (internal + 1));
-    mult.push(1);
-  }
-  knots.push(1);
-  mult.push(p + 1);
-  return { knots, mult };
-}
-
-function emitBSplineSurface(doc: StepDoc, poles: Vec3[][], degree = 3): number {
-  const ni = poles.length;
-  const nj = poles[0].length;
-  const p1 = Math.min(degree, ni - 1);
-  const p2 = Math.min(degree, nj - 1);
-  const ids: number[][] = [];
-  for (let i = 0; i < ni; i++) {
-    const row: number[] = [];
-    for (let j = 0; j < nj; j++) {
-      const p = poles[i][j];
-      row.push(doc.add(`CARTESIAN_POINT('',(${s(p[0])},${s(p[1])},${s(p[2])}))`));
-    }
-    ids.push(row);
-  }
-  const ku = splineKnots(ni, p1);
-  const kv = splineKnots(nj, p2);
+function emitBSplineSurface(doc: StepDoc, net: NurbsNet): number {
+  const ids = net.ctrl.map((row) => row.map((p) => doc.add(`CARTESIAN_POINT('',(${s(p[0])},${s(p[1])},${s(p[2])}))`)));
+  const ku = knotMultiplicities(net.U);
+  const kv = knotMultiplicities(net.V);
   const grid = ids.map((row) => `(${row.map((id) => `#${id}`).join(",")})`).join(",");
   return doc.add(
-    `B_SPLINE_SURFACE_WITH_KNOTS('',${p1},${p2},(${grid}),.UNSPECIFIED.,.F.,.F.,.F.,(${ku.mult.join(",")}),(${kv.mult.join(",")}),(${ku.knots.map(s).join(",")}),(${kv.knots.map(s).join(",")}),.UNSPECIFIED.)`,
+    `B_SPLINE_SURFACE_WITH_KNOTS('',${net.p},${net.q},(${grid}),.UNSPECIFIED.,.F.,.F.,.F.,(${ku.mult.join(",")}),(${kv.mult.join(",")}),(${ku.knots.map(s).join(",")}),(${kv.knots.map(s).join(",")}),.UNSPECIFIED.)`,
   );
 }
 
-function emitBSplineCurve(doc: StepDoc, poles: Vec3[], degree = 3): number {
-  const n = poles.length;
-  const p = Math.min(degree, n - 1);
-  const ids = poles.map((pt) => doc.add(`CARTESIAN_POINT('',(${s(pt[0])},${s(pt[1])},${s(pt[2])}))`));
-  const k = splineKnots(n, p);
-  return doc.add(
-    `B_SPLINE_CURVE_WITH_KNOTS('',${p},(${ids.map((id) => `#${id}`).join(",")}),.UNSPECIFIED.,.F.,.F.,(${k.mult.join(",")}),(${k.knots.map(s).join(",")}),.UNSPECIFIED.)`,
-  );
+interface EdgeGeom {
+  /** control points / degree / knots of the boundary iso-curve (exactly on the surface) */
+  ctrl: Vec3[];
+  p: number;
+  K: number[];
 }
 
-function keepDenseU(g: SurfaceGrid): boolean {
-  return (
-    g.ni <= 4 ||
-    g.name === "leading" ||
-    g.name === "cowl_lip" ||
-    g.name === "tip_l" ||
-    g.name === "tip_r" ||
-    g.name.startsWith("side") ||
-    g.name.startsWith("base") ||
-    g.name.startsWith("inlet") ||
-    g.name.startsWith("nozzle")
-  );
+function pointAt(e: EdgeGeom, t: number): Vec3 {
+  return evalCurve(e.ctrl, e.p, e.K, t);
 }
 
-function gridToPoles(g: SurfaceGrid, capU = 80, capV = 64): Vec3[][] {
-  const nu = keepDenseU(g) ? g.ni : Math.min(g.ni, capU);
-  const nv = Math.min(g.nj, capV);
-  const poles: Vec3[][] = [];
-  for (let iu = 0; iu < nu; iu++) {
-    const i = iu === nu - 1 ? g.ni - 1 : Math.round((iu * (g.ni - 1)) / Math.max(nu - 1, 1));
-    const row: Vec3[] = [];
-    for (let jv = 0; jv < nv; jv++) {
-      const j = jv === nv - 1 ? g.nj - 1 : Math.round((jv * (g.nj - 1)) / Math.max(nv - 1, 1));
-      row.push(gridPoint(g, i, j));
-    }
-    poles.push(row);
-  }
-  return poles;
+function close3(a: Vec3, b: Vec3, tol: number) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= tol;
 }
 
-function qk(p: Vec3): string {
-  return `${Math.round(p[0] * 1e7)}:${Math.round(p[1] * 1e7)}:${Math.round(p[2] * 1e7)}`;
+interface PatchFace {
+  name: string;
+  net: NurbsNet;
+  /** canonical CCW (in u,v) boundary: v=0, u=max, v=max reversed, u=0 reversed */
+  sides: { geom: EdgeGeom; reversed: boolean }[];
 }
 
-function curveKey(poles: Vec3[]): { key: string; reversed: boolean } {
-  const a = qk(poles[0]);
-  const b = qk(poles[poles.length - 1]);
-  const m = qk(poles[Math.floor(poles.length / 2)]);
-  if (a < b || (a === b && m <= qk(poles[Math.floor((poles.length - 1) / 2)]))) {
-    return { key: `${a}|${b}|${m}`, reversed: false };
-  }
-  return { key: `${b}|${a}|${m}`, reversed: true };
-}
-
-function vertex(doc: StepDoc, p: Vec3, cache: Map<string, { pt: number; vx: number }>): { pt: number; vx: number } {
-  const k = qk(p);
-  const hit = cache.get(k);
-  if (hit) return hit;
-  const pt = doc.add(`CARTESIAN_POINT('',(${s(p[0])},${s(p[1])},${s(p[2])}))`);
-  const vx = doc.add(`VERTEX_POINT('',#${pt})`);
-  const rec = { pt, vx };
-  cache.set(k, rec);
-  return rec;
-}
-
-function emitEdge(
-  doc: StepDoc,
-  poles: Vec3[],
-  verts: Map<string, { pt: number; vx: number }>,
-  edges: Map<string, { id: number }>,
-): { id: number; same: boolean } {
-  const { key, reversed } = curveKey(poles);
-  const hit = edges.get(key);
-  if (hit) return { id: hit.id, same: !reversed };
-  const pts = reversed ? [...poles].reverse() : poles;
-  const v0 = vertex(doc, pts[0], verts);
-  const v1 = vertex(doc, pts[pts.length - 1], verts);
-  const curve = emitBSplineCurve(doc, pts, Math.min(3, pts.length - 1));
-  const id = doc.add(`EDGE_CURVE('',#${v0.vx},#${v1.vx},#${curve},.T.)`);
-  edges.set(key, { id });
-  return { id, same: !reversed };
-}
-
-function emitSewnFace(
-  doc: StepDoc,
-  poles: Vec3[][],
-  name: string,
-  verts: Map<string, { pt: number; vx: number }>,
-  edges: Map<string, { id: number }>,
-): number | null {
-  const ni = poles.length;
-  const nj = poles[0].length;
-  const surf = emitBSplineSurface(doc, poles, 3);
-  const raw: Vec3[][] = [
-    poles.map((row) => row[0]),
-    poles[ni - 1],
-    poles.map((row) => row[nj - 1]).reverse(),
-    [...poles[0]].reverse(),
+function patchFace(name: string, net: NurbsNet, tol: number): PatchFace | null {
+  const ni = net.ctrl.length;
+  const nj = net.ctrl[0].length;
+  const col = (j: number) => net.ctrl.map((row) => row[j]);
+  const raw: { geom: EdgeGeom; reversed: boolean }[] = [
+    { geom: { ctrl: col(0), p: net.p, K: net.U }, reversed: false },
+    { geom: { ctrl: net.ctrl[ni - 1], p: net.q, K: net.V }, reversed: false },
+    { geom: { ctrl: col(nj - 1), p: net.p, K: net.U }, reversed: true },
+    { geom: { ctrl: net.ctrl[0], p: net.q, K: net.V }, reversed: true },
   ];
-  const kept = raw.filter((c) => {
-    let len = 0;
-    for (let i = 1; i < c.length; i++) {
-      const d = Math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1], c[i][2] - c[i - 1][2]);
-      len += d;
+  const sides = raw.filter((e) => !close3(pointAt(e.geom, 0), pointAt(e.geom, 1), tol) || !close3(pointAt(e.geom, 0), pointAt(e.geom, 0.5), tol));
+  if (sides.length < 2) return null;
+  return { name, net, sides };
+}
+
+/** Surface integral of P.(Su x Sv)/3 over the patch (positive when the loop-consistent normal points away from the origin). */
+function patchVolumeTerm(net: NurbsNet, n = 24): number {
+  let sum = 0;
+  const h = 1e-5;
+  for (let a = 0; a < n; a++) {
+    for (let b = 0; b < n; b++) {
+      const u = (a + 0.5) / n;
+      const v = (b + 0.5) / n;
+      const P = evalSurface(net, u, v);
+      const Pu1 = evalSurface(net, Math.min(1, u + h), v);
+      const Pu0 = evalSurface(net, Math.max(0, u - h), v);
+      const Pv1 = evalSurface(net, u, Math.min(1, v + h));
+      const Pv0 = evalSurface(net, u, Math.max(0, v - h));
+      const du = Math.min(1, u + h) - Math.max(0, u - h);
+      const dv = Math.min(1, v + h) - Math.max(0, v - h);
+      const Su: Vec3 = [(Pu1[0] - Pu0[0]) / du, (Pu1[1] - Pu0[1]) / du, (Pu1[2] - Pu0[2]) / du];
+      const Sv: Vec3 = [(Pv1[0] - Pv0[0]) / dv, (Pv1[1] - Pv0[1]) / dv, (Pv1[2] - Pv0[2]) / dv];
+      const nrm = vcross(Su, Sv);
+      sum += (P[0] * nrm[0] + P[1] * nrm[1] + P[2] * nrm[2]) / 3;
     }
-    return len > 1e-10;
-  });
-  if (kept.length < 2) return null;
-  const oriented = kept.map((c) => emitEdge(doc, c, verts, edges));
-  const os = oriented.map((e) => doc.add(`ORIENTED_EDGE('',*,*,#${e.id},${e.same ? ".T." : ".F."})`));
-  const loop = doc.add(`EDGE_LOOP('',(${os.map((id) => `#${id}`).join(",")}))`);
-  const bound = doc.add(`FACE_OUTER_BOUND('',#${loop},.T.)`);
-  return doc.add(`ADVANCED_FACE('${name}',(#${bound}),#${surf},.T.)`);
+  }
+  return sum / (n * n);
 }
 
 /**
- * Sewn NURBS B-rep: degree-3 B-splines, shared EDGE_CURVE on coincident
- * boundaries, CLOSED_SHELL + MANIFOLD_SOLID_BREP. Pointwise / SolidWorks /
- * FreeCAD import this as surfaces (not a control-point cloud). Dense
- * degree-1 poles were the cyan scatter.
+ * Sewn NURBS B-rep: interpolating degree-3 B-spline faces, one shared EDGE_CURVE per coincident boundary,
+ * CLOSED_SHELL + MANIFOLD_SOLID_BREP. Face loops are oriented consistently (every edge is traversed once
+ * in each direction) and outward (positive enclosed volume); ADVANCED_FACE.same_sense follows the loop
+ * direction. Boundaries are matched by geometry (end points + dense polyline distance), and the file's
+ * global distance uncertainty is the worst matched deviation actually measured (not a hopeful constant).
  */
 export function gridsToNurbsStep(grids: SurfaceGrid[], name: string, unit: LengthUnit): string {
   const usable = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2);
-  if (!usable.length) {
-    return meshToFacetedStep(
-      { positions: new Float64Array(), indices: new Uint32Array(), surfaces: new Uint8Array() },
-      name,
-      unit,
-    );
+  const empty = () =>
+    meshToFacetedStep({ positions: new Float64Array(), indices: new Uint32Array(), surfaces: new Uint8Array() }, name, unit);
+  if (!usable.length) return empty();
+
+  let extent = 1e-9;
+  for (const g of usable) for (let k = 0; k < g.xyz.length; k++) extent = Math.max(extent, Math.abs(g.xyz[k]));
+  const tol = 2e-5 * extent;
+
+  const faces: PatchFace[] = [];
+  for (const g of usable) {
+    const f = patchFace(g.name || "surface", interpolateNet(gridNet(g, 200), 3), 1e-9 * extent);
+    if (f) faces.push(f);
+  }
+  if (!faces.length) return empty();
+
+  // unique edges: same end points (either direction) and the same curve (dense polyline distance both ways)
+  interface Edge {
+    geom: EdgeGeom;
+    poly: Vec3[];
+    uses: { face: number; side: number; dir: 1 | -1 }[];
+  }
+  const polyOf = (e: EdgeGeom, n = 96) => Array.from({ length: n + 1 }, (_, k) => pointAt(e, k / n));
+  const segDist = (p: Vec3, a: Vec3, b: Vec3) => {
+    const ab: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / l2)) : 0;
+    return Math.hypot(p[0] - a[0] - t * ab[0], p[1] - a[1] - t * ab[1], p[2] - a[2] - t * ab[2]);
+  };
+  const toPoly = (p: Vec3, poly: Vec3[]) => {
+    let d = Infinity;
+    for (let k = 0; k + 1 < poly.length; k++) d = Math.min(d, segDist(p, poly[k], poly[k + 1]));
+    return d;
+  };
+  const curveGap = (A: Vec3[], B: Vec3[]) => {
+    let g = 0;
+    for (let k = 0; k < A.length; k += 4) g = Math.max(g, toPoly(A[k], B));
+    for (let k = 0; k < B.length; k += 4) g = Math.max(g, toPoly(B[k], A));
+    return g;
+  };
+  const matchTol = 4e-4 * extent;
+  let worstMatch = 0;
+  const edges: Edge[] = [];
+  const edgeOf: { edge: number; dir: 1 | -1 }[][] = faces.map(() => []);
+  faces.forEach((f, fi) => {
+    f.sides.forEach((sd, si) => {
+      const geomDir: EdgeGeom = sd.reversed ? { ctrl: [...sd.geom.ctrl].reverse(), p: sd.geom.p, K: sd.geom.K.map((k) => 1 - k).reverse() } : sd.geom;
+      const poly = polyOf(geomDir);
+      const a = poly[0];
+      const b = poly[poly.length - 1];
+      let found = -1;
+      let dir: 1 | -1 = 1;
+      for (let e = 0; e < edges.length && found < 0; e++) {
+        const ea = edges[e].poly[0];
+        const eb = edges[e].poly[edges[e].poly.length - 1];
+        const fwd = close3(a, ea, tol) && close3(b, eb, tol);
+        const rev = close3(a, eb, tol) && close3(b, ea, tol);
+        if (!fwd && !rev) continue;
+        const gap = curveGap(poly, edges[e].poly);
+        if (gap > matchTol) continue;
+        worstMatch = Math.max(worstMatch, gap);
+        found = e;
+        dir = fwd ? 1 : -1;
+      }
+      if (found < 0) {
+        edges.push({ geom: geomDir, poly, uses: [] });
+        found = edges.length - 1;
+        dir = 1;
+      }
+      edges[found].uses.push({ face: fi, side: si, dir });
+      edgeOf[fi][si] = { edge: found, dir };
+    });
+  });
+  // the file declares the accuracy it actually achieves: worst edge-to-edge deviation of matched boundaries
+  const declared = Math.max(1e-6 * extent, 1.5 * worstMatch, tol * 0.5);
+
+  // consistent orientation by propagation over shared edges: flip_a*dir_a = -(flip_b*dir_b)
+  const flip = new Array<number>(faces.length).fill(0);
+  const comp = new Array<number>(faces.length).fill(-1);
+  let nComp = 0;
+  for (let s0 = 0; s0 < faces.length; s0++) {
+    if (flip[s0]) continue;
+    flip[s0] = 1;
+    comp[s0] = nComp;
+    const queue = [s0];
+    while (queue.length) {
+      const f = queue.pop()!;
+      for (let si = 0; si < faces[f].sides.length; si++) {
+        const { edge, dir } = edgeOf[f][si];
+        for (const u of edges[edge].uses) {
+          if (u.face === f || flip[u.face]) continue;
+          flip[u.face] = -flip[f] * dir * u.dir;
+          comp[u.face] = nComp;
+          queue.push(u.face);
+        }
+      }
+    }
+    nComp++;
+  }
+  // outward: per connected component, positive enclosed volume
+  const volTerm = faces.map((f) => patchVolumeTerm(f.net));
+  for (let c = 0; c < nComp; c++) {
+    let vol = 0;
+    faces.forEach((_, i) => {
+      if (comp[i] === c) vol += flip[i] * volTerm[i];
+    });
+    if (vol < 0) faces.forEach((_, i) => comp[i] === c && (flip[i] = -flip[i]));
   }
 
   const doc = new StepDoc();
-  const { pds, ctx } = unitBlock(doc, unit);
-  const verts = new Map<string, { pt: number; vx: number }>();
-  const edges = new Map<string, { id: number }>();
-  const faces: number[] = [];
-  for (const g of usable) {
-    const face = emitSewnFace(doc, gridToPoles(g), g.name || "surface", verts, edges);
-    if (face != null) faces.push(face);
-  }
-
-  if (!faces.length) {
-    return meshToFacetedStep(
-      { positions: new Float64Array(), indices: new Uint32Array(), surfaces: new Uint8Array() },
-      name,
-      unit,
+  const { pds, ctx } = unitBlock(doc, unit, declared);
+  const verts: { p: Vec3; pt: number; vx: number }[] = [];
+  const vertex = (p: Vec3) => {
+    for (const v of verts) if (close3(v.p, p, tol)) return v;
+    const pt = doc.add(`CARTESIAN_POINT('',(${s(p[0])},${s(p[1])},${s(p[2])}))`);
+    const vx = doc.add(`VERTEX_POINT('',#${pt})`);
+    const rec = { p, pt, vx };
+    verts.push(rec);
+    return rec;
+  };
+  const edgeIds = edges.map((e) => {
+    const v0 = vertex(pointAt(e.geom, 0));
+    const v1 = vertex(pointAt(e.geom, 1));
+    const ptIds = e.geom.ctrl.map((pt) => doc.add(`CARTESIAN_POINT('',(${s(pt[0])},${s(pt[1])},${s(pt[2])}))`));
+    const km = knotMultiplicities(e.geom.K);
+    const curve = doc.add(
+      `B_SPLINE_CURVE_WITH_KNOTS('',${e.geom.p},(${ptIds.map((id) => `#${id}`).join(",")}),.UNSPECIFIED.,.F.,.F.,(${km.mult.join(",")}),(${km.knots.map(s).join(",")}),.UNSPECIFIED.)`,
     );
-  }
+    return doc.add(`EDGE_CURVE('',#${v0.vx},#${v1.vx},#${curve},.T.)`);
+  });
 
-  const shell = doc.add(`CLOSED_SHELL('',(${faces.map((id) => `#${id}`).join(",")}))`);
+  const faceIds: number[] = [];
+  faces.forEach((f, fi) => {
+    const surf = emitBSplineSurface(doc, f.net);
+    // loop in canonical order; reversed (order and every sense) when the face is flipped
+    let seq = f.sides.map((_, si) => ({ id: edgeIds[edgeOf[fi][si].edge], same: edgeOf[fi][si].dir === 1 }));
+    if (flip[fi] < 0) seq = seq.reverse().map((o) => ({ ...o, same: !o.same }));
+    const os = seq.map((o) => doc.add(`ORIENTED_EDGE('',*,*,#${o.id},${o.same ? ".T." : ".F."})`));
+    const loop = doc.add(`EDGE_LOOP('',(${os.map((id) => `#${id}`).join(",")}))`);
+    const bound = doc.add(`FACE_OUTER_BOUND('',#${loop},.T.)`);
+    faceIds.push(doc.add(`ADVANCED_FACE('${f.name}',(#${bound}),#${surf},${flip[fi] > 0 ? ".T." : ".F."})`));
+  });
+
+  const shell = doc.add(`CLOSED_SHELL('',(${faceIds.map((id) => `#${id}`).join(",")}))`);
   const solid = doc.add(`MANIFOLD_SOLID_BREP('Cuspis',#${shell})`);
   const repr = doc.add(`ADVANCED_BREP_SHAPE_REPRESENTATION('',(#${solid}),#${ctx})`);
   doc.add(`SHAPE_DEFINITION_REPRESENTATION(#${pds},#${repr})`);
