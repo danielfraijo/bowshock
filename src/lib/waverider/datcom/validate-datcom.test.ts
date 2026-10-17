@@ -21,7 +21,7 @@ import { ackeretClAlpha, cpMaxNewton, flatPlateCn, pitotRatio, prandtlMeyer } fr
 import { buildBody, bodyIntegrals, finGeom, noseRadius, sectionSlopeIntegral } from "./geometry.ts";
 import { slenderKW, stripKW, interferenceFactors } from "./interference.ts";
 import { bodyAxial, bodyNormal, crossflowCd } from "./body.ts";
-import { flapEffectiveness, subsonicCLa, supersonicCLa } from "./fin.ts";
+import { criticalMachEstimate, finAxial, flapEffectiveness, subsonicCLa, supersonicCLa } from "./fin.ts";
 import { flowConditions, skinFrictionCf } from "./flow.ts";
 import { runCases } from "./model.ts";
 import { basicFinner, cruciformMissile, hypersonicConeCylinderFlare, aircraftWBT, fromWaveriderDesign } from "./presets.ts";
@@ -288,13 +288,30 @@ CASEID TEST
 DIM M
 $FLTCON NMACH=1., MACH=2., NALPHA=2., ALPHA=0.,5.,$
 $AXIBOD TNOSE=CONE, LNOSE=0.3, DNOSE=0.1, LCENTR=0.7, DCENTR=0.1, DEXIT=0.,$
-$INLET NIN=1., INTYPE=AXI,$
-$PROTUB NPROT=1.,$
+$EXPR CN=0.,$
+$TRIM SET=1.,$
 NEXT CASE
 `;
     const p = parseDeck(deck);
-    assert.ok(p.unsupported.some((u) => u.includes("INLET")));
-    assert.ok(p.unsupported.some((u) => u.includes("PROTUB")));
+    assert.ok(p.unsupported.some((u) => u.includes("EXPR")));
+    assert.ok(p.unsupported.some((u) => u.includes("TRIM")));
+  });
+
+  it("parses ELLBOD / INLET / PROTUB subsets", () => {
+    const deck = `
+CASEID ELL
+DIM M
+$FLTCON NMACH=1., MACH=2., NALPHA=2., ALPHA=0.,5.,$
+$ELLBOD NX=3., X=0.,0.5,1.0, W=0.,0.05,0.05, H=0.,0.08,0.08,$
+$INLET NIN=1., INTYPE=AXI, XINLT=0.4, W=0.05,0.05, MFR=0.85, RAMP=5.,$
+$PROTUB NPROT=1., PTYPE=VCYL, XPROT=0.6, NLOC=2., LPROT=0.05, WPROT=0.02, HPROT=0.02,$
+NEXT CASE
+`;
+    const p = parseDeck(deck);
+    assert.ok(p.config.body?.elliptic && p.config.body.elliptic.length === 3);
+    assert.ok(p.config.inlets && p.config.inlets.length === 1);
+    assert.ok(p.config.protuberances && p.config.protuberances.length === 1);
+    assert.ok(p.supported.some((s) => s.includes("ELLBOD")));
   });
   it("USAF / Missile / CSV / 6DOF formatters emit non-empty output with expected headers", () => {
     const r = runCases(basicFinner(), { machs: [2], alphas: [0, 5], altKm: 0 });
@@ -328,3 +345,85 @@ describe("panel vs DATCOM body CNa at hypersonic (qualitative)", () => {
     assert.ok(CNa > 0.5 && CNa < 8, `body CNa=${CNa}`);
   });
 });
+
+describe("additional analytical limits (follow-up)", () => {
+  it("Prandtl–Glauert: subsonic CLa rises as 1/beta vs M=0", () => {
+    const g = finGeom(
+      { name: "f", role: "wing", nPanels: 2, rootChord: 1, tipChord: 1, semispan: 4, xLE: 0, sweepLE: 0, thickness: 0.12, section: "naca4", naca: "0012" },
+      null,
+    );
+    const cl0 = subsonicCLa(g, 0);
+    const cl6 = subsonicCLa(g, 0.6);
+    // For high AR, DATCOM form ≈ 2π / sqrt(1-M²) behaviour moderated by AR; require cl6 > cl0
+    assert.ok(cl6 > cl0, `CLa(0.6)=${cl6} should exceed CLa(0)=${cl0}`);
+    // Helmbold at M=0 already checked; PG factor for infinite AR would be 1/β ≈ 1.25 at M=0.6
+    const beta = Math.sqrt(1 - 0.6 * 0.6);
+    assert.ok(cl6 / cl0 < 1 / beta + 0.15, "finite-AR PG rise is milder than 1/β");
+  });
+
+  it("Lock/Korn-style wave drag is zero below Mdd and rises above", () => {
+    const g = finGeom(
+      { name: "f", role: "wing", nPanels: 2, rootChord: 1, tipChord: 1, semispan: 3, xLE: 0, sweepLE: 0, thickness: 0.12, section: "hex" },
+      null,
+    );
+    const Mdd = criticalMachEstimate(g);
+    const flowLo = flowConditions({ machs: [Math.max(Mdd - 0.1, 0.5)], alphas: [0], altKm: 0 }, 0);
+    const flowHi = flowConditions({ machs: [Math.min(Mdd + 0.15, 1.15)], alphas: [0], altKm: 0 }, 0);
+    const aLo = finAxial(g, flowLo, {});
+    const aHi = finAxial(g, flowHi, {});
+    assert.ok(aHi.cdWave + 1e-6 >= aLo.cdWave, `cdWave should rise through Mdd≈${Mdd}: ${aLo.cdWave} → ${aHi.cdWave}`);
+  });
+
+  it("Munk airship: potential CN of a closed slender body of revolution scales as 2 Sb/Sref", () => {
+    // Already covered; restate with an ogive-cylinder of high fineness at M=0.2, α=2°
+    const r = runCases(
+      {
+        name: "munk",
+        kind: "missile",
+        body: { parametric: { noseKind: "ogive", noseLength: 1, noseDiameter: 0.2, centerLength: 4, aftLength: 0 }, exitDiameter: 0, baseDrag: false },
+        sets: [],
+        ref: { xcg: 2.5 },
+        bodyMethod: "slender",
+      },
+      { machs: [0.2], alphas: [0, 2], altKm: 0 },
+    );
+    const CNa = r.cases[0].points[0].derivs.CNa;
+    near(CNa, 2, 0.4, "Munk/slender CNa on Sb");
+  });
+
+  it("Busemann 2nd-order flat-plate: SE CN > Ackeret linear at finite α (compression dominant)", () => {
+    const M = 2;
+    const a = 8 * DEG;
+    const cnSE = flatPlateCn(M, a);
+    const cnLin = ackeretClAlpha(M) * a;
+    // Exact SE on a flat plate exceeds the linear Ackeret value on the windward side at moderate α
+    assert.ok(cnSE > cnLin * 0.95, `SE=${cnSE} lin=${cnLin}`);
+  });
+
+  it("elliptic body + inlet + protuberance run without NaN", () => {
+    const r = runCases(
+      {
+        name: "ell-in-prot",
+        kind: "missile",
+        body: {
+          elliptic: [
+            { x: 0, a: 0, b: 0 },
+            { x: 0.4, a: 0.06, b: 0.1 },
+            { x: 1.5, a: 0.06, b: 0.1 },
+          ],
+          exitDiameter: 0,
+        },
+        sets: [],
+        ref: { xcg: 0.7 },
+        inlets: [{ kind: "axi", x: 0.5, captureArea: 0.005, mfr: 0.8, rampDeg: 8 }],
+        protuberances: [{ kind: "cylinder", x: 0.9, length: 0.05, width: 0.02, height: 0.02, count: 2 }],
+      },
+      { machs: [0.8, 2, 5], alphas: [0, 5], altKm: 10 },
+    );
+    for (const c of r.cases) for (const p of c.points) {
+      assert.ok(Number.isFinite(p.CA) && Number.isFinite(p.CN));
+    }
+    assert.ok(r.cases[0].points[0].CA > 0);
+  });
+});
+

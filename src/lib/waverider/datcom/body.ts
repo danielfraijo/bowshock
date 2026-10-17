@@ -210,7 +210,11 @@ export function newtonWeight(ctx: BodyCtx): number {
 export function bodyNormal(ctx: BodyCtx, alphaT: number): BodyNormal {
   const { prof, ints, sRef, flow } = ctx;
   const notes: string[] = [];
-  const a = Math.abs(alphaT);
+  // Fold angles into [0, π] for the magnitude model (sin/cos based)
+  let a = Math.abs(alphaT);
+  if (a > Math.PI) a = a % (2 * Math.PI);
+  if (a > Math.PI) a = 2 * Math.PI - a;
+  a = Math.min(a, Math.PI);
   const M = flow.mach;
   const sgn = alphaT < 0 ? -1 : 1;
   const sa = Math.sin(a);

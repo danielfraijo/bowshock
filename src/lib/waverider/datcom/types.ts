@@ -50,10 +50,19 @@ export interface BodyParametric {
   aftDiameter?: number;
 }
 
+/** Elliptical cross-section station (Missile DATCOM ELLBOD option-2 style). a = half-width, b = half-height. */
+export interface EllipticStation {
+  x: number;
+  a: number;
+  b: number;
+}
+
 export interface BodySpec {
   /** Either a station/radius table (option 2) or the parametric form (option 1). */
   stations?: BodyStation[];
   parametric?: BodyParametric;
+  /** Elliptical body stations (ELLBOD). When set, overrides circular stations for area/perimeter/crossflow. */
+  elliptic?: EllipticStation[];
   /** Spherical bluntness radius applied to a station-table nose (m). */
   noseBluntRadius?: number;
   /**
@@ -63,6 +72,40 @@ export interface BodySpec {
   exitDiameter?: number;
   /** include base drag at all (default true when exitDiameter defined) */
   baseDrag?: boolean;
+}
+
+export type InletKind = "axi" | "2dside" | "2dtop";
+/** Engineering-level inlet increment (capture / additive drag / normal force). */
+export interface InletSpec {
+  name?: string;
+  kind: InletKind;
+  /** axial station of the capture plane from the nose [m] */
+  x: number;
+  /** capture area [m^2] */
+  captureArea: number;
+  /** mass-flow ratio m_dot/(rho V A_c); default 0.9. Additive drag grows as (1-MFR). */
+  mfr?: number;
+  /** external compression ramp angle [deg] (0 = pitot) */
+  rampDeg?: number;
+  /** roll position of the inlet [deg], Missile DATCOM convention */
+  phi?: number;
+  /** covered (plugged) inlet — full additive + frontal drag */
+  covered?: boolean;
+}
+
+export type ProtuberanceKind = "cylinder" | "wedge" | "hemisphere" | "block" | "fairing";
+/** Simple protuberance drag / normal-force increment. */
+export interface ProtuberanceSpec {
+  name?: string;
+  kind: ProtuberanceKind;
+  x: number;
+  length: number;
+  width: number;
+  height: number;
+  /** identical copies around the body */
+  count?: number;
+  /** roll of the first copy [deg] */
+  phi0?: number;
 }
 
 export interface FinSet {
@@ -128,6 +171,10 @@ export interface VehicleConfig {
   bodyMethod?: BodyMethod;
   /** vortex decay length in fin semispans for the downwash model (default 30, 0 or Infinity = none) */
   vortexDecaySemispans?: number;
+  /** optional inlets (engineering additive-drag / CN increments) */
+  inlets?: InletSpec[];
+  /** optional protuberances (drag / CN increments) */
+  protuberances?: ProtuberanceSpec[];
   /** free-form notes carried into outputs */
   notes?: string[];
   /** length units of the ORIGINAL input (deck DIM card); internal data is always metres */

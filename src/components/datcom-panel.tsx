@@ -192,7 +192,8 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
     <div className="space-y-4">
       <p className="text-xs leading-relaxed text-muted">
         Engineering-level DATCOM / Missile DATCOM substitute. Body + fin/wing/canard synthesis with
-        slender-body, Allen–Perkins, linear theory, shock-expansion and Newtonian methods. Not a
+        slender-body, Allen–Perkins, linear theory, shock-expansion and Newtonian methods. ELLBOD /
+        INLET / PROTUB increments are available via a pasted deck (engineering-level). Not a
         certified DATCOM replacement — see method tags and confidence notes on every point.
       </p>
 
@@ -254,6 +255,9 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
           <p className="mt-2 text-[10px] text-subtle">
             {config.sets.length} surface set{config.sets.length === 1 ? "" : "s"}
             {config.sets.map((s) => ` · ${s.name}(${s.nPanels})`).join("")}
+            {config.body?.elliptic ? " · ELLBOD" : ""}
+            {config.inlets?.length ? ` · ${config.inlets.length} inlet(s)` : ""}
+            {config.protuberances?.length ? ` · ${config.protuberances.length} protub(s)` : ""}
           </p>
         </div>
       ) : null}
