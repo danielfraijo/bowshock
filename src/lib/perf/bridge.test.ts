@@ -210,7 +210,7 @@ await test("pipeline: study modes map to tiers (preview/quick -> preview, full -
   const quick = p.run(params, "quick");
   assert.equal(kernelFlags.quality, "legacy", "quality flag leaked out of a pipeline run");
   const forcedLegacy = new Pipeline("legacy").run(params, "quick");
-  assert.notEqual(hashValue(quick.study.summary ?? quick.study), hashValue(forcedLegacy.study.summary ?? forcedLegacy.study));
+  assert.notEqual(hashValue(quick.study.aero), hashValue(forcedLegacy.study.aero));
 });
 
 console.log(`bridge tests passed: ${passed}`);
