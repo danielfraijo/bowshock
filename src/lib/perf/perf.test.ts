@@ -505,4 +505,34 @@ await atest("zip: slicing-by-8 crc32 == reference bit loop (all small lengths + 
   }
 });
 
+await atest("kernel: shipped wasm (rustc+wasm-opt) is bit-identical to the ORIGINAL pre-optimisation binary (fixtures/cuspis_euler.orig.wasm)", async () => {
+  const orig = (await WebAssembly.instantiate(readFileSync(new URL("./fixtures/cuspis_euler.orig.wasm", import.meta.url)), {})).instance.exports as unknown as {
+    memory: WebAssembly.Memory;
+    euler_alloc: (n: number) => number;
+    euler_solve: (p: number, n: number, m: number, g: number, a: number) => number;
+  };
+  let cases = 0;
+  let maxd = 0;
+  for (const kind of ["lin", "ogive", "neg"] as const)
+    for (const n of [24, 60]) {
+      const w = wall(n, kind);
+      const ptr = orig.euler_alloc((n * 3 + 16) * 8);
+      for (const mach of [3, 5.5, 8, 12])
+        for (const alpha of [-0.05, 0, 0.0349, 0.12]) {
+          const v = new Float64Array(orig.memory.buffer, ptr, n * 2);
+          for (let i = 0; i < n; i++) {
+            v[2 * i] = w.x[i];
+            v[2 * i + 1] = w.z[i];
+          }
+          orig.euler_solve(ptr, n, mach, 1.4, alpha);
+          const ref = new Float64Array(new Float64Array(orig.memory.buffer, ptr + n * 16, n));
+          const now = solveWallRaw(w.x, w.z, mach, 1.4, alpha);
+          for (let i = 0; i < n; i++) maxd = Math.max(maxd, Math.abs(ref[i] - now[i]));
+          assert.equal(hashFloats(now), hashFloats(ref), `${kind} n=${n} M${mach} a${alpha}`);
+          cases++;
+        }
+    }
+  console.log(`     ${cases} cases vs original binary, max |dCp| = ${maxd}`);
+});
+
 console.log(`perf tests passed: ${passed}`);
