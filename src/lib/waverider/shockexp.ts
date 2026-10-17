@@ -76,60 +76,6 @@ function norm(a: Vec3): Vec3 {
   return [a[0] / m, a[1] / m, a[2] / m];
 }
 
-/**
- * Chord edge of the triangle, pointing downstream.
- * A quad is two triangles. On one of them the chord runs aft (dx > 0) and on
- * the other it runs forward, so the score uses |dx|. A signed dx lets the
- * diagonal win, and averaging that diagonal with the real chord reports ~20°
- * on an 8° wedge.
- */
-function streamTangent(a: Vec3, b: Vec3, c: Vec3): Vec3 {
-  const edges: Vec3[] = [
-    [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
-    [c[0] - b[0], c[1] - b[1], c[2] - b[2]],
-    [a[0] - c[0], a[1] - c[1], a[2] - c[2]],
-  ];
-  let best = edges[0];
-  let score = -Infinity;
-  for (const e of edges) {
-    const s = Math.abs(e[0]) - 2 * Math.abs(e[1]);
-    if (s > score) {
-      score = s;
-      best = e;
-    }
-  }
-  if (best[0] < 0) best = [-best[0], -best[1], -best[2]];
-  return norm(best);
-}
-
-/**
- * Streamwise tangent of every face in a strip from the strip itself.
- * Faces in a strip share the span index j, so the centroid difference
- * c[k+1] − c[k−1] is the chord direction of that strip. The old per-triangle
- * edge score (|dx| − 2|dy|) picked the swept leading-edge cross edge on skewed
- * cells (delta planform, outboard of the centerline) and reported 15–20° on a
- * 12.5° caret face (Cp 0.197 vs 0.103).
- */
-function streamTangentsFromStrip(list: Face[]) {
-  const n = list.length;
-  if (n < 2) return;
-  const out: Vec3[] = [];
-  for (let k = 0; k < n; k++) {
-    const a = list[Math.max(0, k - 1)].c;
-    const b = list[Math.min(n - 1, k + 1)].c;
-    let d: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    const m = Math.hypot(d[0], d[1], d[2]);
-    if (m < 1e-12) {
-      out.push(list[k].t);
-      continue;
-    }
-    d = [d[0] / m, d[1] / m, d[2] / m];
-    if (d[0] < 0) d = [-d[0], -d[1], -d[2]];
-    out.push(d);
-  }
-  for (let k = 0; k < n; k++) list[k].t = out[k];
-}
-
 function buildFaces(mesh: TriMesh): FaceCache {
   const hit = cache.get(mesh);
   if (hit) return hit;
@@ -157,7 +103,7 @@ function buildFaces(mesh: TriMesh): FaceCache {
     const area = 0.5 * mag;
     const n = norm([nx, ny, nz]);
     const ctr: Vec3 = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
-    const tg = streamTangent(a, b, c);
+    const tg: Vec3 = [1, 0, 0];
     const surf = mesh.surfaces[t] ?? 0;
     const tag = mesh.tags ? mesh.tags[t] : -1;
     const dec = decodeTag(tag);
@@ -175,11 +121,6 @@ function buildFaces(mesh: TriMesh): FaceCache {
         prev.n[1] * prev.area + n[1] * area,
         prev.n[2] * prev.area + n[2] * area,
       ]);
-      prev.t = norm([
-        prev.t[0] * prev.area + tg[0] * area,
-        prev.t[1] * prev.area + tg[1] * area,
-        prev.t[2] * prev.area + tg[2] * area,
-      ]);
       prev.c = [(prev.c[0] * prev.area + ctr[0] * area) / w, (prev.c[1] * prev.area + ctr[1] * area) / w, (prev.c[2] * prev.area + ctr[2] * area) / w];
       prev.area = w;
       prev.tris.push(t);
@@ -195,7 +136,6 @@ function buildFaces(mesh: TriMesh): FaceCache {
   const strips: Face[][] = [];
   for (const list of groups.values()) {
     list.sort((p, q) => p.i - q.i);
-    streamTangentsFromStrip(list);
     strips.push(list);
   }
   const built = { strips, loose };
@@ -221,13 +161,15 @@ function rotateForce(F: Vec3, alpha: number, beta: number) {
   return { lift: -sa * x1 + ca * F[2], drag: ca * x1 + sa * F[2], side: y1 };
 }
 
-/** Signed angle from the freestream to the surface tangent. Positive compresses. */
-function turning(tangent: Vec3, v: Vec3, n: Vec3): number {
-  const tn = norm(tangent);
-  const c = clamp(tn[0] * v[0] + tn[1] * v[1] + tn[2] * v[2], -1, 1);
-  const ang = Math.acos(c);
-  const wind = -(n[0] * v[0] + n[1] * v[1] + n[2] * v[2]);
-  return wind >= 0 ? ang : -ang;
+/**
+ * Signed flow turning at a facet: the angle between the local flow direction and the facet plane,
+ * asin(−n·v̂). Positive compresses. For a planar facet in uniform flow this is exact (the oblique
+ * shock turns the flow in the plane of v̂ and n), whatever the grid lines do. The earlier version
+ * measured the angle to a grid-line tangent, which on a swept/skewed cell is not the flow
+ * direction: it reported 15–20° on a 9° face (Cp ±30 %).
+ */
+function turning(v: Vec3, n: Vec3): number {
+  return Math.asin(clamp(-(n[0] * v[0] + n[1] * v[1] + n[2] * v[2]), -1, 1));
 }
 
 interface GasTables {
@@ -509,14 +451,18 @@ export function integrateShockExpansion(
   const walk = (strip: Face[]) => {
     let Mloc = M;
     let pRatio = 1;
-    let flow = 0;
+    // Flow direction along the strip. It starts as the freestream and, after each facet, is the
+    // projection of the previous direction onto that facet (the flow follows the surface).
+    let vcur: Vec3 | null = null;
+    let virgin = true;
     // "mixed" marches shock-expansion. "tangent" is CBAERO-class impact:
     // every panel is shocked or expanded from freestream, so an expanding
     // face keeps the freestream pressure of its own angle.
     let marching = method === "mixed";
     for (const face of strip) {
       const v = localVelocity(face, vhat, atm.V, rates, cg);
-      const inc = turning(face.t, v, face.n);
+      const vf: Vec3 = marching && vcur ? vcur : v;
+      const inc = turning(vf, face.n);
       let cpi: number;
       let Me = NaN;
       if (!marching) {
@@ -527,9 +473,10 @@ export function integrateShockExpansion(
       } else if (face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle) {
         cpi = -1 / (M * M);
       } else {
-        const dth = inc - flow;
+        const dth = inc;
         if (dth > 0.15 * DEG) {
-          const fromFree = Math.abs(flow) < 0.2 * DEG;
+          const fromFree = virgin;
+          virgin = false;
           if (useCone && fromFree) {
             const st = coneSurfaceState(M, Math.max(dth, 1e-4), g);
             pRatio = st.pRatio;
@@ -560,7 +507,10 @@ export function integrateShockExpansion(
           }
           cpi = clamp((pRatio - 1) / qInf, vac, 2);
         }
-        flow = inc;
+        if (Math.abs(dth) > 0.15 * DEG) virgin = false;
+        // follow the surface: remove the normal component of the flow direction
+        const sn = -(vf[0] * face.n[0] + vf[1] * face.n[1] + vf[2] * face.n[2]);
+        vcur = norm([vf[0] + sn * face.n[0], vf[1] + sn * face.n[1], vf[2] + sn * face.n[2]]);
         if (!Number.isFinite(Me)) Me = Mloc;
       }
       accum(face, cpi, v, Me);
@@ -574,7 +524,7 @@ export function integrateShockExpansion(
       accum(face, -1 / (M * M), v);
       continue;
     }
-    const inc = turning(face.t, v, face.n);
+    const inc = turning(v, face.n);
     const hit = impact(inc, M);
     if (!hit.attached) nDetached++;
     accum(face, hit.cp, v, hit.Me ?? NaN);
