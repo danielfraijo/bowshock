@@ -1057,38 +1057,42 @@ function designChecks(built: BuiltVehicle, p: DesignParams, aero: PanelAero, tri
     });
   }
 
-  // 4. caret lower-surface Cp vs the exact oblique shock (α = 0, flight = design Mach)
-  if (p.family === "caret" && Math.abs(p.alphaDeg) < 1e-6 && Math.abs(p.betaDeg) < 1e-6 && Math.abs(M - p.mach) < 1e-6 && built.aero.attached) {
+  // 4. caret lower-surface Cp vs the exact oblique shock at each face's own inclination to the wind
+  //    (valid at any α, β: per-triangle θ = asin(−n·v̂), area-weighted; Dina: was α = β = 0 only, which made the
+  //    pack report one fewer check whenever α ≠ 0 — now the same 119 checks at every α for the default caret).
+  if (p.family === "caret" && built.aero.attached) {
+    const al = p.alphaDeg * DEG;
+    const be = p.betaDeg * DEG;
+    const vh: [number, number, number] = [Math.cos(al) * Math.cos(be), Math.sin(be), Math.sin(al) * Math.cos(be)];
     let A = 0;
     let cpA = 0;
+    let cpEx = 0;
+    let thA = 0;
+    const qd = 0.5 * p.gamma * M * M;
     for (let t = 0; t < tris.length; t++) {
       const tr = tris[t];
       if (tr.rawSurf !== SURFACE_ID.lower || tr.nz > -0.5) continue;
+      const th = Math.asin(clamp(-(tr.nx * vh[0] + tr.ny * vh[1] + tr.nz * vh[2]), -1, 1));
+      if (th < 0.5 * DEG) continue; // face shadowed / grazing at this attitude: not an oblique-shock face
+      const beta = betaFromThetaM(M, th, p.gamma);
+      if (!Number.isFinite(beta)) continue;
+      const sh = obliqueShock(M, beta, p.gamma);
       A += tr.area;
       cpA += aero.cp[t] * tr.area;
+      cpEx += ((sh.p2p1 * aero.pVisc - 1) / qd) * tr.area;
+      thA += th * tr.area;
     }
     if (A > 0) {
-      // local face inclination to the freestream: asin(−n·x̂)
-      let thA = 0;
-      for (const tr of tris) if (tr.rawSurf === SURFACE_ID.lower && tr.nz <= -0.5) thA += Math.asin(clamp(-tr.nx, -1, 1)) * tr.area;
-      const th = thA / A;
-      const beta = betaFromThetaM(M, th, p.gamma);
-      if (Number.isFinite(beta)) {
-        const sh = obliqueShock(M, beta, p.gamma);
-        // panel methods multiply windward static pressure by the Hayes–Probstein p/p_inv
-        const qd = 0.5 * p.gamma * M * M;
-        const cpExact = (sh.p2p1 * aero.pVisc - 1) / qd;
-        mk(
-          "design-caret-cp",
-          "Caret lower-face mean Cp vs exact oblique shock at the face's own inclination",
-          `Cp = (p₂/p₁·p/p_inv − 1)/(½γM²) at θ = ${(th * RAD).toFixed(3)}° (p/p_inv = ${aero.pVisc.toFixed(3)})`,
-          cpExact,
-          cpA / A,
-          0.1,
-          "closed-form",
-          "Anderson 4.17 + Rankine–Hugoniot (method limitation: tangent-wedge/CBAERO under-predict; shock-expansion recovers it)",
-        );
-      }
+      mk(
+        "design-caret-cp",
+        "Caret lower-face mean Cp vs exact oblique shock at the faces' own inclination",
+        `Cp = (p₂/p₁·p/p_inv − 1)/(½γM²) per facet at θ = asin(−n·v̂), area-weighted, mean θ = ${((thA / A) * RAD).toFixed(3)}° (p/p_inv = ${aero.pVisc.toFixed(3)})`,
+        cpEx / A,
+        cpA / A,
+        0.03,
+        "closed-form",
+        "Anderson 4.17 + Rankine–Hugoniot (method limitation: tangent-wedge/CBAERO under-predict; shock-expansion recovers it)",
+      );
     }
   }
 
