@@ -5,8 +5,9 @@
  *
  * - First render (SSR and hydration) is computed synchronously, exactly like before, so server and
  *   client markup agree.
- * - After hydration every change is sent to the worker: while dragging, a coarse "preview" study on the
- *   fast lane (latest-wins); when released, the full study on the slow lane. Geometry is only rebuilt
+ * - After hydration every change is sent to the worker: while dragging, a reduced "preview" study at the
+ *   coarse Euler tier on the fast lane (latest-wins); when released, the full study at the standard tier on
+ *   the slow lane, then a converged-tier refinement on the preemptible refine lane. Geometry is only rebuilt
  *   when a geometry field changed (pipeline.geometryKey); flight changes reuse the cached mesh.
  * - {built, study} always come from the same job, so per-triangle arrays always match the mesh.
  *   While a newer job is running the previous coherent pair stays on screen.
@@ -22,8 +23,10 @@ import { defaultPipeline, rebindCenterline, type StudyMode } from "./pipeline";
 export interface LiveVehicle {
   built: BuiltVehicle;
   study: StudyResult;
-  /** a newer job is in flight */
+  /** a newer job is in flight (preview / full) */
   busy: boolean;
+  /** the converged background refinement of the shown design is running */
+  refining: boolean;
   /** mode of the study currently shown */
   quality: StudyMode;
   /** worker round-trip timings of the last applied result (ms) */
@@ -37,6 +40,7 @@ export function useLiveVehicle(params: DesignParams, opts: { dragging: boolean; 
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [state, setState] = useState(initial);
   const [busy, setBusy] = useState(false);
+  const [refining, setRefining] = useState(false);
   const held = useRef(initial.geomKey);
   const latest = useRef(0);
   const key = useMemo(() => new Hasher().value(params).digest(), [params]);
@@ -47,6 +51,8 @@ export function useLiveVehicle(params: DesignParams, opts: { dragging: boolean; 
     const client = getComputeClient();
     const ticket = ++latest.current;
     let alive = true;
+    client.cancelRefine(); // any new interaction kills the old background refinement
+    setRefining(false);
     setBusy(true);
     const t0 = performance.now();
     client
@@ -59,6 +65,21 @@ export function useLiveVehicle(params: DesignParams, opts: { dragging: boolean; 
           return { built, study: r.study, geomKey: r.geomKey, quality: r.mode, lastMs: performance.now() - t0 };
         });
         setBusy(false);
+        if (r.mode === "full") {
+          // progressive: converged-tier refinement of the released design in the background (latest-wins, preemptible)
+          setRefining(true);
+          client
+            .study(params, "refine", held.current)
+            .then((rr) => {
+              if (!alive || ticket !== latest.current) return;
+              setState((prev) => ({ ...prev, study: rr.study, quality: rr.mode, lastMs: performance.now() - t0 }));
+              setRefining(false);
+            })
+            .catch((e) => {
+              if (!(e instanceof SupersededError)) console.warn("refinement failed; keeping the standard result", e);
+              if (alive && ticket === latest.current) setRefining(false);
+            });
+        }
       })
       .catch((e) => {
         if (e instanceof SupersededError) return; // a newer request owns `busy`
@@ -75,5 +96,5 @@ export function useLiveVehicle(params: DesignParams, opts: { dragging: boolean; 
     };
   }, [key, mode, opts.hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { built: state.built, study: state.study, busy, quality: state.quality, lastMs: state.lastMs };
+  return { built: state.built, study: state.study, busy, refining, quality: state.quality, lastMs: state.lastMs };
 }

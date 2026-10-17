@@ -17,7 +17,7 @@ import { studyVehicle, type StudyResult } from "../waverider/study";
 import { bindCenterline } from "../waverider/sym-euler";
 import type { BuiltVehicle, DesignParams } from "../waverider/types";
 import { Hasher } from "./hash";
-import { KERNEL_VERSION, kernelFlags, PREVIEW_GRID } from "./euler-kernel";
+import { KERNEL_VERSION, kernelFlags, type EulerQuality } from "./euler-kernel";
 import { LRU } from "./lru";
 import { withoutCosmetic } from "./cosmetic";
 
@@ -40,7 +40,13 @@ export const ANALYSIS_ONLY: readonly (keyof DesignParams)[] = [
   "massKg",
 ];
 
-export type StudyMode = "preview" | "quick" | "full";
+/**
+ * preview / quick: reduced study at the `preview` Euler tier (drag). full: complete study at `standard`.
+ * refine: complete study at `converged` (background refinement after a release).
+ */
+export type StudyMode = "preview" | "quick" | "full" | "refine";
+
+export const MODE_QUALITY: Record<StudyMode, EulerQuality> = { preview: "preview", quick: "preview", full: "standard", refine: "converged" };
 
 export function geometryKey(p: DesignParams): string {
   const skip = new Set<string>(ANALYSIS_ONLY as readonly string[]);
@@ -50,7 +56,7 @@ export function geometryKey(p: DesignParams): string {
 }
 
 export function studyKey(p: DesignParams, mode: StudyMode): string {
-  return new Hasher().str("study").str(KERNEL_VERSION).str(mode).value(withoutCosmetic(p)).digest();
+  return new Hasher().str("study").str(KERNEL_VERSION).str(mode).str(MODE_QUALITY[mode]).value(withoutCosmetic(p)).digest();
 }
 
 function builtBytes(b: BuiltVehicle): number {
@@ -82,6 +88,9 @@ export class Pipeline {
   readonly geometry = new LRU<BuiltVehicle>(12, 96 * 1024 * 1024);
   readonly studies = new LRU<StudyResult>(24, 96 * 1024 * 1024);
 
+  /** Force one Euler tier for every mode (benchmarks, the CLI `--quality`); undefined = MODE_QUALITY. */
+  constructor(private quality?: EulerQuality) {}
+
   build(params: DesignParams): { built: BuiltVehicle; key: string; hit: boolean } {
     const key = geometryKey(params);
     const cached = this.geometry.get(key);
@@ -99,12 +108,12 @@ export class Pipeline {
     let study = this.studies.get(sk);
     const studyHit = !!study;
     if (!study) {
-      const prev = kernelFlags.grid;
-      kernelFlags.grid = mode === "preview" ? PREVIEW_GRID : undefined;
+      const prev = kernelFlags.quality;
+      kernelFlags.quality = this.quality ?? MODE_QUALITY[mode];
       try {
-        study = studyVehicle(g.built, { quick: mode !== "full" });
+        study = studyVehicle(g.built, { quick: mode === "preview" || mode === "quick" });
       } finally {
-        kernelFlags.grid = prev;
+        kernelFlags.quality = prev;
       }
       this.studies.set(sk, study, studyBytes(study));
     }

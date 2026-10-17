@@ -6,7 +6,8 @@
  */
 import type { Atmosphere } from "./atmosphere";
 import { effectiveLeRadius } from "./blunt";
-import { cachedWallCp, eulerCache, hasCachedWallCp, solveWallCp, solveWallEx, storeCachedWallCp } from "../perf/euler-kernel";
+import { qualitySettings } from "../perf/quality";
+import { cachedWallCp, eulerCache, kernelFlags, hasCachedWallCp, solveWallCp, solveWallEx, storeCachedWallCp } from "../perf/euler-kernel";
 import type { PanelAero } from "./panel";
 // [mesh-refinement]
 import { LEGACY, estimateShockHeights, isBaseline, shockFractionFromHeight, stripDims, type RefinementSettings } from "./refinement";
@@ -62,12 +63,17 @@ function centerlineOf(g: SurfaceGrid): Centerline {
   return monotone(x, z);
 }
 
+/** [perf] read access to the bound upper/lower walls (bench + parity tests). */
+export function wallsOfMesh(mesh: TriMesh): { upper: Centerline; lower: Centerline; span: number } | undefined {
+  return wallsOf.get(mesh);
+}
+
 export function bindCenterline(mesh: TriMesh, upper: SurfaceGrid, lower: SurfaceGrid, span: number) {
   wallsOf.set(mesh, { upper: centerlineOf(upper), lower: centerlineOf(lower), span: Math.max(span, 1e-6) });
 }
 
 /** [mesh-refinement] Grid-refined solve (wasm euler_solve_ex, TypeScript fallback in strip-euler.ts). Used for every setting except the baseline. */
-function refinedPlan(wall: Centerline, mach: number, gamma: number, alpha: number, ref: RefinementSettings, noseR: number) {
+export function refinedPlan(wall: Centerline, mach: number, gamma: number, alpha: number, ref: RefinementSettings, noseR: number) {
   const v = ref.volume;
   const d = stripDims(v);
   const dom = stripDomain(wall.x, wall.z);
@@ -122,10 +128,17 @@ export function clearSymmetryEulerCache() {
   eulerCache.clear();
 }
 
+/** Test hook: the wall solve behind `withSymmetryEuler` (tier-aware, cached). */
+export function solveCpForTest(wall: Centerline, mach: number, gamma: number, alpha: number): Float64Array {
+  return solveCp(wall, mach, gamma, alpha, "t", undefined, 0.02);
+}
+
 /** [perf] exact-key LRU (full wall hash + exact floats) + buffer reuse live in perf/euler-kernel. */
 function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, _tag: string, ref?: RefinementSettings, noseR = 0): Float64Array {
-  if (ref && !isBaseline(ref)) {
-    return cachedWallCp(wall.x, wall.z, mach, gamma, alpha, `${noseR}${refKey(ref)}`, () => solveCpRefined(wall, mach, gamma, alpha, ref, noseR));
+  // an explicit (non-baseline) refinement wins; otherwise the active quality tier (legacy = shipped kernel)
+  const eff = ref && !isBaseline(ref) ? ref : qualitySettings(kernelFlags.quality);
+  if (eff) {
+    return cachedWallCp(wall.x, wall.z, mach, gamma, alpha, `${noseR}${refKey(eff)}`, () => solveCpRefined(wall, mach, gamma, alpha, eff, noseR));
   }
   return solveWallCp(wall.x, wall.z, mach, gamma, alpha);
 }
@@ -306,7 +319,7 @@ export function withSymmetryEuler(
       "Strip Euler: Rust HLLC on the symmetry plane (bow shock captured), blended into CBAERO off the centerline. Between a CBAERO panel run and Cart3D — not a volume mesh.",
       ...(params.refinement && !isBaseline(params.refinement)
         ? [
-            `Mesh refinement "${params.refinement.preset}": symmetry-plane grid ${stripDims(params.refinement.volume).ni}x${stripDims(params.refinement.volume).nj}x${stripDims(params.refinement.volume).iters}${params.refinement.volume.shockClustering > 0 || params.refinement.volume.wallClustering > 0 ? " with wall/shock clustering" : ""}${params.refinement.volume.adaptive ? " + adaptive re-cluster" : ""} (TypeScript solver; the shipped wasm is the 88x28x42 baseline).`,
+            `Mesh refinement "${params.refinement.preset}": symmetry-plane grid ${stripDims(params.refinement.volume).ni}x${stripDims(params.refinement.volume).nj}x${stripDims(params.refinement.volume).iters}${params.refinement.volume.shockClustering > 0 || params.refinement.volume.wallClustering > 0 ? " with wall/shock clustering" : ""}${params.refinement.volume.adaptive ? " + adaptive re-cluster" : ""} (TypeScript solver; the legacy kernel is the 88x28x42 baseline, refined tiers run euler_solve_ex).`,
           ]
         : []),
     ],

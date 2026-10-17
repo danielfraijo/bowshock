@@ -50,6 +50,7 @@ export function memoPanel<T>(
     .int(idOf(mesh))
     .str(KERNEL_VERSION)
     .str(kernelFlags.reference ? "r" : "f")
+    .str(kernelFlags.quality)
     .int(g ? g.ni * 10007 + g.nj * 101 + g.iters : 0)
     .num(alphaDeg)
     .num(betaDeg)

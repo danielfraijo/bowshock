@@ -138,7 +138,15 @@ export interface EulerGrid {
 /** Coarse grid used for drag previews (|dCp| <~ 2e-3 vs the default grid on the default caret, ~8x cheaper). */
 export const PREVIEW_GRID: EulerGrid = { ni: 44, nj: 14, iters: 30 };
 
-export const kernelFlags: { reference: boolean; wedge: boolean; grid?: EulerGrid } = { reference: false, wedge: true, grid: undefined };
+/** Euler quality tier (see quality.ts). `legacy` = the shipped 88x28x42 kernel (library default). */
+export type EulerQuality = "legacy" | "preview" | "standard" | "converged" | "reference";
+
+export const kernelFlags: { reference: boolean; wedge: boolean; grid?: EulerGrid; quality: EulerQuality } = {
+  reference: false,
+  wedge: true,
+  grid: undefined,
+  quality: "legacy",
+};
 
 /** Bumped when the kernel's numerics change; part of every persisted/cached key. */
 export const KERNEL_VERSION = "cuspis-euler/fast-1";

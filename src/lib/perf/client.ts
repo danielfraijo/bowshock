@@ -6,8 +6,9 @@
  *   const r = await c.study(params, "full");         // full study, slow lane    (slider released)
  *   const files = await c.exportFiles("kit", params, sources);
  *
- * Two lanes (two workers): "fast" for preview/quick studies and "slow" for full studies and exports,
- * so a long release-time study never blocks the next drag frame. Each lane runs ONE job at a time and
+ * Three lanes (three workers): "fast" for preview/quick studies (drag), "slow" for full studies and exports,
+ * "refine" for the converged background refinement (preemptible: a newer request kills it), so a long
+ * release-time study never blocks the next drag frame and a refinement never delays a new interaction. Each lane runs ONE job at a time and
  * keeps at most ONE queued job per request type: a newer study request replaces (and rejects with
  * SupersededError) an older one that has not started -> latest-wins while a slider drags. A job that is
  * already running is not interrupted (a study is <= ~250 ms); its result is still delivered and callers
@@ -86,9 +87,14 @@ class Lane {
   private running: Job | null = null;
   private queue: Job[] = [];
   private t: Transport | null = null;
+  /**
+   * preempt: a new coalescing request terminates the worker that is still running an older one (true
+   * cancellation of a long job; the lane's caches are lost, so only use it for the background refine lane).
+   */
   constructor(
     readonly name: string,
     private make: () => Transport,
+    private preempt = false,
   ) {}
   get busy() {
     return this.running !== null || this.queue.length > 0;
@@ -101,6 +107,13 @@ class Lane {
     return this.t;
   }
   submit(job: Job) {
+    if (this.preempt && job.coalesce && this.running?.coalesce) {
+      const old = this.running;
+      this.running = null;
+      this.t?.terminate();
+      this.t = null;
+      old.reject(new SupersededError());
+    }
     if (job.coalesce) {
       for (const q of this.queue.filter((q) => q.coalesce && q.req.type === job.req.type)) {
         this.queue.splice(this.queue.indexOf(q), 1);
@@ -124,6 +137,15 @@ class Lane {
     else job.resolve(r);
     this.pump();
   }
+  /** Kill whatever is running/queued here (the worker is respawned lazily on the next submit). */
+  cancel() {
+    this.t?.terminate();
+    this.t = null;
+    for (const j of [this.running, ...this.queue]) j?.reject(new SupersededError());
+    this.running = null;
+    this.queue = [];
+  }
+
   dispose() {
     this.t?.terminate();
     this.t = null;
@@ -149,6 +171,7 @@ export class ComputeClient {
   readonly runner: "worker" | "inline";
   private fast: Lane;
   private slow: Lane;
+  private refine: Lane;
   private seq = 1;
 
   constructor(opts: ComputeClientOptions = {}) {
@@ -156,15 +179,16 @@ export class ComputeClient {
     const make = (): Transport => (this.runner === "worker" ? new WebWorkerTransport(opts.wasmUrl) : new LoopbackTransport(opts.clone));
     this.fast = new Lane("fast", make);
     this.slow = new Lane("slow", make);
+    this.refine = new Lane("refine", make, true);
   }
 
   get busy() {
-    return this.fast.busy || this.slow.busy;
+    return this.fast.busy || this.slow.busy || this.refine.busy;
   }
 
   /** Run a study. Rejects with SupersededError if a newer request on the same lane replaced it before it started. */
   study(params: DesignParams, mode: StudyMode, have?: string): Promise<StudyReply> {
-    const lane = mode === "full" ? this.slow : this.fast;
+    const lane = mode === "refine" ? this.refine : mode === "full" ? this.slow : this.fast;
     return new Promise<StudyReply>((resolve, reject) => {
       lane.submit({
         req: { type: "study", id: this.seq++, params, mode, have },
@@ -186,6 +210,11 @@ export class ComputeClient {
     });
   }
 
+  /** Abort a running/queued background refinement (called on every new interaction). */
+  cancelRefine() {
+    this.refine.cancel();
+  }
+
   /** Pipeline cache stats of the fast-lane worker (plus how its wasm was loaded). */
   stats(): Promise<unknown> {
     return new Promise((resolve, reject) => {
@@ -201,6 +230,7 @@ export class ComputeClient {
   dispose() {
     this.fast.dispose();
     this.slow.dispose();
+    this.refine.dispose();
   }
 }
 

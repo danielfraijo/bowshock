@@ -34,6 +34,7 @@
     "build:cli": "node scripts/build-cli.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
     "test:perf": "tsx src/lib/perf/perf.test.ts",
+    "test:bridge": "tsx src/lib/perf/bridge.test.ts",
     "test:fidelity": "tsx src/lib/waverider/fidelity.test.ts"
   },
   "dependencies": {
