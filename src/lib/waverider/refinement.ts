@@ -92,7 +92,7 @@ const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> =
   },
   fine: {
     preset: "fine",
-    surface: { nx: 72, ny: 52, leClustering: 0.6 },
+    surface: { nx: 96, ny: 32, leClustering: 0.6 },
     volume: { nStream: 96, nCross: 32, iters: 1500, wallClustering: 2, shockClustering: 6, shockWidth: DEFAULT_SHOCK_WIDTH, adaptive: false },
   },
 };
@@ -254,6 +254,23 @@ export function stripDims(v: VolumeRefinement): { ni: number; nj: number; iters:
     nj: Math.max(6, Math.round((s.nj * v.nCross) / a.nj)),
     iters: v.iters,
   };
+}
+
+/**
+ * Spanwise points above this trip pre-existing non-manifold aft-tip edges in generate.ts / mesh.ts weldAft
+ * (tolerance 8e-4 L is larger than the tip spacing). Measured on b5fdccc: caret is manifold at ny <= 32 and
+ * not at ny >= 34. Streamwise points (nx) are not affected. See NOTES.md.
+ */
+export const SPAN_MANIFOLD_SAFE_NY = 32;
+
+export function surfaceWarnings(r: RefinementSettings): string[] {
+  const out: string[] = [];
+  if (r.surface.ny > SPAN_MANIFOLD_SAFE_NY) {
+    out.push(
+      `Spanwise points ${r.surface.ny} > ${SPAN_MANIFOLD_SAFE_NY}: several families currently report non-manifold aft-tip edges at this density (existing weld tolerance; still watertight). Check the CAD tab.`,
+    );
+  }
+  return out;
 }
 
 export interface CostEstimate {
