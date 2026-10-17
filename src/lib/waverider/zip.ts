@@ -1,9 +1,39 @@
-function crc32(buf: Uint8Array): number {
-  let c = ~0 >>> 0;
-  for (let i = 0; i < buf.length; i++) {
-    c ^= buf[i];
+/** Slicing-by-8 CRC-32 (IEEE). Same values as the bit-at-a-time loop it replaces, ~10x faster. */
+const CRC_T = (() => {
+  const t = new Int32Array(8 * 256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
     for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    t[n] = c;
   }
+  for (let n = 0; n < 256; n++) {
+    let c = t[n];
+    for (let k = 1; k < 8; k++) {
+      c = t[c & 255] ^ (c >>> 8);
+      t[k * 256 + n] = c;
+    }
+  }
+  return t;
+})();
+
+export function crc32(buf: Uint8Array): number {
+  const t = CRC_T;
+  let c = -1;
+  let i = 0;
+  const n = buf.length;
+  for (const end = n - 7; i < end; i += 8) {
+    const a = c ^ (buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24));
+    c =
+      t[1792 + (a & 255)] ^
+      t[1536 + ((a >>> 8) & 255)] ^
+      t[1280 + ((a >>> 16) & 255)] ^
+      t[1024 + (a >>> 24)] ^
+      t[768 + buf[i + 4]] ^
+      t[512 + buf[i + 5]] ^
+      t[256 + buf[i + 6]] ^
+      t[buf[i + 7]];
+  }
+  for (; i < n; i++) c = t[(c ^ buf[i]) & 255] ^ (c >>> 8);
   return ~c >>> 0;
 }
 

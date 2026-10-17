@@ -12,6 +12,7 @@
 import { Hasher } from "./hash";
 import { KERNEL_VERSION, kernelFlags } from "./euler-kernel";
 import { LRU } from "./lru";
+import { withoutCosmetic } from "./cosmetic";
 
 const ids = new WeakMap<object, number>();
 let nextId = 1;
@@ -56,7 +57,7 @@ export function memoPanel<T>(
     .num(lRef)
     .value(rates ?? null)
     .value(atm)
-    .value(params)
+    .value(withoutCosmetic(params as object))
     .digest();
   const hit = panelCache.get(key);
   if (hit) return hit as T;

@@ -6,6 +6,11 @@
 import assert from "node:assert/strict";
 import { Hasher, hashFloats, hashValue } from "./hash";
 import { LRU } from "./lru";
+import { spawnSync } from "node:child_process";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildZip, crc32 } from "../waverider/zip";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { eulerAsync, eulerSync, resetEulerForTest, wasmSource } from "./euler-kernel";
@@ -320,7 +325,8 @@ test("pipeline: stage hits identical, flight change keeps geometry, geometry cha
   assert.equal(c.built.params, p1);
   // cosmetic change recomputes the geometry stage not at all
   const e = pl.run({ ...p0, name: "other", unit: "mm" }, "full");
-  assert.equal(e.hit.geometry, true);
+  assert.deepEqual(e.hit, { geometry: true, study: true });
+  assert.equal(e.study, a.study);
   // geometry change invalidates both
   const f = pl.run({ ...p0, span: p0.span + 0.2 }, "full");
   assert.deepEqual(f.hit, { geometry: false, study: false });
@@ -464,6 +470,38 @@ await atest("wasm loading: streaming (application/wasm), buffered fetch (wrong M
     srv.close();
     resetEulerForTest();
     eulerSync();
+  }
+});
+
+await atest("zip: slicing-by-8 crc32 == reference bit loop (all small lengths + 1 MB); archive verifies with python zipfile", async () => {
+  const ref = (buf: Uint8Array) => {
+    let c = ~0 >>> 0;
+    for (let i = 0; i < buf.length; i++) {
+      c ^= buf[i];
+      for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    }
+    return ~c >>> 0;
+  };
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) & 255);
+  for (let n = 0; n <= 70; n++) {
+    const b = new Uint8Array(n).map(rnd);
+    assert.equal(crc32(b), ref(b), `len ${n}`);
+  }
+  const big = new Uint8Array(1 << 20).map(rnd);
+  assert.equal(crc32(big), ref(big));
+  const blob = buildZip([
+    { name: "a/big.bin", data: big },
+    { name: "a/hello.txt", data: new TextEncoder().encode("hello") },
+  ]);
+  const dir = mkdtempSync(join(tmpdir(), "bwz-"));
+  const f = join(dir, "t.zip");
+  writeFileSync(f, Buffer.from(await blob.arrayBuffer()));
+  const r = spawnSync("python3", ["-c", "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print(len(z.namelist()))", f]);
+  if (r.error) console.log("     (python3 unavailable, zip structure check skipped)");
+  else {
+    assert.equal(r.status, 0, String(r.stderr));
+    assert.equal(r.stdout.toString().trim(), "2");
   }
 });
 

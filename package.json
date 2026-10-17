@@ -30,6 +30,8 @@
     "test:datcom": "node scripts/datcom-run-tests.mjs",
     "datcom": "node scripts/datcom-run.mjs",
     "bench": "tsx scripts/bench.ts",
+    "cli": "tsx scripts/cli.ts",
+    "build:cli": "node scripts/build-cli.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
     "test:perf": "tsx src/lib/perf/perf.test.ts",
     "test:fidelity": "tsx src/lib/waverider/fidelity.test.ts"

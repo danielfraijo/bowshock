@@ -156,14 +156,14 @@ export function buildSuite(): BenchSpec[] {
     setup: () => (i) => eulerWedge(2 + (i % 50) * 0.01 + i * 1e-6, 10 + (i % 7) * 0.1, 1.4),
   });
   specs.push({
-    name: "euler/symmetry-plane-wasm(upper+lower via panelAero)",
+    name: "euler/symmetry-plane(upper+lower via panelAero)",
     group: "euler",
     note: "panelAero(euler) minus nothing: wasm solve x2 + blend (cbaero base included)",
     setup: () => {
       const p = paramsFor("caret", { aeroMethod: "euler" });
       const b = buildVehicle(p);
       const atm = atmosphere(p.altKm, flightMachOf(p), p.gamma);
-      return (i) => panelAero(b.mesh, p, atm, 0.2 + i * 0.0137, 0, sref(b), p.length);
+      return (i) => panelAero(b.mesh, p, atm, 0.2 + i * 0.07, 0, sref(b), p.length);
     },
   });
 

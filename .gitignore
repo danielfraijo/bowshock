@@ -47,3 +47,4 @@ Thumbs.db
 # rust build output
 native/cuspis-euler/target/
 bench-results.json
+dist-cli/

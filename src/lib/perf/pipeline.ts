@@ -19,6 +19,7 @@ import type { BuiltVehicle, DesignParams } from "../waverider/types";
 import { Hasher } from "./hash";
 import { KERNEL_VERSION, kernelFlags, PREVIEW_GRID } from "./euler-kernel";
 import { LRU } from "./lru";
+import { withoutCosmetic } from "./cosmetic";
 
 /** Fields that buildVehicle never reads (verified in perf.test.ts). */
 export const ANALYSIS_ONLY: readonly (keyof DesignParams)[] = [
@@ -49,7 +50,7 @@ export function geometryKey(p: DesignParams): string {
 }
 
 export function studyKey(p: DesignParams, mode: StudyMode): string {
-  return new Hasher().str("study").str(KERNEL_VERSION).str(mode).value(p).digest();
+  return new Hasher().str("study").str(KERNEL_VERSION).str(mode).value(withoutCosmetic(p)).digest();
 }
 
 function builtBytes(b: BuiltVehicle): number {
