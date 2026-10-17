@@ -42,10 +42,32 @@ export function surfacePatches(grids: SurfaceGrid[]): SurfaceGrid[] {
   }
   const upper = grids.find((g) => g.name === "upper" || g.name === "cowl");
   const lower = grids.find((g) => g.name === "lower");
+  // star body: the fin sheets meet at the nose and end at x = L; close the TE star with a fan of flat patches
+  const sheets = grids.filter((g) => /^fin\d+-[ab]$/.test(g.name) && g.ni >= 2 && g.nj >= 2);
+  if (sheets.length >= 6) {
+    const c: Vec3 = [0, 0, 0];
+    let n = 0;
+    for (const g of sheets) {
+      for (let j = 0; j < g.nj; j++) {
+        const p = gridPoint(g, g.ni - 1, j);
+        c[0] += p[0];
+        c[1] += p[1];
+        c[2] += p[2];
+        n++;
+      }
+    }
+    const ctr: Vec3 = [c[0] / n, c[1] / n, c[2] / n];
+    sheets.forEach((g, k) => {
+      const te = stripAt(g, g.ni - 1);
+      const fan = ruledGrid(`base_${k}`, te.map(() => ctr), te, 2);
+      if (fan) out.push(fan);
+    });
+  }
   if (upper && lower && upper.nj === lower.nj) {
-    const te = ruledGrid("base_or_nozzle", stripAt(upper, upper.ni - 1), stripAt(lower, lower.ni - 1));
+    // flow-through ducts already carry planar inlet / nozzle patches; do not duplicate them
+    const te = grids.some((g) => g.name === "nozzle") ? null : ruledGrid("base_or_nozzle", stripAt(upper, upper.ni - 1), stripAt(lower, lower.ni - 1));
     if (te) out.push(te);
-    const hasLead = grids.some((g) => g.name === "leading" || g.name === "cowl_lip");
+    const hasLead = grids.some((g) => g.name === "leading" || g.name === "cowl_lip" || g.name === "inlet");
     if (!hasLead) {
       const le = ruledGrid("inlet_or_le", stripAt(upper, 0), stripAt(lower, 0));
       if (le) out.push(le);

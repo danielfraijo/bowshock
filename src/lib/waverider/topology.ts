@@ -244,9 +244,9 @@ function sp(g: SurfaceGrid, i: number, j: number, p: [number, number, number]) {
  * Share the TE x between upper and lower, fair it along the span (x only; y and z are
  * left alone so the last cell column keeps its shape), clamp x <= L, and zip the TE
  * of every station whose local thickness is below `thinTol` (and both tips) onto the
- * mid-surface. Zipping is pairwise by grid index, so it can never pinch unrelated verts.
+ * mid-surface (`half`: j = 0 is the symmetry plane and is not zipped). Zipping is pairwise by grid index, so it can never pinch unrelated verts.
  */
-export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length: number, thinTolRel = 0.0006) {
+export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length: number, thinTolRel = 0.0006, half = false) {
   const niU = upper.ni;
   const niL = lower.ni;
   const nj = Math.min(upper.nj, lower.nj);
@@ -270,7 +270,7 @@ export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length:
     const l = gp(lower, niL - 1, j);
     u[0] = x;
     l[0] = x;
-    const tip = j === 0 || j === nj - 1;
+    const tip = j === nj - 1 || (j === 0 && !half); // half model: j = 0 is the symmetry plane, not a wing tip
     if (tip || Math.abs(u[2] - l[2]) < thin) {
       const m: [number, number, number] = [x, 0.5 * (u[1] + l[1]), 0.5 * (u[2] + l[2])];
       sp(upper, niU - 1, j, m);
@@ -287,11 +287,11 @@ export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length:
  * upper/lower seam points that are tied to it. Without this, a millimetre-sized arc at the tip leaves
  * near-coincident but unwelded vertices from three grids, i.e. a tiny open hole.
  */
-export function collapseTipRows(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGrid | null, length: number, tolRel = 0.0008) {
+export function collapseTipRows(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGrid | null, length: number, tolRel = 0.0008, half = false) {
   if (!leading) return;
   const nj = Math.min(upper.nj, lower.nj, leading.nj);
   const tol = tolRel * Math.max(length, 1e-6);
-  for (const j of [0, nj - 1]) {
+  for (const j of half ? [nj - 1] : [0, nj - 1]) {
     const pts: [number, number, number][] = [];
     for (let i = 0; i < leading.ni; i++) pts.push(gp(leading, i, j));
     pts.push(gp(upper, 0, j), gp(lower, 0, j));
@@ -354,4 +354,68 @@ export function removeDoubleFaces(mesh: TriMesh): TriMesh {
     w++;
   }
   return { positions: mesh.positions, indices, surfaces, tags };
+}
+
+/**
+ * Resolve edge pinches: where the upper and lower sheets touch along a single edge (zero-thickness rows next to a
+ * knife-edge tip) that edge has four faces. Flip the diagonal of the two triangles of one sheet that share it, so
+ * only one pair of faces keeps the edge. Returns the same mesh when there is nothing to do.
+ */
+export function flipPinchEdges(mesh: TriMesh): TriMesh {
+  const nt = mesh.indices.length / 3;
+  const nv = mesh.positions.length / 3;
+  const K = nv + 1;
+  const edge = new Map<number, number[]>();
+  const add = (u: number, w: number, t: number) => {
+    const key = Math.min(u, w) * K + Math.max(u, w);
+    const a = edge.get(key);
+    if (a) a.push(t);
+    else edge.set(key, [t]);
+  };
+  for (let t = 0; t < nt; t++) {
+    const i0 = mesh.indices[t * 3], i1 = mesh.indices[t * 3 + 1], i2 = mesh.indices[t * 3 + 2];
+    add(i0, i1, t);
+    add(i1, i2, t);
+    add(i2, i0, t);
+  }
+  let indices: Uint32Array | null = null;
+  const thirdOf = (t: number, u: number, w: number): { p: number; fwd: boolean } | null => {
+    const v = [mesh.indices[t * 3], mesh.indices[t * 3 + 1], mesh.indices[t * 3 + 2]];
+    for (let k = 0; k < 3; k++) {
+      if (v[k] === u && v[(k + 1) % 3] === w) return { p: v[(k + 2) % 3], fwd: true };
+      if (v[k] === w && v[(k + 1) % 3] === u) return { p: v[(k + 2) % 3], fwd: false };
+    }
+    return null;
+  };
+  const used = new Set<number>();
+  for (const [key, ts] of edge) {
+    if (ts.length !== 4) continue;
+    const u = Math.floor(key / K);
+    const w = key % K;
+    // group the four faces by surface id; flip a sheet whose two faces are both still untouched
+    const bySurf = new Map<number, number[]>();
+    for (const t of ts) {
+      const a = bySurf.get(mesh.surfaces[t]);
+      if (a) a.push(t);
+      else bySurf.set(mesh.surfaces[t], [t]);
+    }
+    const pairs = [...bySurf.values()].filter((a) => a.length === 2).sort((a, b) => mesh.surfaces[b[0]] - mesh.surfaces[a[0]]);
+    for (const [t0, t1] of pairs) {
+      if (used.has(t0) || used.has(t1)) continue;
+      const A = thirdOf(t0, u, w);
+      const B = thirdOf(t1, u, w);
+      if (!A || !B || A.fwd === B.fwd || A.p === B.p) continue;
+      // A = (x, y, p) with directed edge x->y, B has y->x with third q: new faces (p, x, q), (p, q, y)
+      const [x, y] = A.fwd ? [u, w] : [w, u];
+      const pk = Math.min(A.p, B.p) * K + Math.max(A.p, B.p);
+      if (edge.has(pk)) continue;
+      indices ??= mesh.indices.slice();
+      indices.set([A.p, x, B.p], t0 * 3);
+      indices.set([A.p, B.p, y], t1 * 3);
+      used.add(t0);
+      used.add(t1);
+      break;
+    }
+  }
+  return indices ? { positions: mesh.positions, indices, surfaces: mesh.surfaces, tags: mesh.tags } : mesh;
 }

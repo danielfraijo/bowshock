@@ -13,6 +13,7 @@ import {
   checkIges,
   checkPlot3d,
   checkStep,
+  ductFlowVolume,
   maxDistanceToMesh,
   parseIgesSurfaces,
   sampleSurfaces,
@@ -93,6 +94,45 @@ for (const family of ["caret", "osculating", "wedgecone", "busemann", "star", "l
     ok(m.openEdges === 0 && m.nonManifoldEdges === 0, `${tag}: open ${m.openEdges}, non-manifold ${m.nonManifoldEdges}`);
     ok(m.inconsistentEdges === 0 && m.degenerateTris === 0, `${tag}: winding ${m.inconsistentEdges}, degenerate ${m.degenerateTris}`);
     ok(m.signedVolume > 0, `${tag}: inward normals`);
+  }
+}
+
+// ---------------------------------------------------------------- 1c. regressions found by the fuzz harness
+{
+  const watertight = (tag: string, family: WaveriderFamily, patch: Partial<DesignParams>) => {
+    const m = topoMetrics(build(family, patch).mesh);
+    ok(m.openEdges === 0 && m.nonManifoldEdges === 0 && m.inconsistentEdges === 0, `${tag}: open ${m.openEdges} nonM ${m.nonManifoldEdges} incon ${m.inconsistentEdges}`);
+  };
+  // vertical-fin bumps moved LE-seam points after the fillet was built (detached fillet strip)
+  for (const fh of [0.24, 0.97, 1.4]) watertight(`caret finHeight ${fh}`, "caret", { finHeight: fh, ny: 52 });
+  // half model: j = 0 is the symmetry plane, the TE tidy must not zip it as a wing tip
+  watertight("caret half nx200", "caret", { halfModel: true, nx: 200 });
+  // knife-edge tip columns diverged after the monotone-chord pass; edge pinches next to the tip
+  for (const ny of [8, 9, 10, 11, 12, 13, 16, 17, 24]) for (const nx of [40, 90]) watertight(`busemann ny${ny} nx${nx}`, "busemann", { ny, nx });
+  watertight("viscopt spatular ny6 g2", "viscopt", { planform: "spatular", ny: 6, leBlend: "g2" });
+  watertight("viscopt double half", "viscopt", { length: 0.2, span: 0.05, planform: "double", nx: 32, ny: 39, halfModel: true });
+  // micro fillet arcs on a paper-thin rect planform
+  watertight("inward rect thin g2", "inward", { span: 0.05, planform: "rect", leBlend: "g2" });
+  // coarse grids: the fillet radius is boosted instead of stopping with a step
+  for (const ny of [12, 14, 18]) {
+    const b = build("cone", { ny, nx: Math.round(ny * 1.4) });
+    const lead = b.grids.find((g) => g.name === "leading");
+    ok(!!lead && topoMetrics(b.mesh).maxJumpLE < 15, `cone ny${ny}: continuous fillet`);
+  }
+  // small deterministic slice of the fuzz (seeded): mesh only
+  const rnd = (() => { let a = 12345; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();
+  const U = (lo: number, hi: number) => lo + (hi - lo) * rnd();
+  const kinds = ["delta", "power", "spatular", "rect", "double"] as const;
+  for (let k = 0; k < 52; k++) {
+    const family = ALL[k % ALL.length];
+    const patch: Partial<DesignParams> = {
+      mach: U(3, 16), span: U(0.2, 8), height: U(0.05, 3), shockDeg: U(8, 40), nx: Math.round(U(12, 100)), ny: Math.round(U(8, 70)),
+      leRadius: rnd() < 0.2 ? 0 : U(0.001, 0.2), halfModel: rnd() < 0.2, planform: kinds[Math.floor(rnd() * 5)], camber: U(-0.2, 0.4),
+      elevonDeg: U(-12, 12), finHeight: rnd() < 0.5 ? 0 : U(0, 1.4), leBlend: rnd() < 0.3 ? "g2" : "circular", lid: rnd() < 0.2 ? "bottom" : "top",
+    };
+    const m = topoMetrics(build(family, patch).mesh);
+    const duct = DUCTS.includes(family);
+    ok((duct || m.openEdges === 0) && m.nonManifoldEdges === 0 && m.inconsistentEdges === 0 && m.degenerateTris === 0 && m.signedVolume > 0, `fuzz slice ${k} ${family} ${JSON.stringify(patch)}: open ${m.openEdges} nonM ${m.nonManifoldEdges} incon ${m.inconsistentEdges} degen ${m.degenerateTris} vol ${m.signedVolume}`);
   }
 }
 
@@ -203,6 +243,15 @@ for (const family of ALL) {
   const dev = maxDistanceToMesh(sampleSurfaces(parseIgesSurfaces(iges), 5), b.mesh);
   // ducts also export their inlet/nozzle planes as BC patches (the flow-through mesh leaves them open)
   if (!DUCTS.includes(family)) ok(dev < 0.01 * L, `${family} IGES surfaces deviate ${dev.toExponential(2)} from the mesh`);
+  if (family === "star" || DUCTS.includes(family)) {
+    // star: base fan closes the TE star; ducts: flow-path solid (cowl, floor, side walls, planar inlet / nozzle caps)
+    const step = gridsToNurbsStep(refined, "t", "m");
+    const cs = checkStep(step);
+    ok(cs.ok, `${family} STEP solid: ${cs.errors.join("; ")}`);
+    const ref = family === "star" ? topoMetrics(b.mesh).signedVolume : ductFlowVolume(b.grids);
+    const vol = stepBrepVolume(step, 48);
+    ok(vol > 0 && Math.abs(vol - ref) < 0.03 * ref, `${family} STEP volume ${vol.toFixed(4)} vs ${ref.toFixed(4)}`);
+  }
   if (STEP_SOLIDS.includes(family)) {
     const step = gridsToNurbsStep(refined, "t", "m");
     const cs = checkStep(step);

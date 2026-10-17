@@ -15,7 +15,7 @@ import {
 import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, gridPoint, makeGrid, orientOutward, setGridPoint, stitchGrid, zipperSharpEdges } from "./mesh";
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 import { bindCenterline } from "./sym-euler";
-import { collapseTipRows, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
+import { collapseTipRows, flipPinchEdges, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
 import { repairAftIfDefective } from "./mesh-repair"; // [mesh-refinement]
 import { clusterFractionsToLE } from "./refinement"; // [mesh-refinement]
 import { curvatureStations } from "./curvature"; // [mesh-refinement]
@@ -425,6 +425,9 @@ function roundPlanformVertex(g: (t: number) => number, s: number, rho: number): 
   };
 }
 
+/** Rounded planform vertex radius (x LE radius) and nose station spacing divisor (dy = rho / NOSE_DY_DIV). */
+const NOSE_RHO_K = 6;
+const NOSE_DY_DIV = 24;
 /** Target max (row-to-row edge)/(chord gap) of loft cells; rows needing more use fewer chord points. */
 const CELL_ASPECT = 3.5;
 /** First chord gap at the LE is at least (row-to-row edge)/MIN_GAP_DIV. */
@@ -445,10 +448,10 @@ function lofts(
   const L = params.length;
   const s = params.span / 2;
   const Rle = effectiveLeRadius(params);
-  const rhoPlan = Rle > 0 && planform !== "rect" ? Math.min(3.5 * Rle, 0.04 * L, 0.2 * s) : 0;
+  const rhoPlan = Rle > 0 && planform !== "rect" ? Math.min(NOSE_RHO_K * Rle, 0.04 * L, 0.2 * s) : 0;
   const xleRaw = (t: number) => xLeading(t, L, s, planform, power, spat);
   const xle = rhoPlan > 0 ? roundPlanformVertex(xleRaw, s, rhoPlan) : xleRaw;
-  const ys0 = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / 12 } : undefined);
+  const ys0 = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / NOSE_DY_DIV } : undefined);
   // [mesh-refinement] curvature-adaptive spanwise stations (strength 0 / undefined = the unchanged stations)
   const ys = curvatureStations(ys0, params.refinement?.surface.curvature ?? 0, (y) => [xle(y), y, zBase(y)]);
   const nx = Math.max(8, params.nx);
@@ -1178,6 +1181,9 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const isDuct = params.family === "ramjet" || params.family === "scramjet";
     const isLift = params.family === "liftbody";
     const R = effectiveLeRadius(params);
+    const zSign = params.lid === "bottom" ? -1 : 1;
+    // vertical-fin bumps also move LE-seam points of the lid, so they must precede the fillet (else the fillet strip detaches)
+    if (!isDuct) applyFins(built.upper, params, zSign);
     // deflect the elevon BEFORE the fillet is built so the LE fillet and tip caps follow the same rows
     if (!isDuct) applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
     let leading: SurfaceGrid | null = null;
@@ -1200,14 +1206,14 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
         extra.push(lip);
       }
     }
-    const zSign = params.lid === "bottom" ? -1 : 1;
-    if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     if (!isDuct) {
-      tidyTrailingEdge(built.upper, built.lower, params.length);
-      collapseTipRows(built.upper, built.lower, leading, params.length);
+      tidyTrailingEdge(built.upper, built.lower, params.length, undefined, params.halfModel);
+      collapseTipRows(built.upper, built.lower, leading, params.length, undefined, params.halfModel);
       enforceMonotoneChord(built.upper);
       enforceMonotoneChord(built.lower);
+      // the monotone-chord pass moves upper and lower x independently; re-zip the knife-edge tip columns
+      if (!isLift && params.family !== "liftbody") sharpenTips(built.upper, built.lower, leading, params.halfModel);
     }
     grids = [built.upper, built.lower];
     const extra = (built as { extra?: SurfaceGrid[] }).extra;
@@ -1242,7 +1248,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     }
   }
 
-  mesh = removeDoubleFaces(compactMesh(mesh));
+  mesh = flipPinchEdges(removeDoubleFaces(compactMesh(mesh)));
   // [mesh-refinement] The grid-level TE tidy + removeDoubleFaces above is the primary closure. Only when that
   // leaves open / non-manifold edges (aft tips at higher ny) fall back to the tolerance-aware aft weld.
   // Open-ended flow-through ducts are intentionally open, so they are left alone.
