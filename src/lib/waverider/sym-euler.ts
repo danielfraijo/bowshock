@@ -348,6 +348,25 @@ function interp(wall: Centerline, cp: Float64Array, x: number): number {
   return cp[lo] + (cp[hi] - cp[lo]) * t;
 }
 
+/** Local dz/dx of the bound centreline at x (finite difference of the bracketing segment). */
+function wallSlope(wall: Centerline, x: number): number {
+  const xs = wall.x;
+  const last = xs.length - 1;
+  let lo = 0;
+  let hi = last;
+  if (x <= xs[0]) hi = 1;
+  else if (x >= xs[last]) lo = last - 1;
+  else {
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (xs[mid] <= x) lo = mid;
+      else hi = mid;
+    }
+  }
+  const dx = xs[hi] - xs[lo];
+  return dx > 1e-12 ? (wall.z[hi] - wall.z[lo]) / dx : 0;
+}
+
 function flowDir(alpha: number, beta: number): Vec3 {
   const ca = Math.cos(alpha);
   const sa = Math.sin(alpha);
@@ -482,10 +501,25 @@ export function withSymmetryEuler(
       const field = cz >= 0 ? up : lo;
       const eCp = interp(wall, field, cx);
       const yN = Math.abs(cy) / (0.5 * span);
-      const center = Math.exp(-((yN / 0.34) ** 2));
-      const nose = cx < 3.2 * Rn ? Math.exp(-((yN / 0.7) ** 2)) : 0;
+      // PHYSICS-ACCURACY CHANGE (Dina, flagged shared edit): the 2-D centreline solution is the pressure on the
+      // *keel line*. On an anhedral caret the lower faces are planar facets 33° out of the symmetry plane
+      // whose inclination to the flow (8.7°) is not the keel's, so blending it in cut the lower-face Cp from the
+      // exact oblique-shock 0.0787 to 0.0195 (CL −75 %). Euler now only carries a panel whose normal agrees with
+      // the normal of the wall it was solved on (Gaussian in the angle, 6° for the span blend, 29° for the nose
+      // cap where the surface turns quickly); elsewhere the base method (exact on attached facets) stays.
+      const sl = wallSlope(wall, cx);
+      const inv = 1 / Math.sqrt(1 + sl * sl);
+      const sgn = cz >= 0 ? 1 : -1;
+      const dotN = sgn * (-sl * inv * n0 + inv * n2);
+      const dAng = Math.acos(Math.max(-1, Math.min(1, dotN)));
+      const gCenter = Math.exp(-((dAng / 0.105) ** 2));
+      const gNose = Math.exp(-((dAng / 0.5) ** 2));
+      const center = Math.exp(-((yN / 0.34) ** 2)) * gCenter;
+      const nose = cx < 3.2 * Rn ? Math.exp(-((yN / 0.7) ** 2)) * gNose : 0;
       const w = Math.max(center, nose);
-      cp[t] = base.cp[t] * (1 - w) + eCp * w;
+      // Physical bound (Dina, flagged): a steady wall pressure cannot exceed the pitot (post-normal-shock stagnation) Cp.
+      // The centreline solve gave up to 2.9 (pitot 1.7) at M3, α = −30° on the lift body.
+      cp[t] = Math.min(base.cp[t] * (1 - w) + eCp * w, Math.max(base.cpMax, base.cp[t]));
     }
     const cpi = cp[t];
     const dFx = -cpi * area * n0;

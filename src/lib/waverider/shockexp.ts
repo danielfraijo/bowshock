@@ -176,6 +176,8 @@ interface GasTables {
   mach: Float64Array;
   theta: Float64Array;
   p2: Float64Array;
+  /** (p2/p1 − 1)/θ: smooth in θ (→ γM²/√(M²−1) as θ→0); interpolated instead of p2 so weak turns are not biased */
+  g2: Float64Array;
   m2: Float64Array;
   nu: Float64Array;
   nuM: Float64Array;
@@ -192,6 +194,7 @@ function gasTables(gamma: number): GasTables {
   const mach = new Float64Array(nM);
   const theta = new Float64Array(nT);
   const p2 = new Float64Array(nM * nT);
+  const g2 = new Float64Array(nM * nT);
   const m2 = new Float64Array(nM * nT);
   const nuM = new Float64Array(240);
   const nu = new Float64Array(240);
@@ -202,6 +205,7 @@ function gasTables(gamma: number): GasTables {
       const o = i * nT + j;
       if (theta[j] < 1e-6) {
         p2[o] = 1;
+        g2[o] = (gamma * mach[i] * mach[i]) / Math.sqrt(mach[i] * mach[i] - 1);
         m2[o] = mach[i];
         continue;
       }
@@ -213,6 +217,7 @@ function gasTables(gamma: number): GasTables {
       }
       const sh = obliqueShock(mach[i], beta, gamma);
       p2[o] = sh.p2p1;
+      g2[o] = (sh.p2p1 - 1) / theta[j];
       m2[o] = sh.M2;
     }
   }
@@ -220,7 +225,7 @@ function gasTables(gamma: number): GasTables {
     nuM[i] = 1 + (28 * i) / 239;
     nu[i] = prandtlMeyer(nuM[i], gamma);
   }
-  const tab = { gamma, mach, theta, p2, m2, nu, nuM };
+  const tab = { gamma, mach, theta, p2, g2, m2, nu, nuM };
   tables.set(gKey, tab);
   return tab;
 }
@@ -229,6 +234,13 @@ function sample2(tab: GasTables, M: number, th: number): { p2p1: number; M2: num
   const { mach, theta, p2, m2 } = tab;
   if (th <= 1e-8) return { p2p1: 1, M2: M };
   if (M < mach[0] || th > theta[theta.length - 1]) return null;
+  if (M > mach[mach.length - 1]) {
+    // above the table (the marched Mach can reach 40): exact shock instead of extrapolating the grid
+    const b = betaFromThetaM(M, th, tab.gamma);
+    if (!Number.isFinite(b)) return null;
+    const sh = obliqueShock(M, b, tab.gamma);
+    return { p2p1: sh.p2p1, M2: Math.max(sh.M2, 1.01) };
+  }
   let i1 = 1;
   while (i1 < mach.length - 1 && mach[i1] < M) i1++;
   const i0 = i1 - 1;
@@ -243,8 +255,14 @@ function sample2(tab: GasTables, M: number, th: number): { p2p1: number; M2: num
   const c = p2[i0 * nT + j1];
   const d = p2[i1 * nT + j1];
   if (a < 0 || b < 0 || c < 0 || d < 0) return null;
-  const p =
-    a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty;
+  // Interpolate g = (p2/p1 − 1)/θ, not p2/p1: bilinear interpolation of p2 over the 0.5° θ-nodes carried up to ~4 % error
+  // per facet on weak turns (smooth lofts accumulate it, and the error was non-monotone in the mesh size).
+  const ga = tab.g2[i0 * nT + j0];
+  const gb = tab.g2[i1 * nT + j0];
+  const gc = tab.g2[i0 * nT + j1];
+  const gd = tab.g2[i1 * nT + j1];
+  const gv = ga * (1 - tx) * (1 - ty) + gb * tx * (1 - ty) + gc * (1 - tx) * ty + gd * tx * ty;
+  const p = 1 + gv * th;
   const a2 = m2[i0 * nT + j0];
   const b2 = m2[i1 * nT + j0];
   const c2 = m2[i0 * nT + j1];
@@ -273,6 +291,33 @@ function expand(_tab: GasTables, M: number, dth: number, gamma: number): { p2p1:
   const M2 = Math.min(fastInvPrandtlMeyer(nu2, gamma), 40);
   const ratio = pOverP0(M2, gamma) / Math.max(1e-12, pOverP0(M1, gamma));
   return { p2p1: ratio, M2 };
+}
+
+/** Unit strip direction in the plane of facet `k` (central difference of facet centres, projected onto the plane). */
+function stripTangent(strip: Face[], k: number, n: Vec3): Vec3 | null {
+  const ka = Math.max(k - 1, 0);
+  const kb = Math.min(k + 1, strip.length - 1);
+  // Only on smooth runs: across a corner (leading-edge bevel → surface) the centre-to-centre direction is not the
+  // streamwise direction of the facet, so the caller falls back to projecting the flow direction.
+  const COS_SMOOTH = Math.cos(10 * DEG);
+  for (const kk of [ka, kb]) {
+    const m = strip[kk].n;
+    if (n[0] * m[0] + n[1] * m[1] + n[2] * m[2] < COS_SMOOTH) return null;
+  }
+  const a = strip[ka].c;
+  const b = strip[kb].c;
+  let dx = b[0] - a[0];
+  let dy = b[1] - a[1];
+  let dz = b[2] - a[2];
+  const dn = dx * n[0] + dy * n[1] + dz * n[2];
+  dx -= dn * n[0];
+  dy -= dn * n[1];
+  dz -= dn * n[2];
+  const m = Math.hypot(dx, dy, dz);
+  if (!(m > 1e-12)) return null;
+  // always point downstream
+  const sgn = dx < 0 ? -1 : 1;
+  return [(sgn * dx) / m, (sgn * dy) / m, (sgn * dz) / m];
 }
 
 function paint(cp: Float32Array, face: Face, value: number) {
@@ -358,10 +403,10 @@ export function integrateShockExpansion(
   const chiBar = viscousChi(M, Math.max(atm.ReL * params.length, 1), Tw, atm.T);
   const pVisc = viscousInteractionPressure(chiBar);
 
-  const accum = (face: Face, cpiIn: number, v: Vec3, Medge = NaN) => {
+  const accum = (face: Face, cpiIn: number, v: Vec3, Medge = NaN, visc = true) => {
     const ndv0 = face.n[0] * v[0] + face.n[1] * v[1] + face.n[2] * v[2];
     const surfBase = face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle;
-    const cpi = ndv0 < -0.02 && !surfBase && qInf > 0 ? ((1 + cpiIn * qInf) * pVisc - 1) / qInf : cpiIn;
+    const cpi = visc && method !== "newtonian" && ndv0 < -0.02 && !surfBase && qInf > 0 ? Math.min(((1 + cpiIn * qInf) * pVisc - 1) / qInf, Math.max(cpiIn, cpMax)) : cpiIn;
     paint(cp, face, cpi);
     const dFx = -cpi * face.area * face.n[0];
     const dFy = -cpi * face.area * face.n[1];
@@ -436,6 +481,10 @@ export function integrateShockExpansion(
     }
     if (method === "newtonian") return { cp: cpMax * Math.sin(inc) ** 2, attached: true };
     if (useCone) {
+      // Taylor–Maccoll has no solution past the detachment angle; solveConeShock then returns a spurious
+      // β ≈ 70° and garbage Cp (sphere nose: CD 0.07 vs 0.88). Use the same wedge-detachment test as the
+      // panel loop and fall back to Newtonian there (physics-accuracy change, Dina).
+      if (!sample2(tab, vM, inc)) return { cp: cpMax * Math.sin(inc) ** 2, attached: false, Me: normalShock(M, g).M2 };
       const st = coneSurfaceState(M, inc, g);
       return { cp: st.cp, attached: true, Me: st.M };
     }
@@ -455,17 +504,22 @@ export function integrateShockExpansion(
     // every panel is shocked or expanded from freestream, so an expanding
     // face keeps the freestream pressure of its own angle.
     let marching = method === "mixed";
-    for (const face of strip) {
+    for (let fi = 0; fi < strip.length; fi++) {
+      const face = strip[fi];
       const v = localVelocity(face, vhat, atm.V, rates, cg);
       const vf: Vec3 = marching && vcur ? vcur : v;
       const inc = turning(vf, face.n);
       let cpi: number;
       let Me = NaN;
+      let visc = true;
       if (!marching) {
         const hit = impact(inc, M);
         cpi = hit.cp;
         Me = hit.Me ?? NaN;
-        if (!hit.attached) nDetached++;
+        if (!hit.attached) {
+          nDetached++;
+          visc = false;
+        }
       } else if (face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle) {
         cpi = -1 / (M * M);
       } else {
@@ -473,23 +527,26 @@ export function integrateShockExpansion(
         if (dth > 0.15 * DEG) {
           const fromFree = virgin;
           virgin = false;
-          if (useCone && fromFree) {
+          const sh = sample2(tab, Mloc, dth);
+          if (!sh) {
+            // detached: Newtonian here, and the rest of the strip is impact-based (no isentropic march
+            // from a subsonic post-shock state)
+            cpi = cpMax * Math.sin(Math.max(inc, 0)) ** 2;
+            nDetached++;
+            marching = false;
+            visc = false;
+            Me = normalShock(M, g).M2;
+          } else if (useCone && fromFree) {
             const st = coneSurfaceState(M, Math.max(dth, 1e-4), g);
             pRatio = st.pRatio;
             Mloc = st.M;
             cpi = st.cp;
           } else {
-            const sh = sample2(tab, Mloc, dth);
-            if (!sh) {
-              cpi = cpMax * Math.sin(Math.max(inc, 0)) ** 2;
-              nDetached++;
-              marching = false;
-              Me = normalShock(M, g).M2;
-            } else {
-              pRatio *= sh.p2p1;
-              Mloc = sh.M2;
-              cpi = (pRatio - 1) / qInf;
-            }
+            pRatio *= sh.p2p1;
+            Mloc = sh.M2;
+            // successive shocks cannot exceed the pitot (post-normal-shock stagnation) pressure; unbounded chains gave Cp 25+ at extreme camber
+            cpi = Math.min((pRatio - 1) / qInf, cpMax);
+            if (pRatio > 1 + cpMax * qInf) pRatio = 1 + cpMax * qInf;
           }
         } else {
           // Expansion (dth < 0) or a turn too small for a shock (|dth| ≤ 0.15°):
@@ -505,11 +562,19 @@ export function integrateShockExpansion(
         }
         if (Math.abs(dth) > 0.15 * DEG) virgin = false;
         // follow the surface: remove the normal component of the flow direction
-        const sn = -(vf[0] * face.n[0] + vf[1] * face.n[1] + vf[2] * face.n[2]);
-        vcur = norm([vf[0] + sn * face.n[0], vf[1] + sn * face.n[1], vf[2] + sn * face.n[2]]);
+        // The flow leaves this facet along the strip (the stream surface's own mesh line), i.e. the strip tangent
+        // projected into the facet plane. Re-projecting the previous direction instead (the old rule) let the
+        // direction drift spanwise on surfaces that roll along the strip (osculating lofts), so the summed turning grew
+        // with the mesh (Cp at x/L=1 rose 0.21 → 0.36 for nx 16 → 64) instead of converging.
+        const tdir = stripTangent(strip, fi, face.n);
+        if (tdir) vcur = tdir;
+        else {
+          const sn = -(vf[0] * face.n[0] + vf[1] * face.n[1] + vf[2] * face.n[2]);
+          vcur = norm([vf[0] + sn * face.n[0], vf[1] + sn * face.n[1], vf[2] + sn * face.n[2]]);
+        }
         if (!Number.isFinite(Me)) Me = Mloc;
       }
-      accum(face, cpi, v, Me);
+      accum(face, cpi, v, Me, visc);
     }
   };
 
@@ -523,7 +588,7 @@ export function integrateShockExpansion(
     const inc = turning(v, face.n);
     const hit = impact(inc, M);
     if (!hit.attached) nDetached++;
-    accum(face, hit.cp, v, hit.Me ?? NaN);
+    accum(face, hit.cp, v, hit.Me ?? NaN, hit.attached);
   }
 
   const qStag = qStag0;

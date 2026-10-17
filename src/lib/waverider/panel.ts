@@ -16,6 +16,7 @@ import {
   flowRegime,
   hypersonicTripped,
   isentropic,
+  maxTheta,
   knudsen,
   leesHeatFactor,
   machFromPRatio,
@@ -121,6 +122,24 @@ function tangentWedgeCp(M: number, theta: number, gamma: number, cpMax: number):
   return (sh.p2p1 - 1) / q;
 }
 
+/**
+ * Windward pressure coefficient for one panel.
+ *
+ * physics-accuracy change (Dina): the "cbaero" attached branch used a fixed 0.55·exact + 0.25·Dahlem–Buck
+ * + 0.20·Newton–Busemann blend. Against exact solutions that is 15–38 % LOW on every attached planar/conical
+ * surface (wedge M3–M20, θ 5–25°; see scripts/sweep-methods.ts) because both impact formulas under-predict
+ * small-angle compression. The exact oblique-shock / Taylor–Maccoll value now carries the panel while the
+ * shock is comfortably attached (θ ≤ 0.6 θ_max) and is faded to the old blend only as detachment approaches,
+ * where tangent-wedge/cone is known to over-predict curved/blunt surfaces and Newton–Busemann is the better model.
+ */
+function cbaeroAttachedWeight(theta: number, thMax: number): number {
+  const x = thMax > 1e-6 ? theta / thMax : 1;
+  if (x <= 0.6) return 1;
+  if (x >= 1) return 0.55;
+  const u = (x - 0.6) / 0.4;
+  return 0.55 + 0.45 * (0.5 * (1 + Math.cos(Math.PI * u)));
+}
+
 function windwardCp(
   M: number,
   theta: number,
@@ -128,6 +147,7 @@ function windwardCp(
   cpMax: number,
   method: AeroMethod,
   useCone: boolean,
+  thMax: number,
 ): { cp: number; attached: boolean } {
   const sin2 = Math.sin(theta) ** 2;
   if (method === "newtonian") return { cp: cpMax * sin2, attached: true };
@@ -138,7 +158,9 @@ function windwardCp(
     const nb = newtonBusemannCp(theta, cpMax, gamma);
     if (!attached) return { cp: 0.65 * cpMax * sin2 + 0.35 * nb, attached: false };
     const exact = useCone ? coneSurfaceCp(M, theta, gamma) : tangentWedgeCp(M, theta, gamma, cpMax);
-    return { cp: 0.55 * exact + 0.25 * db + 0.2 * nb, attached: true };
+    const we = cbaeroAttachedWeight(theta, thMax);
+    const rest = (0.25 * db + 0.2 * nb) / 0.45;
+    return { cp: we * exact + (1 - we) * rest, attached: true };
   }
   if (!attached) return { cp: cpMax * sin2, attached: false };
   if (method === "tangent" || method === "mixed") {
@@ -237,6 +259,7 @@ export function panelAero(
   const hw = Tw * cpg;
   const recovStag = clamp(1 - hw / Math.max(h0, 1), 0.05, 0.95);
   const useCone = CONE_FAMILIES.has(params.family);
+  const thMax = method === "cbaero" ? maxTheta(M, g).theta : 0;
   const kn = knudsen(atm.T, atm.p, Math.max(params.length, 1e-6));
   const wRare = rarefactionWeight(kn);
   const chiBar = viscousChi(M, Math.max(atm.ReL * params.length, 1), Tw, atm.T);
@@ -315,6 +338,7 @@ export function panelAero(
       surf = SURFACE_ID.base;
     }
     const windward = ndv < 0 && surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle;
+    let applyVisc = false;
     impact[t] = -ndv;
     if (surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle && surf !== SURFACE_ID.inlet && surf !== SURFACE_ID.symmetry) aWet += area;
     let cpi: number;
@@ -325,14 +349,23 @@ export function panelAero(
       cpi = method === "newtonian" ? 0 : leewardCp(M, theta, g);
     } else {
       const theta = Math.asin(sinth);
-      const w = windwardCp(M, theta, g, cpMax, method, useCone);
+      const w = windwardCp(M, theta, g, cpMax, method, useCone, thMax);
       cpi = w.cp;
       if (!w.attached) nDetached++;
+      // Hayes–Probstein p/p_inv belongs to an attached laminar boundary layer behind a shock. It is not
+      // applied on detached/bluff panels (Newtonian stagnation region), where it inflated sphere CD to 1.9
+      // at M20 (physics-accuracy change, Dina).
+      applyVisc = w.attached && method !== "newtonian";
     }
     // Hayes–Probstein: p/p_inviscid = pVisc. Applied to the absolute pressure ratio, not to Cp
     // (the old `cpi *= pVisc` scaled the gauge coefficient, so a flat plate at 0° got no rise
     // and an 8° wedge got +0.31χ̄ of Cp instead of of p/p∞).
-    if (windward) cpi = ((1 + cpi * 0.5 * g * M * M) * pVisc - 1) / (0.5 * g * M * M);
+    if (windward && applyVisc) {
+      // Cap at the Newtonian/pitot Cp: a wall cannot sit above the post-normal-shock stagnation pressure, and the
+      // p/p_inv correlation is unbounded (χ̄ ≳ 50 at 100 km, M20 gave p/p∞ ≈ 29 → Cp 17 at α = −30°).
+      const viscCp = ((1 + cpi * 0.5 * g * M * M) * pVisc - 1) / (0.5 * g * M * M);
+      cpi = Math.min(viscCp, Math.max(cpi, cpMax));
+    }
     if (wRare > 1e-4) {
       const fm = 2 * sinth * sinth;
       cpi = (1 - wRare) * cpi + wRare * fm;

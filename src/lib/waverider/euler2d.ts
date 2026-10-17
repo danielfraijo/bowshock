@@ -150,6 +150,14 @@ export function eulerWedge(M: number, thetaDeg: number, gamma = 1.4, vol?: Volum
   return solved;
 }
 
+/**
+ * Dina: grid-study entry point (convergence test / scripts). Thin wrapper over eulerWedge(): static uniform grid,
+ * no clustering, first order — i.e. the legacy anchor on an arbitrary ni × nj × iters.
+ */
+export function eulerWedgeGrid(M: number, thetaDeg: number, gamma: number, ni: number, nj: number, iters: number): EulerAnchor {
+  return eulerWedge(M, thetaDeg, gamma, { nStream: ni, nCross: nj, iters, wallClustering: 0, shockClustering: 0, shockWidth: 0.09, adaptive: false });
+}
+
 function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: VolumeRefinement): EulerAnchor {
   const t0 = performance.now();
   const theta = thetaDeg * DEG;

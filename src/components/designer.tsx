@@ -86,6 +86,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
     { id: "datcom", label: "DATCOM" },
     { id: "traj", label: "Traj" },
     { id: "checks", label: "Checks" },
+    { id: "data", label: "Data" },
     { id: "cad", label: "CAD" },
   ];
 }

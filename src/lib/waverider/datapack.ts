@@ -35,6 +35,7 @@ import {
 import { panelAero, type PanelAero } from "./panel";
 import { runValidation, validationSummary, type Check } from "./validate";
 import { parametricSweep } from "./study";
+import { budgetSummary, errorBudgetSteps } from "./errorbudget";
 import { DEFAULT_PARAMS, SURFACE_ID, type BuiltVehicle, type DesignParams } from "./types";
 
 export const DATAPACK_FORMAT = "bowshock-datapack/1";
@@ -657,7 +658,10 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
     const m = mSweep[i];
     const d = 1;
     const mid = aeroPoint(built, p, p.alphaDeg, m);
+    // three aeroPoints per Mach (each can hold two wasm Euler solves): yield between them so no slice blocks > ~40 ms
+    yield { frac: 0.45 + (0.2 * (i + 0.34)) / mSweep.length, label: `Mach sweep ${m.toFixed(1)} (α+${d}°)` };
     const up = aeroPoint(built, p, p.alphaDeg + d, m).a;
+    yield { frac: 0.45 + (0.2 * (i + 0.67)) / mSweep.length, label: `Mach sweep ${m.toFixed(1)} (α−${d}°)` };
     const dn = aeroPoint(built, p, p.alphaDeg - d, m).a;
     const cla = (up.cl - dn.cl) / (2 * d * DEG);
     const cma = (up.cm - dn.cm) / (2 * d * DEG);
@@ -841,6 +845,51 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
     ],
   });
 
+  /* ---- per-method error budget (design-independent analytic bodies; computed once, then cached) */
+  yield { frac: 0.9, label: "error budget" };
+  const budgetIt = errorBudgetSteps();
+  let budgetStep = budgetIt.next();
+  while (!budgetStep.done) {
+    yield { frac: 0.9 + 0.04 * budgetStep.value, label: "error budget" };
+    budgetStep = budgetIt.next();
+  }
+  const budget = budgetStep.value;
+  tables.push({
+    id: "error_budget",
+    title: "Aero-method error budget",
+    description:
+      "Error of each aero method against an exact/closed-form reference on analytic bodies (wedge, flat plate at α, double wedge/ramp, sharp cone, sphere) and on the default caret loft. Independent of the current design: it shows which method to trust where. err_pct = 100·(value − reference)/|reference|; tol_pct is the tolerance we hold the method to and rationale says why. The sphere reference is modified Newtonian (not truth).",
+    columns: [
+      col("shape", "-", "Body"),
+      col("case", "-", "Case"),
+      col("mach", "-", "Freestream Mach"),
+      col("quantity", "-", "Quantity compared"),
+      col("method", "-", "Aero method"),
+      col("reference", "see quantity", "Exact / closed-form reference"),
+      col("value", "see quantity", "Value from the method"),
+      col("err_pct", "%", "100·(value − reference)/|reference|"),
+      col("tol_pct", "%", "Tolerance for this method on this shape"),
+      col("within_tol", "-", "TRUE if |err_pct| ≤ tol_pct"),
+      col("rationale", "-", "Why this tolerance"),
+    ],
+    rows: budget.map((r) => [r.shape, r.case, r.M, r.quantity, r.method, r.reference, r.value, r.errPct, r.tolPct, r.within, r.rationale]),
+  });
+  tables.push({
+    id: "error_budget_summary",
+    title: "Aero-method error budget — summary",
+    description: "Worst and mean |error| per shape and method from the error_budget table.",
+    columns: [
+      col("shape", "-", "Body"),
+      col("method", "-", "Aero method"),
+      col("n_cases", "-", "Number of comparisons"),
+      col("max_abs_err_pct", "%", "Worst |error|"),
+      col("mean_abs_err_pct", "%", "Mean |error|"),
+      col("tol_pct", "%", "Largest tolerance applied"),
+      col("all_within_tol", "-", "TRUE if every comparison is within tolerance"),
+    ],
+    rows: budgetSummary(budget).map((s) => [s.shape, s.method, s.n, s.maxAbsPct, s.meanAbsPct, s.tolPct, s.allWithin]),
+  });
+
   /* ---- validation */
   yield { frac: 0.95, label: "validation" };
   const checks: Check[] = [...runValidation(), ...designChecks(built, p, aero, tris, M, qInf, S)];
@@ -861,7 +910,7 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
       col("rel_err", "-", "abs_err/|reference| (= abs_err when reference = 0)"),
       col("tol", "-", "Tolerance"),
       col("pass", "-", "TRUE if within tolerance"),
-      col("basis", "-", "closed-form / independent-code / invariant / consistency"),
+      col("basis", "-", "closed-form / independent-code / invariant / consistency / published-table / published-example / published-formula"),
       col("source", "-", "Citation"),
     ],
     rows: checks.map((c) => [c.id, c.id.startsWith("design-") ? "design" : "code", c.name, c.formula, c.expected, c.got, c.absErr, c.relErr, c.tol, c.pass, c.basis, c.source]),
@@ -918,7 +967,7 @@ function modelList(p: DesignParams, aero: PanelAero): string[] {
     tangent: "Aero method: tangent-wedge/cone",
     newtonian: "Aero method: modified Newtonian (Lees)",
     mixed: "Aero method: shock-expansion strip marching (oblique shock/Taylor–Maccoll at the nose, Prandtl–Meyer after)",
-    euler: "Aero method: CBAERO base blended with a symmetry-plane HLLC Euler solve (Rust → wasm) on the centreline",
+    euler: "Aero method: CBAERO base (exact oblique-shock/Taylor–Maccoll on attached surfaces) blended with a symmetry-plane HLLC Euler solve (Rust → wasm) only where the panel normal matches the centreline wall",
   };
   m.push(meth[p.aeroMethod] ?? `Aero method: ${p.aeroMethod}`);
   if (aero.notes.length) m.push(`Method notes: ${aero.notes.join(" ")}`);
@@ -1008,38 +1057,42 @@ function designChecks(built: BuiltVehicle, p: DesignParams, aero: PanelAero, tri
     });
   }
 
-  // 4. caret lower-surface Cp vs the exact oblique shock (α = 0, flight = design Mach)
-  if (p.family === "caret" && Math.abs(p.alphaDeg) < 1e-6 && Math.abs(p.betaDeg) < 1e-6 && Math.abs(M - p.mach) < 1e-6 && built.aero.attached) {
+  // 4. caret lower-surface Cp vs the exact oblique shock at each face's own inclination to the wind
+  //    (valid at any α, β: per-triangle θ = asin(−n·v̂), area-weighted; Dina: was α = β = 0 only, which made the
+  //    pack report one fewer check whenever α ≠ 0 — now the same 119 checks at every α for the default caret).
+  if (p.family === "caret" && built.aero.attached) {
+    const al = p.alphaDeg * DEG;
+    const be = p.betaDeg * DEG;
+    const vh: [number, number, number] = [Math.cos(al) * Math.cos(be), Math.sin(be), Math.sin(al) * Math.cos(be)];
     let A = 0;
     let cpA = 0;
+    let cpEx = 0;
+    let thA = 0;
+    const qd = 0.5 * p.gamma * M * M;
     for (let t = 0; t < tris.length; t++) {
       const tr = tris[t];
       if (tr.rawSurf !== SURFACE_ID.lower || tr.nz > -0.5) continue;
+      const th = Math.asin(clamp(-(tr.nx * vh[0] + tr.ny * vh[1] + tr.nz * vh[2]), -1, 1));
+      if (th < 0.5 * DEG) continue; // face shadowed / grazing at this attitude: not an oblique-shock face
+      const beta = betaFromThetaM(M, th, p.gamma);
+      if (!Number.isFinite(beta)) continue;
+      const sh = obliqueShock(M, beta, p.gamma);
       A += tr.area;
       cpA += aero.cp[t] * tr.area;
+      cpEx += ((sh.p2p1 * aero.pVisc - 1) / qd) * tr.area;
+      thA += th * tr.area;
     }
     if (A > 0) {
-      // local face inclination to the freestream: asin(−n·x̂)
-      let thA = 0;
-      for (const tr of tris) if (tr.rawSurf === SURFACE_ID.lower && tr.nz <= -0.5) thA += Math.asin(clamp(-tr.nx, -1, 1)) * tr.area;
-      const th = thA / A;
-      const beta = betaFromThetaM(M, th, p.gamma);
-      if (Number.isFinite(beta)) {
-        const sh = obliqueShock(M, beta, p.gamma);
-        // panel methods multiply windward static pressure by the Hayes–Probstein p/p_inv
-        const qd = 0.5 * p.gamma * M * M;
-        const cpExact = (sh.p2p1 * aero.pVisc - 1) / qd;
-        mk(
-          "design-caret-cp",
-          "Caret lower-face mean Cp vs exact oblique shock at the face's own inclination",
-          `Cp = (p₂/p₁·p/p_inv − 1)/(½γM²) at θ = ${(th * RAD).toFixed(3)}° (p/p_inv = ${aero.pVisc.toFixed(3)})`,
-          cpExact,
-          cpA / A,
-          0.1,
-          "closed-form",
-          "Anderson 4.17 + Rankine–Hugoniot (method limitation: tangent-wedge/CBAERO under-predict; shock-expansion recovers it)",
-        );
-      }
+      mk(
+        "design-caret-cp",
+        "Caret lower-face mean Cp vs exact oblique shock at the faces' own inclination",
+        `Cp = (p₂/p₁·p/p_inv − 1)/(½γM²) per facet at θ = asin(−n·v̂), area-weighted, mean θ = ${((thA / A) * RAD).toFixed(3)}° (p/p_inv = ${aero.pVisc.toFixed(3)})`,
+        cpEx / A,
+        cpA / A,
+        0.03,
+        "closed-form",
+        "Anderson 4.17 + Rankine–Hugoniot (method limitation: tangent-wedge/CBAERO under-predict; shock-expansion recovers it)",
+      );
     }
   }
 

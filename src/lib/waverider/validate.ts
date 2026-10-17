@@ -40,6 +40,7 @@ import { expansionAnchor, flatWedgeAnchor } from "./anchors";
 import { atmosphere } from "./atmosphere";
 import { eulerWedge } from "./euler2d";
 import { extendedChecks } from "./validate-ref";
+import { publishedChecks } from "./validate-published";
 
 export interface Check {
   id: string;
@@ -56,7 +57,7 @@ export interface Check {
   /** relative tolerance used for pass/fail */
   tol: number;
   /** how the reference was obtained: closed form / independent code / invariant */
-  basis: "closed-form" | "independent-code" | "invariant" | "consistency";
+  basis: "closed-form" | "independent-code" | "invariant" | "consistency" | "published-table" | "published-example" | "published-formula";
   pass: boolean;
   source: string;
 }
@@ -417,6 +418,7 @@ export function runValidation(): Check[] {
   );
 
   out.push(...extendedChecks());
+  out.push(...publishedChecks());
 
   validationCache = out;
   return out;

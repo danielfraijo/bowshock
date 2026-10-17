@@ -404,7 +404,13 @@ export function fastInvPrandtlMeyer(nu: number, gamma = 1.4): number {
   const log1 = Math.log(tab.m1);
   const a = log0 + ((log1 - log0) * lo) / (tab.n - 1);
   const b = log0 + ((log1 - log0) * hi) / (tab.n - 1);
-  return Math.exp(a + (b - a) * f);
+  const seed = Math.exp(a + (b - a) * f);
+  // One Newton polish on the exact ν(M). The interpolant alone is biased by ~1.3e-4 in M with one sign, and a
+  // marched smooth surface re-inverts it every facet, so the bias accumulated (~0.4 % in p over 128 facets).
+  const gm1 = gamma - 1;
+  const dnu = Math.sqrt(Math.max(seed * seed - 1, 1e-12)) / (seed * (1 + 0.5 * gm1 * seed * seed));
+  const polished = seed + (nu - prandtlMeyer(seed, gamma)) / dnu;
+  return Number.isFinite(polished) && polished >= 1 ? polished : seed;
 }
 
 export function isentropic(M: number, gamma = 1.4) {
