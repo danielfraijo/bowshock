@@ -133,7 +133,7 @@ function hllc(
 
 function volKey(v?: VolumeRefinement): string {
   if (!v || isBaseline({ preset: "medium", surface: { nx: 0, ny: 0, leClustering: 0 }, volume: v })) return "";
-  return `|${v.nStream}x${v.nCross}x${v.iters}|w${v.wallClustering}|s${v.shockClustering}|sw${v.shockWidth}|a${v.adaptive ? 1 : 0}`;
+  return `|${v.nStream}x${v.nCross}x${v.iters}|w${v.wallClustering}|s${v.shockClustering}|sw${v.shockWidth}|a${v.adaptive ? 1 : 0}|t${v.tol ?? 0}`;
 }
 
 /**
@@ -170,6 +170,7 @@ function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: Volu
   const shockAmp = volSet ? (volSet.shockClustering > 0 ? volSet.shockClustering : adaptive ? 6 : 0) : 0;
   const shockW = volSet ? volSet.shockWidth : 0.09;
   const clustered = wallAmp > 0 || shockAmp > 0;
+  const tolW = volSet?.tol && volSet.tol > 0 ? volSet.tol : 0;
 
   const Lx = 1;
   const x0 = 0.2;
@@ -272,6 +273,9 @@ function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: Volu
       S4[3] = p > 1e-8 ? p : 1e-8;
     };
     let residual = 1;
+    let peak = 0;
+    let below = 0;
+    let used = iters;
     for (let iter = 0; iter < iters; iter++) {
       let resSum = 0;
       for (let j = 0; j < NJ; j++) {
@@ -353,10 +357,19 @@ function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: Volu
         }
       }
       residual = Math.sqrt(resSum / nc);
+      // [mesh-refinement] opt-in convergence stop (volume.tol > 0): residual <= tol x its running peak for 3 sweeps
+      if (tolW > 0) {
+        if (residual > peak) peak = residual;
+        if (iter + 1 >= 30 && peak > 0 && residual <= tolW * peak) {
+          if (++below >= 3) {
+            used = iter + 1;
+            break;
+          }
+        } else below = 0;
+      }
     }
 
-
-    return { U, residual, nodesY, colS, load, cid };
+    return { U, residual, nodesY, colS, load, cid, used };
   };
 
   let run: ReturnType<typeof march>;
@@ -383,7 +396,7 @@ function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: Volu
     run = march(nodeS, ITERS);
     passes = 2;
   }
-  const { U, residual, nodesY, load, cid } = run;
+  const { U, residual, nodesY, load, cid, used } = run;
 
   let pSum = 0;
   let nSum = 0;
@@ -406,7 +419,7 @@ function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, volSet?: Volu
     cp: (p2 - 1) / q,
     exactCp,
     residual,
-    iters: ITERS,
+    iters: tolW > 0 ? used : ITERS,
     ...angles,
     ni: NI,
     nj: NJ,

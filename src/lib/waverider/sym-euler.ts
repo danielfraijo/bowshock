@@ -10,7 +10,7 @@ import { EULER_WASM_B64 } from "./euler-wasm";
 import type { PanelAero } from "./panel";
 // [mesh-refinement]
 import { LEGACY, estimateShockHeights, isBaseline, shockFractionFromHeight, stripDims, type RefinementSettings } from "./refinement";
-import { solveStrip, stripDomain } from "./strip-euler";
+import { solveStrip, stripDomain, stripGridOf } from "./strip-euler";
 import { SURFACE_ID, type DesignParams, type SurfaceGrid, type TriMesh, type Vec3 } from "./types";
 
 export interface Centerline {
@@ -112,7 +112,8 @@ function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: nu
   }
   // Rebuilt wasm (has euler_solve_ex): run the clustered static grid there. Not exercised by the shipped
   // binary; any failure falls through to the TypeScript solver, which is cross-checked against the Rust tests.
-  if (!adaptive) {
+  // the wasm entry point knows fixed-iteration first-order solves only; tolerance / second-order / sequencing run in TypeScript
+  if (!adaptive && !(v.tol && v.tol > 0) && (v.order ?? 1) === 1) {
     try {
       const k = kernel();
       if (k.solveEx) {
@@ -135,23 +136,13 @@ function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: nu
       /* fall through to TypeScript */
     }
   }
-  return solveStrip(wall.x, wall.z, mach, gamma, alpha, {
-    ni: d.ni,
-    nj: d.nj,
-    iters: d.iters,
-    wallExp: LEGACY.strip.wallExp,
-    wallClustering: v.wallClustering,
-    shockClustering: v.shockClustering,
-    shockWidth: v.shockWidth,
-    shockS,
-    adaptive,
-  }).cp;
+  return solveStrip(wall.x, wall.z, mach, gamma, alpha, stripGridOf(v, shockS)).cp;
 }
 
 function refKey(ref?: RefinementSettings): string {
   if (!ref || isBaseline(ref)) return "";
   const v = ref.volume;
-  return `|R${v.nStream}x${v.nCross}x${v.iters}w${v.wallClustering}s${v.shockClustering}u${v.shockWidth}a${v.adaptive ? 1 : 0}`;
+  return `|R${v.nStream}x${v.nCross}x${v.iters}w${v.wallClustering}s${v.shockClustering}u${v.shockWidth}a${v.adaptive ? 1 : 0}t${v.tol ?? 0}o${v.order ?? 1}q${v.sequence ?? 0}`;
 }
 
 function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, tag: string, ref?: RefinementSettings, noseR = 0): Float64Array {
