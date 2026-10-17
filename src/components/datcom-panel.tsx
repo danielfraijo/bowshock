@@ -59,11 +59,11 @@ function Num({
   max?: number;
 }) {
   return (
-    <label className="flex items-center justify-between gap-2 py-0.5">
+    <label className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 py-0.5">
       <span className="text-[11px] text-muted">{label}</span>
       <input
         type="number"
-        className="h-7 w-[5.5rem] rounded-sm border-0 bg-surface-2 px-1.5 text-right font-mono text-xs tabular-nums text-fg outline-none focus:bg-surface"
+        className="h-7 w-[5.5rem] min-w-0 max-w-full rounded-sm border-0 bg-surface-2 px-1.5 text-right font-mono text-xs tabular-nums text-fg outline-none focus:bg-surface"
         value={Number.isFinite(value) ? value : 0}
         step={step}
         min={min}
@@ -198,13 +198,14 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
       </p>
 
       <div>
-        <span className="mb-1.5 block text-xs font-medium text-muted">Preset</span>
+        <span className="hud-label mb-1.5 block !text-muted">Preset</span>
         <div className="flex flex-wrap gap-1.5">
           {PRESETS.map((p) => (
             <button
               key={p.id}
               type="button"
               onClick={() => loadPreset(p.id)}
+              aria-pressed={presetId === p.id}
               className={`h-8 rounded-sm px-2.5 text-[11px] ${presetId === p.id ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted"}`}
             >
               {p.name}
@@ -213,6 +214,7 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
           <button
             type="button"
             onClick={loadFromWaverider}
+            aria-pressed={presetId === "waverider"}
             className={`h-8 rounded-sm px-2.5 text-[11px] ${presetId === "waverider" ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted"}`}
           >
             From waverider
@@ -229,8 +231,8 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
       </div>
 
       {body ? (
-        <div className="rounded-sm bg-surface-2/60 p-3">
-          <p className="mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Body (parametric)</p>
+        <div className="hud-panel hud-panel--flat p-3">
+          <p className="mb-2 hud-label">Body (parametric)</p>
           <div className="grid grid-cols-2 gap-x-3">
             <Num label="Nose L" value={body.noseLength} onChange={(noseLength) => patchBody({ noseLength })} step={0.01} />
             <Num label="Nose D" value={body.noseDiameter} onChange={(noseDiameter) => patchBody({ noseDiameter })} step={0.01} />
@@ -262,8 +264,8 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
         </div>
       ) : null}
 
-      <div className="rounded-sm bg-surface-2/60 p-3">
-        <p className="mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Flight</p>
+      <div className="hud-panel hud-panel--flat p-3">
+        <p className="mb-2 hud-label">Flight</p>
         <label className="block">
           <span className="text-[11px] text-muted">Mach list</span>
           <input
@@ -402,7 +404,7 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
 
           {case0 ? (
             <div className="overflow-x-auto">
-              <p className="mb-1 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">
+              <p className="mb-1 hud-label">
                 M = {case0.mach.toFixed(3)} · α table
               </p>
               <table className="w-full min-w-[36rem] border-collapse font-mono text-[10px] tabular-nums">
@@ -469,7 +471,7 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
       ) : null}
 
       <div>
-        <p className="mb-1.5 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Paste DATCOM deck</p>
+        <p className="mb-1.5 hud-label">Paste DATCOM deck</p>
         <textarea
           className="h-28 w-full resize-y rounded-sm border-0 bg-surface-2 p-2 font-mono text-[10px] leading-snug text-fg outline-none focus:bg-surface"
           placeholder={"$FLTCON NMACH=2., MACH=1.5,2.0, NALPHA=3., ALPHA=0.,5.,10.,$\n$AXIBOD ...$\n$FINSET1 ...$"}

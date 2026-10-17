@@ -4,15 +4,16 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-sm font-medium transition-[opacity,transform,background-color,color,box-shadow] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:pointer-events-none disabled:opacity-40 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 active:scale-[0.98]",
+  // clip-path / cut-corner hairline / inset focus ring come from the global button rules in styles.css
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-none font-display font-semibold tracking-[0.06em] transition-[background-color,color,box-shadow] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] disabled:pointer-events-none disabled:opacity-40 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "bg-accent text-accent-fg hover:opacity-90",
-        secondary: "bg-surface-2 text-fg shadow-[0_0_0_1px_rgba(255,255,255,0.08)] hover:bg-surface",
-        outline: "bg-transparent text-fg shadow-[0_0_0_1px_rgba(255,255,255,0.10)] hover:bg-surface-2",
-        ghost: "bg-transparent text-muted hover:bg-surface-2 hover:text-fg",
-        danger: "bg-warn/15 text-warn hover:bg-warn/25",
+        default: "hud-btn-primary bg-accent text-accent-fg hover:bg-[#6ff0ff]",
+        secondary: "bg-surface-3 text-fg shadow-[inset_0_0_0_1px_var(--color-line)] hover:shadow-[inset_0_0_0_1px_var(--color-accent)] hover:text-accent",
+        outline: "bg-transparent text-fg shadow-[inset_0_0_0_1px_var(--color-line)] hover:bg-accent-dim/50 hover:shadow-[inset_0_0_0_1px_var(--color-accent)] hover:text-accent",
+        ghost: "bg-transparent text-muted [--edge:transparent] hover:bg-surface-3 hover:text-fg hover:[--edge:var(--color-line)]",
+        danger: "bg-warn-dim text-warn shadow-[inset_0_0_0_1px_var(--color-warn)] hover:bg-warn hover:text-bg",
       },
       size: {
         default: "h-11 px-4 text-sm",
