@@ -10,7 +10,7 @@ import { EULER_WASM_B64 } from "./euler-wasm";
 import type { PanelAero } from "./panel";
 // [mesh-refinement]
 import { LEGACY, estimateShockHeights, isBaseline, shockFractionFromHeight, stripDims, type RefinementSettings } from "./refinement";
-import { solveStrip, stripDomain, stripGridOf } from "./strip-euler";
+import { solveStrip, solveStripAsync, stripDomain, stripGridOf } from "./strip-euler";
 import { SURFACE_ID, type DesignParams, type SurfaceGrid, type TriMesh, type Vec3 } from "./types";
 
 export interface Centerline {
@@ -96,12 +96,11 @@ function kernel(): Kern {
 }
 
 /** [mesh-refinement] Grid-refined solve in TypeScript (see strip-euler.ts). Used for every setting except the baseline. */
-function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: number, ref: RefinementSettings, noseR: number): Float64Array {
+function refinedPlan(wall: Centerline, mach: number, gamma: number, alpha: number, ref: RefinementSettings, noseR: number) {
   const v = ref.volume;
   const d = stripDims(v);
   const dom = stripDomain(wall.x, wall.z);
-  const adaptive = v.adaptive;
-  const shockOn = v.shockClustering > 0 || adaptive;
+  const shockOn = v.shockClustering > 0 || v.adaptive;
   let shockS: Float64Array | null = null;
   if (shockOn) {
     const xs = new Float64Array(d.ni + 1);
@@ -110,6 +109,12 @@ function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: nu
     shockS = new Float64Array(d.ni + 1);
     for (let i = 0; i <= d.ni; i++) shockS[i] = shockFractionFromHeight(h[i], dom.hFar, LEGACY.strip.wallExp);
   }
+  return { v, d, shockS };
+}
+
+function solveCpRefined(wall: Centerline, mach: number, gamma: number, alpha: number, ref: RefinementSettings, noseR: number): Float64Array {
+  const { v, d, shockS } = refinedPlan(wall, mach, gamma, alpha, ref, noseR);
+  const adaptive = v.adaptive;
   // Rebuilt wasm (has euler_solve_ex): run the clustered static grid there. Not exercised by the shipped
   // binary; any failure falls through to the TypeScript solver, which is cross-checked against the Rust tests.
   // the (rebuilt) wasm entry point does first-order solves with the tolerance stop + sequencing; MUSCL and the adaptive re-cluster run in TypeScript
@@ -145,17 +150,50 @@ function refKey(ref?: RefinementSettings): string {
   return `|R${v.nStream}x${v.nCross}x${v.iters}w${v.wallClustering}s${v.shockClustering}u${v.shockWidth}a${v.adaptive ? 1 : 0}t${v.tol ?? 0}o${v.order ?? 1}q${v.sequence ?? 0}`;
 }
 
+/** [mesh-refinement] FNV-1a over the exact bytes of both wall arrays: the cache key sees the whole geometry, not three samples of it. */
+function wallHash(wall: Centerline): string {
+  let h = 0x811c9dc5;
+  for (const arr of [wall.x, wall.z]) {
+    const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    for (let i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+  }
+  return h.toString(16);
+}
+
+/** [mesh-refinement] true LRU (a hit moves the entry to the back); entries are tiny (one Cp array per wall). */
+const SOLVE_CACHE_MAX = 96;
+function remember(key: string, value: Float64Array) {
+  solved.delete(key);
+  solved.set(key, value);
+  while (solved.size > SOLVE_CACHE_MAX) {
+    const first = solved.keys().next().value;
+    if (first === undefined) break;
+    solved.delete(first);
+  }
+}
+
+/** Clears the solve cache (tests / memory pressure). */
+export function clearSymmetryEulerCache() {
+  solved.clear();
+}
+
+function cpKey(wall: Centerline, mach: number, gamma: number, alpha: number, tag: string, ref?: RefinementSettings, noseR = 0): string {
+  return `${tag}|${mach.toFixed(2)}|${gamma.toFixed(3)}|${alpha.toFixed(3)}|${wall.x.length}|${wallHash(wall)}|${noseR.toFixed(5)}${refKey(ref)}`;
+}
+
 function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, tag: string, ref?: RefinementSettings, noseR = 0): Float64Array {
-  const key = `${tag}|${mach.toFixed(2)}|${gamma.toFixed(3)}|${alpha.toFixed(3)}|${wall.x.length}|${wall.x[0].toFixed(4)}|${wall.z[wall.z.length >> 1].toFixed(4)}|${wall.x[wall.x.length - 1].toFixed(4)}${refKey(ref)}`;
+  const key = cpKey(wall, mach, gamma, alpha, tag, ref, noseR);
   const hit = solved.get(key);
-  if (hit) return hit;
+  if (hit) {
+    remember(key, hit);
+    return hit;
+  }
   if (ref && !isBaseline(ref)) {
     const out = solveCpRefined(wall, mach, gamma, alpha, ref, noseR);
-    solved.set(key, out);
-    if (solved.size > 24) {
-      const first = solved.keys().next().value;
-      if (first) solved.delete(first);
-    }
+    remember(key, out);
     return out;
   }
   const k = kernel();
@@ -172,11 +210,7 @@ function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, t
   }
   k.solve(k.ptr, n, mach, gamma, alpha);
   const out = new Float64Array(new Float64Array(k.memory.buffer, k.ptr + n * 16, n));
-  solved.set(key, out);
-  if (solved.size > 24) {
-    const first = solved.keys().next().value;
-    if (first) solved.delete(first);
-  }
+  remember(key, out);
   return out;
 }
 
@@ -231,7 +265,11 @@ export function withSymmetryEuler(
       notes: [...base.notes, "Symmetry-plane Euler needs an upper/lower centerline — CBAERO coefficients kept."],
     };
   }
-  const mach = Math.max(1.05, params.lockFlight ? params.mach : params.flightMach);
+  const machIn = params.lockFlight ? params.mach : params.flightMach;
+  if (!Number.isFinite(machIn) || !Number.isFinite(alphaDeg) || !Number.isFinite(params.gamma) || params.gamma <= 1) {
+    return { ...base, notes: [...base.notes, "Symmetry-plane Euler skipped: Mach / alpha / gamma is not a finite, valid number. CBAERO kept."] };
+  }
+  const mach = Math.max(1.05, machIn);
   const alpha = (alphaDeg * Math.PI) / 180;
   let up: Float64Array;
   let lo: Float64Array;
@@ -239,6 +277,7 @@ export function withSymmetryEuler(
     const noseR = Math.max(effectiveLeRadius(params), 0.006 * params.length);
     up = solveCp(walls.upper, mach, params.gamma, alpha, "u", params.refinement, noseR);
     lo = solveCp(walls.lower, mach, params.gamma, alpha, "l", params.refinement, noseR);
+    if (!up.every(Number.isFinite) || !lo.every(Number.isFinite)) throw new Error("non-finite Cp");
   } catch (err) {
     return { ...base, notes: [...base.notes, `Euler kernel failed (${err instanceof Error ? err.message : "wasm"}). CBAERO kept.`] };
   }
@@ -356,4 +395,43 @@ export function withSymmetryEuler(
         : []),
     ],
   };
+}
+
+/**
+ * [mesh-refinement] Pre-solve both walls of a built vehicle into the solve cache without blocking the UI thread
+ * (the refined solver is chunked and yields to the event loop every `chunk` sweeps). A later synchronous
+ * `withSymmetryEuler` for the same geometry / flight condition / refinement is then a cache hit.
+ * Resolves to false when there is nothing to warm (baseline = the wasm run is already ~20 ms, or no centerline).
+ */
+export async function warmSymmetryEuler(
+  mesh: TriMesh,
+  params: DesignParams,
+  alphaDeg: number,
+  opts: { chunk?: number; signal?: { aborted: boolean }; onProgress?: (p: number) => void } = {},
+): Promise<boolean> {
+  const walls = wallsOf.get(mesh);
+  const ref = params.refinement;
+  if (!walls || walls.upper.x.length < 4 || !ref || isBaseline(ref)) return false;
+  const machIn = params.lockFlight ? params.mach : params.flightMach;
+  if (!Number.isFinite(machIn) || !Number.isFinite(alphaDeg) || !Number.isFinite(params.gamma) || params.gamma <= 1) return false;
+  const mach = Math.max(1.05, machIn);
+  const alpha = (alphaDeg * Math.PI) / 180;
+  const noseR = Math.max(effectiveLeRadius(params), 0.006 * params.length);
+  let done = 0;
+  for (const [tag, wall] of [["u", walls.upper], ["l", walls.lower]] as const) {
+    const key = cpKey(wall, mach, params.gamma, alpha, tag, ref, noseR);
+    if (solved.has(key)) {
+      done++;
+      continue;
+    }
+    const { v, shockS } = refinedPlan(wall, mach, params.gamma, alpha, ref, noseR);
+    const r = await solveStripAsync(wall.x, wall.z, mach, params.gamma, alpha, stripGridOf(v, shockS), {
+      chunk: opts.chunk,
+      signal: opts.signal,
+      onProgress: (p) => opts.onProgress?.((done + p) / 2),
+    });
+    if (r.cp.every(Number.isFinite)) remember(key, r.cp);
+    done++;
+  }
+  return true;
 }
