@@ -17,10 +17,28 @@ import type { DesignParams, SurfaceGrid, Vec3 } from "./types";
 import { clamp, vadd, vcross, vdot, vlen, vlerp, vnorm, vscale, vsub } from "./math";
 import { gridPoint, makeGrid, setGridPoint } from "./mesh";
 
-const N_ARC = 13;
+/** Max facet turning on the fillet arc (deg). Sets the arc point count (9..21). */
+const LE_MAX_SEG = 10 * (Math.PI / 180);
 const ALPHA_MIN = 3.5 * (Math.PI / 180);
 /** Longest span edge a fillet quad may have, in units of the arc size. */
 const FILLET_ASPECT = 12;
+/** Tangent length of the blend never exceeds this many radii (bounds the material removed). */
+const S_CAP = 4;
+/** G2 blends need a much longer transition than a circle to turn the same angle with zero end curvature. */
+const S_CAP_G2 = 40;
+/** Blend footprint never exceeds this fraction of the local row length. */
+const CHORD_FRAC = 0.12;
+/** The tangent length may change by at most this much per unit LE length (smooth radius law). */
+const S_LIP = 0.5;
+/** Longest LE edge over shortest arc facet the fillet strips may have. */
+const LE_ASPECT = 400;
+
+export type LeBlend = "circular" | "g2";
+
+export interface FilletOptions {
+  /** circular (default): README contract. g2: quintic blend with zero end curvature (curvature-continuous). */
+  blend?: LeBlend;
+}
 
 export function effectiveLeRadius(params: DesignParams): number {
   if (params.leBlunt === false) return 0;
@@ -46,14 +64,6 @@ function chordLen(pts: Vec3[]): number {
   return s;
 }
 
-function tangentAt(pts: Vec3[], from = 0): Vec3 {
-  for (let i = from; i < pts.length - 1; i++) {
-    const t = vsub(pts[i + 1], pts[i]);
-    if (vlen(t) > 1e-12) return vnorm(t);
-  }
-  return [1, 0, 0];
-}
-
 function pointAtLength(pts: Vec3[], sWant: number): { p: Vec3; k: number } {
   let acc = 0;
   for (let i = 0; i < pts.length - 1; i++) {
@@ -67,26 +77,38 @@ function pointAtLength(pts: Vec3[], sWant: number): { p: Vec3; k: number } {
   return { p: pts[pts.length - 1], k: pts.length - 1 };
 }
 
-function resample(pts: Vec3[], n: number, power = 1.4): Vec3[] {
+/**
+ * Re-place the points of a row on the polyline `pts` (the part of the row behind the fillet tangent
+ * point) keeping the ORIGINAL relative arclength spacing `fr` (0..1). The grid's own cell grading is
+ * preserved, so the first cell behind the fillet is as wide as the loft intended (no sliver).
+ */
+function resampleFrac(pts: Vec3[], fr: number[]): Vec3[] {
+  const n = fr.length;
   if (pts.length === 0) return pts;
-  if (n <= 1) return [pts[0]];
+  if (pts.length === 1) return Array.from({ length: n }, () => pts[0]);
   const acc: number[] = [0];
   for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + vlen(vsub(pts[i], pts[i - 1])));
   const total = acc[acc.length - 1];
   if (total < 1e-15) return Array.from({ length: n }, () => pts[0]);
   const out: Vec3[] = [];
+  let k = 0;
   for (let i = 0; i < n; i++) {
-    const u = n <= 1 ? 0 : i / (n - 1);
-    const s = Math.pow(u, power) * total;
-    let k = 0;
-    while (k < acc.length - 2 && acc[k + 1] < s) k++;
+    const sPos = clamp(fr[i], 0, 1) * total;
+    while (k < acc.length - 2 && acc[k + 1] < sPos) k++;
     const span = acc[k + 1] - acc[k];
-    const t = span > 1e-15 ? (s - acc[k]) / span : 0;
+    const t = span > 1e-15 ? (sPos - acc[k]) / span : 0;
     out.push(vlerp(pts[k], pts[k + 1], clamp(t, 0, 1)));
   }
   out[0] = pts[0];
   out[n - 1] = pts[pts.length - 1];
   return out;
+}
+
+function arcFractions(row: Vec3[]): number[] {
+  const acc: number[] = [0];
+  for (let i = 1; i < row.length; i++) acc.push(acc[i - 1] + vlen(vsub(row[i], row[i - 1])));
+  const tot = acc[acc.length - 1] || 1;
+  return acc.map((v) => v / tot);
 }
 
 function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
@@ -97,252 +119,334 @@ function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
   return vnorm(vadd(vscale(a, Math.sin((1 - t) * om) / s), vscale(b, Math.sin(t * om) / s)));
 }
 
-type Station = { ok: boolean; arc: Vec3[]; tu: Vec3; tl: Vec3; uRow: Vec3[] | null; lRow: Vec3[] | null };
+/**
+ * Quintic Bezier blend between the two tangent lines with zero curvature at both ends
+ * (P0,P1,P2 and P3,P4,P5 are collinear), so it meets planar faces with G2 contact.
+ * Control offsets (fractions of the tangent length s measured from the apex V):
+ * P0 = s, P1 = 0.40 s, P2 = 0 (the apex), mirrored on the other side.
+ */
+const G2_A1 = 0.4;
+function bezier5(c: Vec3[], t: number): Vec3 {
+  const u = 1 - t;
+  const w = [u ** 5, 5 * t * u ** 4, 10 * t * t * u ** 3, 10 * t ** 3 * u * u, 5 * t ** 4 * u, t ** 5];
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  for (let k = 0; k < 6; k++) {
+    x += w[k] * c[k][0];
+    y += w[k] * c[k][1];
+    z += w[k] * c[k][2];
+  }
+  return [x, y, z];
+}
+
+/** Apex radius of the unit-tangent-length G2 blend for half-angle h (radians). */
+export function g2ApexRadiusUnit(h: number): number {
+  const uL: Vec3 = [Math.cos(h), -Math.sin(h), 0];
+  const uU: Vec3 = [Math.cos(h), Math.sin(h), 0];
+  const c = g2Controls([0, 0, 0], uL, uU, 1);
+  const d = 1e-3;
+  const p0 = bezier5(c, 0.5 - d);
+  const p1 = bezier5(c, 0.5);
+  const p2 = bezier5(c, 0.5 + d);
+  const ax = (p2[0] - p0[0]) / (2 * d);
+  const ay = (p2[1] - p0[1]) / (2 * d);
+  const bx = (p2[0] - 2 * p1[0] + p0[0]) / (d * d);
+  const by = (p2[1] - 2 * p1[1] + p0[1]) / (d * d);
+  const k = Math.abs(ax * by - ay * bx) / Math.pow(ax * ax + ay * ay, 1.5);
+  return 1 / Math.max(k, 1e-9);
+}
+
+function g2Controls(V: Vec3, uL: Vec3, uU: Vec3, s: number): Vec3[] {
+  const at = (u: Vec3, f: number): Vec3 => vadd(V, vscale(u, s * f));
+  return [at(uL, 1), at(uL, G2_A1), at(uL, 0), at(uU, 0), at(uU, G2_A1), at(uU, 1)];
+}
 
 function planar(v: Vec3, y: number): Vec3 {
   return [v[0], y, v[2]];
 }
 
-function xzNorm(v: Vec3): Vec3 {
-  const n = Math.hypot(v[0], v[2]);
-  if (n < 1e-15) return [1, 0, 0];
-  return [v[0] / n, 0, v[2] / n];
+/** In-plane unit vector perpendicular to T (removes the LE-tangent component). */
+function perpTo(v: Vec3, T: Vec3): Vec3 {
+  return vnorm(vsub(v, vscale(T, vdot(v, T))));
 }
 
-function lockY(st: Station, y: number) {
-  for (const p of st.arc) p[1] = y;
-  st.tu[1] = y;
-  st.tl[1] = y;
-  if (st.uRow) st.uRow[0][1] = y;
-  if (st.lRow) st.lRow[0][1] = y;
+/** Vector from the LE point to where the y = const plane meets a normal-plane offset D. */
+function toSection(D: Vec3, T: Vec3): Vec3 {
+  if (Math.abs(T[1]) < 0.02) return [D[0], 0, D[2]];
+  const k = D[1] / T[1];
+  return [D[0] - k * T[0], 0, D[2] - k * T[2]];
 }
 
-function openTangents(tU: Vec3, tL: Vec3): { tU: Vec3; tL: Vec3; alpha: number } {
-  tU = xzNorm(tU);
-  tL = xzNorm(tL);
-  let alpha = Math.acos(clamp(vdot(tU, tL), -0.999, 0.999));
-  if (alpha >= ALPHA_MIN) return { tU, tL, alpha };
-  let bis = vadd(tU, tL);
-  if (vlen(bis) < 0.2) bis = [1, 0, 0];
-  bis = xzNorm(bis);
-  let thick: Vec3 = [0, 0, 1];
-  if (Math.abs(bis[2]) > 0.92) thick = [1, 0, 0];
-  thick = xzNorm(vcross([0, 1, 0], bis));
-  if (vlen(thick) < 0.2) thick = [0, 0, 1];
-  const h = ALPHA_MIN / 2;
-  return {
-    tU: xzNorm(vadd(vscale(bis, Math.cos(h)), vscale(thick, Math.sin(h)))),
-    tL: xzNorm(vadd(vscale(bis, Math.cos(h)), vscale(thick, -Math.sin(h)))),
-    alpha: ALPHA_MIN,
+/** LE tangent at each station from the LE polyline; planform corners use the +span side. */
+function leTangents(P: Vec3[]): Vec3[] {
+  const n = P.length;
+  const out: Vec3[] = [];
+  const dir = (a: Vec3, b: Vec3): Vec3 | null => {
+    const d = vsub(b, a);
+    return vlen(d) > 1e-12 ? vnorm(d) : null;
   };
+  for (let j = 0; j < n; j++) {
+    const f = j + 1 < n ? dir(P[j], P[j + 1]) : null;
+    const b = j > 0 ? dir(P[j - 1], P[j]) : null;
+    let T: Vec3;
+    if (f && b) {
+      if (vdot(f, b) > Math.cos((55 * Math.PI) / 180)) T = vnorm(vadd(f, b));
+      else T = P[j][1] >= 0 ? f : b; // corner (e.g. the delta nose): take the side away from the centerline
+    } else T = f ?? b ?? [0, 1, 0];
+    out.push(T);
+  }
+  return out;
 }
 
-function stationFillet(U: Vec3[], Lo: Vec3[], radius: number, L: number): Station {
-  const y = U[0][1];
-  const P = planar(vlerp(U[0], Lo[0], 0.5), y);
-  const opening = vlen(vsub(U[0], Lo[0]));
-  const fail = (p: Vec3): Station => ({
-    ok: false,
-    arc: Array.from({ length: N_ARC }, () => planar(p, y)),
-    tu: planar(p, y),
-    tl: planar(p, y),
-    uRow: U.map((q) => [q[0], q[1], q[2]] as Vec3),
-    lRow: Lo.map((q) => [q[0], q[1], q[2]] as Vec3),
-  });
-  if (opening > 1.6 * Math.max(radius, 1e-9)) return fail(P);
-  const opened = openTangents(tangentAt(U), tangentAt(Lo));
-  const tU = opened.tU;
-  const tL = opened.tL;
-  const alpha = opened.alpha;
-  const half = 0.5 * alpha;
-  const chord = Math.max(chordLen(U), chordLen(Lo), 1e-9);
-  let R = Math.min(radius, 0.08 * L, 0.28 * chord * Math.tan(half));
-  const tProbe = Math.min(0.16 * chord, Math.max(4 * radius, 1e-6));
-  const tLoc = vlen(vsub(pointAtLength(U, tProbe).p, pointAtLength(Lo, tProbe).p));
-  R = Math.min(R, 0.42 * tLoc, 0.12 * chord);
-  if (R < 2e-5 * L && chord > 4e-4 * L) R = Math.min(2e-5 * L, 0.18 * chord);
-  if (!(R > 1e-12)) return fail(P);
-  let sUse = R / Math.tan(half);
-  sUse = Math.min(sUse, 2.4 * R, 0.1 * chord);
-  R = sUse * Math.tan(half);
-  const d = R / Math.sin(half);
-  const bis = xzNorm(vadd(tU, tL));
-  if (vlen(bis) < 0.2) return fail(P);
-  const C = planar(vadd(P, vscale(bis, d)), y);
-  const uCut = pointAtLength(U, sUse);
-  const lCut = pointAtLength(Lo, sUse);
-  let TU = planar(uCut.p, y);
-  let TL = planar(lCut.p, y);
-  if (vlen(vsub(TU, TL)) < 4e-4 * L) {
-    TU = planar(vadd(P, vscale(tU, sUse)), y);
-    TL = planar(vadd(P, vscale(tL, sUse)), y);
-  }
-  const F = planar(vsub(C, vscale(bis, R)), y);
-  const aTL = xzNorm(vsub(TL, C));
-  const aTU = xzNorm(vsub(TU, C));
-  const aF = xzNorm(vsub(F, C));
-  if (vlen(aTL) < 0.5 || vlen(aTU) < 0.5 || vlen(aF) < 0.5) return fail(P);
-  const arc: Vec3[] = [];
-  for (let k = 0; k < N_ARC; k++) {
-    const t = k / (N_ARC - 1);
-    const dir = t <= 0.5 ? slerpUnit(aTL, aF, t * 2) : slerpUnit(aF, aTU, t * 2 - 1);
-    arc.push(planar(vadd(C, vscale(xzNorm(dir), R)), y));
-  }
-  arc[0] = TL;
-  arc[N_ARC - 1] = TU;
-  const uRest = [TU, ...U.slice(Math.max(uCut.k, 1))];
-  const lRest = [TL, ...Lo.slice(Math.max(lCut.k, 1))];
-  const st: Station = {
-    ok: true,
-    arc,
-    tu: TU,
-    tl: TL,
-    uRow: resample(uRest, U.length, 1.45),
-    lRow: resample(lRest, Lo.length, 1.45),
+interface Frame {
+  ok: boolean;
+  P: Vec3;
+  T: Vec3;
+  uU: Vec3;
+  uL: Vec3;
+  h: number;
+  alpha: number;
+  U: Vec3[];
+  Lo: Vec3[];
+  wU: Vec3;
+  wL: Vec3;
+  chord: number;
+  s: number;
+}
+
+interface Arc {
+  pts: Vec3[];
+  tu: Vec3;
+  tl: Vec3;
+  uRest: Vec3[];
+  lRest: Vec3[];
+  scale: number;
+  R: number;
+}
+
+function stationFrame(U: Vec3[], Lo: Vec3[], T: Vec3, sgnUp: number, Rreq: number): Frame {
+  const P = vlerp(U[0], Lo[0], 0.5);
+  const bad = (): Frame => ({ ok: false, P, T, uU: T, uL: T, h: 0, alpha: 0, U, Lo, wU: T, wL: T, chord: 0, s: 0 });
+  if (vlen(vsub(U[0], Lo[0])) > 0.6 * Math.max(Rreq, 1e-9)) return bad();
+  const chordU = chordLen(U);
+  const chordL = chordLen(Lo);
+  const chord = Math.max(Math.min(chordU, chordL), 1e-12);
+  const probe = (row: Vec3[], c: number): Vec3 => {
+    const first = vlen(vsub(row[1], row[0]));
+    const q = pointAtLength(row, Math.max(first, 0.02 * c)).p;
+    return vsub(q, P);
   };
-  lockY(st, y);
-  return st;
-}
-
-function lerpStation(a: Station, b: Station, t: number): Station {
-  const arc = a.arc.map((p, k) => vlerp(p, b.arc[k], t));
-  const tu = vlerp(a.tu, b.tu, t);
-  const tl = vlerp(a.tl, b.tl, t);
-  arc[0] = tl;
-  arc[arc.length - 1] = tu;
-  const uRow = a.uRow && b.uRow ? a.uRow.map((p, i) => vlerp(p, b.uRow![i], t)) : a.uRow ?? b.uRow;
-  const lRow = a.lRow && b.lRow ? a.lRow.map((p, i) => vlerp(p, b.lRow![i], t)) : a.lRow ?? b.lRow;
-  if (uRow) uRow[0] = tu;
-  if (lRow) lRow[0] = tl;
-  return { ok: true, arc, tu, tl, uRow: uRow ?? null, lRow: lRow ?? null };
-}
-
-function arcMeasure(arc: Vec3[]) {
-  const a = arc[0];
-  const c = arc[arc.length - 1];
-  const chord = vlen(vsub(c, a));
-  let bow = 0;
-  let minSeg = Infinity;
-  for (let k = 0; k < arc.length; k++) {
-    const t = arc.length <= 1 ? 0 : k / (arc.length - 1);
-    const chx = a[0] + (c[0] - a[0]) * t;
-    const chy = a[1] + (c[1] - a[1]) * t;
-    const chz = a[2] + (c[2] - a[2]) * t;
-    const p = arc[k];
-    const bowK = Math.hypot(p[0] - chx, p[1] - chy, p[2] - chz);
-    if (bowK > bow) bow = bowK;
-    if (k > 0) {
-      const q = arc[k - 1];
-      const seg = Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
-      if (seg < minSeg) minSeg = seg;
-    }
+  const rU = probe(U, chordU);
+  const rL = probe(Lo, chordL);
+  if (vlen(rU) < 1e-12 || vlen(rL) < 1e-12) return bad();
+  let uU = perpTo(rU, T);
+  let uL = perpTo(rL, T);
+  if (!(vlen(uU) > 0.5) || !(vlen(uL) > 0.5)) return bad();
+  let alpha = Math.acos(clamp(vdot(uU, uL), -1, 1));
+  if (alpha < ALPHA_MIN) {
+    // open a near-zero wedge symmetrically about its bisector so s = R / tan(h) stays finite
+    let bis = vadd(uU, uL);
+    bis = vlen(bis) < 0.2 ? perpTo(vsub(rU, rL), T) : vnorm(bis);
+    let thick = perpTo(vcross(T, bis), T);
+    if (vdot(thick, [0, 0, sgnUp]) < 0) thick = vscale(thick, -1);
+    const hh = ALPHA_MIN / 2;
+    uU = vnorm(vadd(vscale(bis, Math.cos(hh)), vscale(thick, Math.sin(hh))));
+    uL = vnorm(vadd(vscale(bis, Math.cos(hh)), vscale(thick, -Math.sin(hh))));
+    alpha = ALPHA_MIN;
   }
-  const seam: Vec3 = [(a[0] + c[0]) * 0.5, (a[1] + c[1]) * 0.5, (a[2] + c[2]) * 0.5];
-  return { chord, bow, minSeg: Number.isFinite(minSeg) ? minSeg : 0, seam };
+  const h = Math.min(0.5 * alpha, (80 * Math.PI) / 180);
+  const wU = toSection(uU, T);
+  const wL = toSection(uL, T);
+  return { ok: true, P, T, uU, uL, h, alpha, U, Lo, wU, wL, chord, s: 0 };
 }
 
-function stationStep(stations: Station[], j: number): number {
-  const p = stations[j].tu;
-  let d = 0;
-  if (j > 0) d = Math.max(d, vlen(vsub(p, stations[j - 1].tu)));
-  if (j + 1 < stations.length) d = Math.max(d, vlen(vsub(p, stations[j + 1].tu)));
-  return d;
-}
-
-/** Pinch an unresolved arc to one seam point so the spanwise quads have zero area and drop. */
-function collapseToSeam(st: Station, seam: Vec3) {
-  const x = seam[0];
-  const y = seam[1];
-  const z = seam[2];
-  for (let k = 0; k < st.arc.length; k++) st.arc[k] = [x, y, z];
-  st.tu = [x, y, z];
-  st.tl = [x, y, z];
-  if (st.uRow) st.uRow[0] = [x, y, z];
-  if (st.lRow) st.lRow[0] = [x, y, z];
-  st.ok = false;
+/** Points of the LE blend between the two tangent lines (apex P, unit directions uL/uU, tangent length s). */
+function blendPoints(P: Vec3, uL: Vec3, uU: Vec3, s: number, h: number, nArc: number, blend: LeBlend): { raw: Vec3[]; R: number } {
+  const raw: Vec3[] = [];
+  if (blend === "g2") {
+    const ctrl = g2Controls(P, uL, uU, s);
+    for (let k = 0; k < nArc; k++) raw.push(bezier5(ctrl, k / (nArc - 1)));
+    return { raw, R: s * g2ApexRadiusUnit(h) };
+  }
+  const R = s * Math.tan(h);
+  const bis = vnorm(vadd(uU, uL));
+  const AU = vadd(P, vscale(uU, s));
+  const AL = vadd(P, vscale(uL, s));
+  const d = R / Math.sin(h);
+  const C = vadd(P, vscale(bis, d));
+  const aL = vnorm(vsub(AL, C));
+  const aU = vnorm(vsub(AU, C));
+  const front = vscale(bis, -1);
+  for (let k = 0; k < nArc; k++) {
+    const t = k / (nArc - 1);
+    const dir = t <= 0.5 ? slerpUnit(aL, front, t * 2) : slerpUnit(front, aU, t * 2 - 1);
+    raw.push(vadd(C, vscale(dir, R)));
+  }
+  return { raw, R };
 }
 
 /**
- * A circular section is resolved only when its chord and bow are a real
- * fraction of the local span step. Below that, the strip is a sliver: the
- * face normal swings by atan(δ/ℓ) and the corner draws as a fan.
+ * 2-D LE profile for a wedge of half-angle `halfAngle` (rad): the blend between the lower and upper tangent
+ * lines, n points, apex at the origin pointing to -x, tangent length 1. Exposed for the continuity tests.
  */
-function arcResolved(st: Station, dy: number): boolean {
-  if (!st.ok) return false;
-  const m = arcMeasure(st.arc);
-  const scale = Math.max(m.chord, 2 * m.bow);
-  if (!(scale > 1e-9)) return false;
-  if (dy > FILLET_ASPECT * scale) return false;
-  return m.minSeg * (FILLET_ASPECT * 4) >= Math.max(dy, 1e-12);
+export function leBlendProfile(halfAngle: number, blend: LeBlend, n = 201): { pts: Vec3[]; radius: number; uL: Vec3; uU: Vec3 } {
+  const uU: Vec3 = [Math.cos(halfAngle), 0, Math.sin(halfAngle)];
+  const uL: Vec3 = [Math.cos(halfAngle), 0, -Math.sin(halfAngle)];
+  const { raw, R } = blendPoints([0, 0, 0], uL, uU, 1, halfAngle, n, blend);
+  return { pts: raw, radius: R, uL, uU };
+}
+
+function buildArc(f: Frame, s: number, y: number, nArc: number, blend: LeBlend): Arc {
+  const h = f.h;
+  const { raw, R } = blendPoints(f.P, f.uL, f.uU, s, h, nArc, blend);
+  const pts = raw.map((q) => {
+    const D = vsub(q, f.P);
+    const d = toSection(D, f.T);
+    return planar(vadd(f.P, d), y);
+  });
+  const lenU = vlen(toSection(vscale(f.uU, s), f.T));
+  const lenL = vlen(toSection(vscale(f.uL, s), f.T));
+  const cutU = pointAtLength(f.U, lenU);
+  const cutL = pointAtLength(f.Lo, lenL);
+  const tu = planar(cutU.p, y);
+  const tl = planar(cutL.p, y);
+  // land the arc exactly on the grid rows (curved rows differ from the planar model by O(kappa s^2))
+  const eL = vsub(tl, pts[0]);
+  const eU = vsub(tu, pts[nArc - 1]);
+  for (let k = 0; k < nArc; k++) {
+    const t = k / (nArc - 1);
+    const wU = t * t * (3 - 2 * t);
+    const wL = 1 - wU;
+    pts[k] = planar(vadd(pts[k], vadd(vscale(eL, wL * wL), vscale(eU, wU * wU))), y);
+  }
+  pts[0] = tl;
+  pts[nArc - 1] = tu;
+  const front = pts[(nArc - 1) >> 1];
+  const mid = vlerp(tl, tu, 0.5);
+  const scale = Math.max(vlen(vsub(tu, tl)), 2 * vlen(vsub(front, mid)));
+  return {
+    pts,
+    tu,
+    tl,
+    uRest: [tu, ...f.U.slice(Math.max(cutU.k, 1))],
+    lRest: [tl, ...f.Lo.slice(Math.max(cutL.k, 1))],
+    scale,
+    R,
+  };
 }
 
 /**
- * Per-span circular fillet. Returns a leading-edge surface
- * (i along the arc, j along span) or null if R = 0 or the arc
- * cannot be resolved on this span lattice.
+ * Per-span rolling-ball fillet. Returns a leading-edge surface (i along the arc,
+ * j along span) or null if R = 0 or the arc cannot be resolved on this span lattice.
+ *
+ * The ball rolls in the plane NORMAL to the leading edge (not the constant-y plane),
+ * so a swept edge gets a true radius R; each y = const station then carries the exact
+ * section of that fillet. Tangent length is bounded by S_CAP radii, by the local row
+ * length, and by the local thickness, and varies at most S_LIP per unit LE length so
+ * the radius tapers smoothly toward the tips instead of switching off station by station.
  */
 export function applyLeadingFillet(
   upper: SurfaceGrid,
   lower: SurfaceGrid,
   radius: number,
   length: number,
+  opts: FilletOptions = {},
 ): SurfaceGrid | null {
   if (!(radius > 1e-9)) return null;
+  const blend = opts.blend ?? "circular";
   const L = Math.max(length, 1e-6);
   const nj = Math.min(upper.nj, lower.nj);
-  const nArc = N_ARC;
-  const stations: Station[] = [];
-  const yj: number[] = [];
+  if (nj < 3) return null;
+  const Us: Vec3[][] = [];
+  const Ls: Vec3[][] = [];
+  const P: Vec3[] = [];
+  let up = 0;
   for (let j = 0; j < nj; j++) {
-    const U = rowOf(upper, j);
-    yj.push(U[0][1]);
-    stations.push(stationFillet(U, rowOf(lower, j), radius, L));
+    Us.push(rowOf(upper, j));
+    Ls.push(rowOf(lower, j));
+    P.push(vlerp(Us[j][0], Ls[j][0], 0.5));
+    up += Us[j][Us[j].length - 1][2] - Ls[j][Ls[j].length - 1][2];
   }
+  const sgnUp = up >= 0 ? 1 : -1;
+  const Rreq = Math.min(radius, 0.08 * L);
+  const Ts = leTangents(P);
+  const frames: Frame[] = [];
+  for (let j = 0; j < nj; j++) frames.push(stationFrame(Us[j], Ls[j], Ts[j], sgnUp, Rreq));
 
-  const nOk = stations.filter((s) => s.ok).length;
-  if (nOk < 3) return null;
-
-  for (let j = 0; j < nj; j++) {
-    if (stations[j].ok) continue;
-    const keepU = stations[j].uRow;
-    const keepL = stations[j].lRow;
-    let lo = j - 1;
-    while (lo >= 0 && !stations[lo].ok) lo--;
-    let hi = j + 1;
-    while (hi < nj && !stations[hi].ok) hi++;
-    if (lo >= 0 && hi < nj) {
-      stations[j] = lerpStation(stations[lo], stations[hi], (j - lo) / Math.max(hi - lo, 1));
-    } else if (lo >= 0) {
-      stations[j] = lerpStation(stations[lo], stations[lo], 0);
-    } else if (hi < nj) {
-      stations[j] = lerpStation(stations[hi], stations[hi], 0);
+  // nominal tangent length from R, then cap by thickness / row length / S_CAP
+  const apexUnit = (h: number) => (blend === "g2" ? g2ApexRadiusUnit(h) : Math.tan(h));
+  for (const f of frames) {
+    if (!f.ok) continue;
+    let s = Math.min(Rreq / apexUnit(f.h), (blend === "g2" ? S_CAP_G2 : S_CAP) * Rreq);
+    const muU = Math.max(vlen(f.wU), 1e-9);
+    const muL = Math.max(vlen(f.wL), 1e-9);
+    s = Math.min(s, (CHORD_FRAC * chordLen(f.U)) / muU, (CHORD_FRAC * chordLen(f.Lo)) / muL);
+    const sinH = Math.sin(f.h);
+    for (let it = 0; it < 3 && s > 0; it++) {
+      const tu = pointAtLength(f.U, s * muU).p;
+      const tl = pointAtLength(f.Lo, s * muL).p;
+      const gap = vlen(vsub(tu, tl));
+      const sThick = (0.95 * gap) / Math.max(2 * sinH, 1e-9);
+      if (sThick >= s) break;
+      s = sThick;
     }
-    stations[j].uRow = keepU;
-    stations[j].lRow = keepL;
-    if (keepU) keepU[0] = stations[j].tu;
-    if (keepL) keepL[0] = stations[j].tl;
+    f.s = Math.max(s, 0);
   }
+  // Lipschitz-limit the tangent length along the LE so the radius law is smooth
+  const step = (j: number) => vlen(vsub(P[j], P[j - 1]));
+  for (let j = 1; j < nj; j++) frames[j].s = Math.min(frames[j].s, (frames[j - 1].ok ? frames[j - 1].s : 0) + S_LIP * step(j));
+  for (let j = nj - 2; j >= 0; j--) frames[j].s = Math.min(frames[j].s, (frames[j + 1].ok ? frames[j + 1].s : 0) + S_LIP * step(j + 1));
 
-  const live = stations.map((st, j) => arcResolved(st, stationStep(stations, j)));
+  // Arc point count. Angle rule: facets turn at most LE_MAX_SEG (bounds the seam normal jump to half of it).
+  // Aspect rule: the longest LE edge over the shortest arc facet stays <= LE_ASPECT, which can lower the count.
+  let maxTurn = 0;
+  for (const f of frames) if (f.ok && f.s > 0) maxTurn = Math.max(maxTurn, Math.PI - f.alpha);
+  const nAngle = clamp(Math.ceil(maxTurn / LE_MAX_SEG) + 1, 7, 21);
+  const dyOf = (j: number) => {
+    let d = 0;
+    if (j > 0) d = Math.max(d, vlen(vsub(P[j], P[j - 1])));
+    if (j + 1 < nj) d = Math.max(d, vlen(vsub(P[j], P[j + 1])));
+    return d;
+  };
+  const probe = frames.map((f, j) => (f.ok && f.s > 1e-9 * L ? buildArc(f, f.s, P[j][1], nAngle, blend) : null));
+  const arcLen = (a: Arc) => {
+    let l = 0;
+    for (let k = 1; k < a.pts.length; k++) l += vlen(vsub(a.pts[k], a.pts[k - 1]));
+    return l;
+  };
+  const okProbe = probe.map((a, j) => !!a && a.scale > 1e-9 && dyOf(j) <= FILLET_ASPECT * a.scale && dyOf(j) <= (LE_ASPECT * arcLen(a)) / 6);
+  let nFit = nAngle;
+  for (let j = 0; j < nj; j++) {
+    if (!okProbe[j]) continue;
+    const fit = Math.floor((LE_ASPECT * arcLen(probe[j]!)) / Math.max(dyOf(j), 1e-12)) + 1;
+    if (fit < nFit) nFit = fit;
+  }
+  const nArc = clamp(nFit, 7, nAngle) | 1;
+  const arcs: (Arc | null)[] = nArc === nAngle ? probe : frames.map((f, j) => (f.ok && f.s > 1e-9 * L ? buildArc(f, f.s, P[j][1], nArc, blend) : null));
+  const live = arcs.map((a, j) => !!a && okProbe[j] && a.scale > 1e-9 && dyOf(j) <= FILLET_ASPECT * a.scale);
   let nLive = 0;
-  for (const ok of live) if (ok) nLive++;
+  for (const v of live) if (v) nLive++;
   if (nLive < 3) return null;
-  for (let j = 0; j < nj; j++) {
-    if (live[j]) continue;
-    collapseToSeam(stations[j], arcMeasure(stations[j].arc).seam);
-  }
 
-  const lead = makeGrid("leading", nArc, nj, (i, j) => stations[j].arc[i] ?? stations[j].tu);
+  const lead = makeGrid("leading", nArc, nj, (i, j) => (live[j] ? arcs[j]!.pts[i] : P[j]));
   for (let j = 0; j < nj; j++) {
-    const st = stations[j];
-    lockY(st, yj[j]);
-    if (st.uRow) writeRow(upper, j, st.uRow);
-    if (st.lRow) writeRow(lower, j, st.lRow);
-    setGridPoint(upper, 0, j, st.tu);
-    setGridPoint(lower, 0, j, st.tl);
-    for (let k = 0; k < nArc; k++) setGridPoint(lead, k, j, st.arc[k]);
-    setGridPoint(lead, 0, j, st.tl);
-    setGridPoint(lead, nArc - 1, j, st.tu);
+    const y = P[j][1];
+    if (!live[j]) {
+      // unresolved: the arc collapses to the seam point; the row stays sharp there
+      const m = planar(P[j], y);
+      setGridPoint(upper, 0, j, m);
+      setGridPoint(lower, 0, j, m);
+      continue;
+    }
+    const a = arcs[j]!;
+    writeRow(upper, j, resampleFrac(a.uRest.map((q) => planar(q, q[1])), arcFractions(Us[j])));
+    writeRow(lower, j, resampleFrac(a.lRest.map((q) => planar(q, q[1])), arcFractions(Ls[j])));
+    setGridPoint(upper, 0, j, a.tu);
+    setGridPoint(lower, 0, j, a.tl);
+    for (let k = 0; k < nArc; k++) setGridPoint(lead, k, j, a.pts[k]);
+    setGridPoint(lead, 0, j, a.tl);
+    setGridPoint(lead, nArc - 1, j, a.tu);
   }
   return lead;
 }

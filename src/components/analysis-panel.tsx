@@ -55,7 +55,7 @@ export function AeroBlock({ study }: { study: StudyResult }) {
           expr="nose: oblique shock or Taylor–Maccoll    later turns: Prandtl–Meyer"
           note="Mixed marches strips. Base Love Cp = −1/M²."
         />
-        <Formula name="Skin friction" expr="Cf = Cfi / Fc     van Driest II, Cfi = 0.455/(log₁₀ Re)²" note="Hopkins–Inouye. Compressibility via Taw, Tw." />
+        <Formula name="Skin friction" expr="Cf = Cfi / Fc     van Driest II, Cfi = 0.455/(log₁₀ Re)^2.58" note="Hopkins–Inouye. Compressibility via Taw, Tw." />
       </div>
     </div>
   );
@@ -89,7 +89,7 @@ export function HeatBlock({ study }: { study: StudyResult }) {
       <div className="mt-3 space-y-2">
         <Formula name="Fay–Riddell" expr="q = 0.763 Pr⁻⁰·⁶ (ρeμe)⁰·⁴ (ρwμw)⁰·¹ √(due/ds) (h0−hw)" note="Sphere stagnation, Lewis=1. due/ds = Rn⁻¹ √(2(pe−p∞)/ρe)." />
         <Formula name="Zoby / Eckert" expr="q = St ρe Ue (hr − hw)    St from T* reference enthalpy" note="Edge (pe, Ue, Te) from the local shock or Prandtl–Meyer expansion. Closest panel heating to CFD." />
-        <Formula name="Sutton–Graves" expr="q_s = 1.83×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-802; Tauber TP-2914 units." />
+        <Formula name="Sutton–Graves" expr="q_s = 1.7415×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-376 (Earth air; 1.83×10⁻⁸ is the CO₂ value)." />
         <Formula name="Detra–Kemp–Riddell" expr="q = 5.21×10⁴ √(ρ/Rn) (V/10⁴)^3.15    W/m²" note="DKR stagnation; reported as Tw_eq from the SG flux." />
         <Formula name="Radiation equilibrium" expr="σ ε Tw⁴ = q_conv    ε = 0.8" />
         <Formula name="Tauber–Sutton radiative" expr="q_r = 4.736×10⁸ Rn^1.072 ρ^1.22 (V/10⁴)^8.5    (V ≳ 2.5 km/s)" />
@@ -350,8 +350,10 @@ export function ChecksBlock({ study }: { study: StudyResult }) {
     <div>
       <Stat k="Kernel" v={`${pass}/${n} pass`} ok={pass === n} />
       <p className="mt-2 mb-3 text-xs leading-relaxed text-muted">
-        Gas identities (Anderson, NACA 1135, Sims, US76, Kantrowitz), an 8° wedge strip, a turning ramp
-        against analytic shock-expansion, and a 2D HLLC Euler shock. The percent is |got − expected| / |expected|.
+        Gas identities (Anderson, NACA 1135, US76, Kantrowitz), Taylor–Maccoll against an independent RK4, Prandtl–Meyer,
+        skin-friction and heating correlations against independent implementations, an 8° wedge strip, a turning ramp
+        against analytic shock-expansion, and a 2D HLLC Euler shock. The percent is |got − expected| / |expected|
+        (checks with reference 0 report the absolute error against the bound). Full table: Data tab → validation.
       </p>
       {shown.map((c) => (
         <div key={c.id} className="border-b border-border/80 py-2 last:border-0">
@@ -361,7 +363,7 @@ export function ChecksBlock({ study }: { study: StudyResult }) {
           </div>
           <p className="mt-1 font-mono text-[10px] leading-snug text-subtle">{c.formula}</p>
           <p className="mt-0.5 font-mono text-[10px] text-muted">
-            got {fmt(c.got, 4)} · expect {fmt(c.expected, 4)} · err {(c.relErr * 100).toFixed(2)}% · {c.source}
+            got {fmt(c.got, 4)} · expect {fmt(c.expected, 4)} · err {(c.relErr * 100).toFixed(2)}% (tol {c.tol < 0.01 ? c.tol.toExponential(0) : `${(c.tol * 100).toFixed(1)}%`}, {c.basis}) · {c.source}
           </p>
         </div>
       ))}

@@ -32,6 +32,9 @@ function design(method: AeroMethod): DesignParams {
     betaDeg: 0,
     length: 1,
     aeroMethod: method,
+    // Sea level: Re is high enough that the Hayes–Probstein interaction (p/p_inv) is < 0.5 %, so the
+    // anchors stay inviscid. At 30 km and L = 1 m it adds ~10 % to Cp and masks the shock-expansion error.
+    altKm: 0,
   };
 }
 
@@ -109,7 +112,7 @@ export interface FlatWedge {
 export function flatWedgeAnchor(): FlatWedge {
   const theta = 8 * DEG;
   const mesh = extruded((x) => -x * Math.tan(theta), 20);
-  const aero = panelAero(mesh, design("mixed"), atmosphere(30, M, GAMMA), 0, 0, SPAN, 1);
+  const aero = panelAero(mesh, design("mixed"), atmosphere(0, M, GAMMA), 0, 0, SPAN, 1);
   return {
     cp: meanLower(mesh, aero.cp, () => true),
     exactCp: obliqueCp(M, theta),
@@ -133,7 +136,7 @@ export function expansionAnchor(): RampAnchor {
   const kink = 0.5;
   const zK = -kink * Math.tan(theta);
   const mesh = extruded((x) => (x <= kink ? -x * Math.tan(theta) : zK), 21);
-  const atm = atmosphere(30, M, GAMMA);
+  const atm = atmosphere(0, M, GAMMA);
   const mixed = panelAero(mesh, design("mixed"), atm, 0, 0, SPAN, 1);
   const tangent = panelAero(mesh, design("tangent"), atm, 0, 0, SPAN, 1);
   const exact = analyticStrip(theta, 0);
