@@ -1200,10 +1200,12 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     }
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     if (!isDuct) {
-      tidyTrailingEdge(built.upper, built.lower, params.length);
-      collapseTipRows(built.upper, built.lower, leading, params.length);
+      tidyTrailingEdge(built.upper, built.lower, params.length, undefined, params.halfModel);
+      collapseTipRows(built.upper, built.lower, leading, params.length, undefined, params.halfModel);
       enforceMonotoneChord(built.upper);
       enforceMonotoneChord(built.lower);
+      // the monotone-chord pass moves upper and lower x independently; re-zip the knife-edge tip columns
+      if (!isLift && params.family !== "liftbody") sharpenTips(built.upper, built.lower, leading, params.halfModel);
     }
     grids = [built.upper, built.lower];
     const extra = (built as { extra?: SurfaceGrid[] }).extra;

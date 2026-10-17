@@ -244,9 +244,9 @@ function sp(g: SurfaceGrid, i: number, j: number, p: [number, number, number]) {
  * Share the TE x between upper and lower, fair it along the span (x only; y and z are
  * left alone so the last cell column keeps its shape), clamp x <= L, and zip the TE
  * of every station whose local thickness is below `thinTol` (and both tips) onto the
- * mid-surface. Zipping is pairwise by grid index, so it can never pinch unrelated verts.
+ * mid-surface (`half`: j = 0 is the symmetry plane and is not zipped). Zipping is pairwise by grid index, so it can never pinch unrelated verts.
  */
-export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length: number, thinTolRel = 0.0006) {
+export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length: number, thinTolRel = 0.0006, half = false) {
   const niU = upper.ni;
   const niL = lower.ni;
   const nj = Math.min(upper.nj, lower.nj);
@@ -270,7 +270,7 @@ export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length:
     const l = gp(lower, niL - 1, j);
     u[0] = x;
     l[0] = x;
-    const tip = j === 0 || j === nj - 1;
+    const tip = j === nj - 1 || (j === 0 && !half); // half model: j = 0 is the symmetry plane, not a wing tip
     if (tip || Math.abs(u[2] - l[2]) < thin) {
       const m: [number, number, number] = [x, 0.5 * (u[1] + l[1]), 0.5 * (u[2] + l[2])];
       sp(upper, niU - 1, j, m);
@@ -287,11 +287,11 @@ export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length:
  * upper/lower seam points that are tied to it. Without this, a millimetre-sized arc at the tip leaves
  * near-coincident but unwelded vertices from three grids, i.e. a tiny open hole.
  */
-export function collapseTipRows(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGrid | null, length: number, tolRel = 0.0008) {
+export function collapseTipRows(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGrid | null, length: number, tolRel = 0.0008, half = false) {
   if (!leading) return;
   const nj = Math.min(upper.nj, lower.nj, leading.nj);
   const tol = tolRel * Math.max(length, 1e-6);
-  for (const j of [0, nj - 1]) {
+  for (const j of half ? [nj - 1] : [0, nj - 1]) {
     const pts: [number, number, number][] = [];
     for (let i = 0; i < leading.ni; i++) pts.push(gp(leading, i, j));
     pts.push(gp(upper, 0, j), gp(lower, 0, j));
