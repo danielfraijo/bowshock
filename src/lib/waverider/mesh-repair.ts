@@ -209,15 +209,98 @@ export function triangleQuality(mesh: TriMesh, length = 1, sliverDeg = 1): Trian
 }
 
 /**
+ * Close boundary loops of exactly three edges (a one-triangle hole, left by tip-row collapsing at sparse spanwise
+ * resolution) with a triangle wound opposite to its neighbours. Longer loops are left alone. Returns the same mesh
+ * when there is nothing to fill.
+ */
+export function fillTriangleHoles(mesh: TriMesh): TriMesh {
+  const nt = mesh.indices.length / 3;
+  const nv = Math.max(mesh.positions.length / 3, 1);
+  const uses = new Map<number, number>();
+  const first = new Map<number, [number, number, number]>(); // undirected key -> [a, b, tri]
+  for (let t = 0; t < nt; t++) {
+    for (let k = 0; k < 3; k++) {
+      const a = mesh.indices[t * 3 + k];
+      const b = mesh.indices[t * 3 + ((k + 1) % 3)];
+      const key = a < b ? a * nv + b : b * nv + a;
+      uses.set(key, (uses.get(key) ?? 0) + 1);
+      first.set(key, [a, b, t]);
+    }
+  }
+  // Winding of neighbouring triangles is not guaranteed consistent at this stage (orientOutward / orientConsistent run
+  // later), so the boundary graph is treated as undirected; the later orientation pass fixes the winding of the new face.
+  const adj = new Map<number, Set<number>>();
+  for (const [key, c] of uses) {
+    if (c !== 1) continue;
+    const [a, b] = first.get(key)!;
+    (adj.get(a) ?? adj.set(a, new Set()).get(a)!).add(b);
+    (adj.get(b) ?? adj.set(b, new Set()).get(b)!).add(a);
+  }
+  const add: number[] = [];
+  const addSurf: number[] = [];
+  const addTag: number[] = [];
+  const done = new Set<string>();
+  for (const [a, na] of adj) {
+    // only vertices whose boundary valence is exactly 2 can belong to a clean 3-loop
+    if (na.size !== 2) continue;
+    const [b, c] = [...na];
+    if (adj.get(b)?.size !== 2 || adj.get(c)?.size !== 2 || !adj.get(b)!.has(c)) continue;
+    const id = [a, b, c].sort((x, y) => x - y).join(",");
+    if (done.has(id)) continue;
+    done.add(id);
+    const [ea, eb, t] = first.get(a < b ? a * nv + b : b * nv + a)!;
+    add.push(eb, ea, c); // opposite to the neighbour that owns edge (a, b)
+    addSurf.push(mesh.surfaces[t]);
+    if (mesh.tags) addTag.push(mesh.tags[t]);
+  }
+  if (!add.length) return mesh;
+  const indices = new Uint32Array(mesh.indices.length + add.length);
+  indices.set(mesh.indices);
+  indices.set(add, mesh.indices.length);
+  const surfaces = new Uint8Array(mesh.surfaces.length + addSurf.length);
+  surfaces.set(mesh.surfaces);
+  surfaces.set(addSurf, mesh.surfaces.length);
+  let tags: Int32Array | undefined;
+  if (mesh.tags) {
+    tags = new Int32Array(mesh.tags.length + addTag.length);
+    tags.set(mesh.tags);
+    tags.set(addTag, mesh.tags.length);
+  }
+  return { positions: mesh.positions, indices, surfaces, ...(tags ? { tags } : {}) };
+}
+
+/** Tolerances (multiples of the legacy 8e-4 L) tried ABOVE the legacy value by `repairAftIfDefective`. */
+export const WELD_TOL_LADDER_UP = [2, 4, 8];
+
+/**
  * Safety net for pipelines that already close the aft tips at grid level (topology tidy): returns the mesh
- * unchanged (same object) when it is closed and manifold, otherwise tries `weldAftRobust` and keeps its
- * result only if it has strictly fewer defects than the input.
+ * unchanged (same object) when it is closed and manifold, otherwise tries `weldAftRobust` (legacy tolerance and
+ * smaller) and then slightly LARGER tolerances (2x, 4x, 8x legacy, only touching the aft tip corners), keeping the
+ * first result with no defects, or else the one with strictly fewer defects than the input.
  */
 export function repairAftIfDefective(mesh: TriMesh, length: number): TriMesh {
-  const d0 = edgeDefects(mesh);
-  const s0 = d0.open + d0.nonManifold;
+  const score = (m: TriMesh) => {
+    const d = edgeDefects(m);
+    return d.open + d.nonManifold;
+  };
+  const s0 = score(mesh);
   if (s0 === 0) return mesh;
-  const welded = weldAftRobust(mesh, length);
-  const d1 = edgeDefects(welded);
-  return d1.open + d1.nonManifold < s0 ? welded : mesh;
+  const L = Math.max(length, 1e-6);
+  let best = mesh;
+  let bestScore = s0;
+  const consider = (cand: TriMesh) => {
+    const s = score(cand);
+    if (s < bestScore) {
+      best = cand;
+      bestScore = s;
+    }
+  };
+  consider(weldAftRobust(mesh, length));
+  for (let i = 0; i < WELD_TOL_LADDER_UP.length && bestScore > 0; i++) {
+    const w = weldAft(mesh, length, 8e-4 * L * WELD_TOL_LADDER_UP[i]);
+    consider(w);
+    if (bestScore > 0) consider(removeCollapsedPairs(w));
+  }
+  if (bestScore > 0) consider(fillTriangleHoles(best));
+  return best;
 }
