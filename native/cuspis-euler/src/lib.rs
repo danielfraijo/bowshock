@@ -92,6 +92,7 @@ pub extern "C" fn euler_solve_ex(
         tol: if tol.is_finite() && tol > 0.0 { tol.max(1e-6).min(0.1) } else { 0.0 },
         sequence: sequence.max(0).min(3) as usize,
         cfl: if cfl.is_finite() { cfl } else { 0.0 },
+        mirror_lower: true,
         ..Grid::default()
     };
     let (cp, residual) = solve_wall_grid(&xw, &zw, mach, gamma, alpha, &grid);
@@ -118,6 +119,10 @@ pub struct Grid {
     pub cfl: f64,
     /// Never stop before this many sweeps on the finest level.
     pub min_iters: usize,
+    /// Solve a wall with the flow domain below it (z < wall) as its mirror image (z -> -z, alpha -> -alpha).
+    /// The legacy kernel builds a left-handed grid there whose face normals point inward (a compression ramp reads the
+    /// vacuum Cp); `euler_solve` keeps that behaviour byte for byte, `euler_solve_ex` turns the fix on.
+    pub mirror_lower: bool,
 }
 
 impl Default for Grid {
@@ -134,6 +139,7 @@ impl Default for Grid {
             sequence: 0,
             cfl: 0.0,
             min_iters: 30,
+            mirror_lower: false,
         }
     }
 }
@@ -527,7 +533,13 @@ fn march_level(l: &mut Level, fl: &Flow, iters: usize, tol: f64, min_iters: usiz
     (used, reason, residual)
 }
 
-pub fn solve_wall_grid_info(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64, grid: &Grid) -> (Vec<f64>, f64, SolveInfo) {
+pub fn solve_wall_grid_info(xw: &[f64], zw_in: &[f64], mach: f64, gamma: f64, alpha_in: f64, grid: &Grid) -> (Vec<f64>, f64, SolveInfo) {
+    let n0 = xw.len();
+    let below = zw_in[n0 / 2] < -1e-8;
+    let mirror = grid.mirror_lower && below;
+    let zw_m: Vec<f64> = if mirror { zw_in.iter().map(|v| -v).collect() } else { Vec::new() };
+    let zw: &[f64] = if mirror { &zw_m } else { zw_in };
+    let alpha = if mirror { -alpha_in } else { alpha_in };
     let gni = grid.ni;
     let gnj = grid.nj;
     let n = xw.len();
@@ -878,5 +890,29 @@ mod tests {
         assert!((a - b).abs() / a < 0.005, "fixed {} vs converged {}", a, b);
         let exact = 0.06556490633109267;
         assert!((b - exact).abs() / exact < 0.02, "converged mean Cp {} vs exact {}", b, exact);
+    }
+
+    #[test]
+    fn lower_wall_is_solved_as_its_mirror_image() {
+        // A wall with the flow domain below it: the legacy grid is left-handed and reads ~vacuum Cp on a compression
+        // ramp; with mirror_lower the result equals the mirrored upper-wall solve. Golden values from strip-euler.ts.
+        let n = 60usize;
+        let x: Vec<f64> = (0..n).map(|i| 4.0 * i as f64 / (n - 1) as f64).collect();
+        let tan8 = (8.0f64).to_radians().tan();
+        let z_low: Vec<f64> = x.iter().map(|v| -v * tan8).collect();
+        let mk = |mirror: bool| Grid { ni: 64, nj: 20, iters: 1500, tol: 1e-3, mirror_lower: mirror, ..Grid::default() };
+        let (cp, _r, info) = solve_wall_grid_info(&x, &z_low, 8.0, 1.4, 0.05, &mk(true));
+        assert_eq!(info.iters_used, 253);
+        assert!((cp[5] - 0.1305758450836902).abs() < 1e-9, "cp[5] = {}", cp[5]);
+        assert!((cp[30] - 0.1054083740106615).abs() < 1e-9, "cp[30] = {}", cp[30]);
+        assert!((cp[55] - 0.10580667042407042).abs() < 1e-9, "cp[55] = {}", cp[55]);
+        let z_up: Vec<f64> = x.iter().map(|v| v * tan8).collect();
+        let (cpu, _r2, _i2) = solve_wall_grid_info(&x, &z_up, 8.0, 1.4, -0.05, &mk(true));
+        for k in [5usize, 30, 55] {
+            assert_eq!(cp[k], cpu[k]);
+        }
+        // without the fix the lower wall is wrong (this is what the shipped wasm still does): far from the ramp value
+        let (cpb, _r3, _i3) = solve_wall_grid_info(&x, &z_low, 8.0, 1.4, 0.05, &mk(false));
+        assert!((cpb[30] - cp[30]).abs() > 0.02, "legacy lower wall cp {}", cpb[30]);
     }
 }

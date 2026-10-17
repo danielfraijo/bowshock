@@ -42,14 +42,14 @@ export interface WedgeRow {
 export function wedgeStudy(
   mach = 8,
   thetas = [8, 30],
-  ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"],
+  ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "legacy", "medium", "fine"],
 ): WedgeRow[] {
   const rows: WedgeRow[] = [];
   for (const thetaDeg of thetas) {
     for (const id of ids) {
       const s = presetSettings(id);
       // Fresh solve every time so the timing is real (the module cache would hide it).
-      const r = eulerWedge(mach, thetaDeg, 1.4, id === "medium" ? undefined : s.volume);
+      const r = eulerWedge(mach, thetaDeg, 1.4, id === "legacy" ? undefined : s.volume);
       rows.push({
         preset: id,
         thetaDeg,
@@ -174,7 +174,7 @@ export function stripCase(mach: number, thetaDeg: number, vol: VolumeRefinement)
 export function stripStudy(
   mach = 8,
   thetas = [8, 30],
-  ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "medium", "fine"],
+  ids: Exclude<RefinementPreset, "custom">[] = ["coarse", "legacy", "medium", "fine"],
 ): StripRow[] {
   const rows: StripRow[] = [];
   for (const thetaDeg of thetas) {

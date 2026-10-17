@@ -627,14 +627,20 @@ function* runLevel(
 
 export function* stripGen(
   xw: ArrayLike<number>,
-  zw: ArrayLike<number>,
+  zwIn: ArrayLike<number>,
   mach: number,
   gamma: number,
-  alpha: number,
+  alphaIn: number,
   g: StripGrid,
   chunk = CHUNK,
 ): Generator<number, StripResult> {
   const n = xw.length;
+  // A wall with the flow domain BELOW it (sign < 0, e.g. a lower surface) gives a left-handed grid whose face
+  // normals come out inward in the shipped kernel (measured: a 10.5 deg compression ramp read Cp = -0.02, the vacuum
+  // limit, instead of +0.10). Solve the mirror image instead: z -> -z, alpha -> -alpha (the physics is symmetric).
+  const mirrored = stripDomain(xw, zwIn).sign < 0;
+  const zw: ArrayLike<number> = mirrored ? Float64Array.from({ length: n }, (_, i) => -zwIn[i]) : zwIn;
+  const alpha = mirrored ? -alphaIn : alphaIn;
   const dom = stripDomain(xw, zw);
   const NI = g.ni;
   const NJ = g.nj;

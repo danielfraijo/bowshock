@@ -9,7 +9,7 @@ import { effectiveLeRadius } from "./blunt";
 import { EULER_WASM_B64 } from "./euler-wasm";
 import type { PanelAero } from "./panel";
 // [mesh-refinement]
-import { LEGACY, estimateShockHeights, isBaseline, shockFractionFromHeight, stripDims, type RefinementSettings } from "./refinement";
+import { LEGACY, MEDIUM, estimateShockHeights, isBaseline, shockFractionFromHeight, stripDims, type RefinementSettings } from "./refinement";
 import { solveStrip, solveStripAsync, stripDomain, stripGridOf } from "./strip-euler";
 import { SURFACE_ID, type DesignParams, type SurfaceGrid, type TriMesh, type Vec3 } from "./types";
 
@@ -275,8 +275,8 @@ export function withSymmetryEuler(
   let lo: Float64Array;
   try {
     const noseR = Math.max(effectiveLeRadius(params), 0.006 * params.length);
-    up = solveCp(walls.upper, mach, params.gamma, alpha, "u", params.refinement, noseR);
-    lo = solveCp(walls.lower, mach, params.gamma, alpha, "l", params.refinement, noseR);
+    up = solveCp(walls.upper, mach, params.gamma, alpha, "u", params.refinement ?? MEDIUM, noseR);
+    lo = solveCp(walls.lower, mach, params.gamma, alpha, "l", params.refinement ?? MEDIUM, noseR);
     if (!up.every(Number.isFinite) || !lo.every(Number.isFinite)) throw new Error("non-finite Cp");
   } catch (err) {
     return { ...base, notes: [...base.notes, `Euler kernel failed (${err instanceof Error ? err.message : "wasm"}). CBAERO kept.`] };
@@ -388,9 +388,9 @@ export function withSymmetryEuler(
     notes: [
       ...base.notes.filter((n) => !n.startsWith("CBAERO-class") && !n.startsWith("Tangent") && !n.startsWith("Modified")),
       "Strip Euler: Rust HLLC on the symmetry plane (bow shock captured), blended into CBAERO off the centerline. Between a CBAERO panel run and Cart3D — not a volume mesh.",
-      ...(params.refinement && !isBaseline(params.refinement)
+      ...(!isBaseline(params.refinement ?? MEDIUM)
         ? [
-            `Mesh refinement "${params.refinement.preset}": symmetry-plane grid ${stripDims(params.refinement.volume).ni}x${stripDims(params.refinement.volume).nj}x${stripDims(params.refinement.volume).iters}${params.refinement.volume.shockClustering > 0 || params.refinement.volume.wallClustering > 0 ? " with wall/shock clustering" : ""}${params.refinement.volume.adaptive ? " + adaptive re-cluster" : ""} (TypeScript solver; the shipped wasm is the 88x28x42 baseline).`,
+            `Mesh refinement "${(params.refinement ?? MEDIUM).preset}": symmetry-plane grid ${stripDims((params.refinement ?? MEDIUM).volume).ni}x${stripDims((params.refinement ?? MEDIUM).volume).nj}${(params.refinement ?? MEDIUM).volume.tol ? ` (converged to ${(params.refinement ?? MEDIUM).volume.tol} of peak residual, <= ${(params.refinement ?? MEDIUM).volume.iters} sweeps)` : ` x ${(params.refinement ?? MEDIUM).volume.iters} sweeps`}${(params.refinement ?? MEDIUM).volume.shockClustering > 0 || (params.refinement ?? MEDIUM).volume.wallClustering > 0 ? ", wall/shock clustering" : ""}${(params.refinement ?? MEDIUM).volume.adaptive ? " + adaptive re-cluster" : ""}${(params.refinement ?? MEDIUM).volume.order === 2 ? ", MUSCL" : ""} (TypeScript solver; choose "legacy" for the unconverged 88x28x42 wasm run of b5fdccc).`,
           ]
         : []),
     ],
@@ -410,8 +410,8 @@ export async function warmSymmetryEuler(
   opts: { chunk?: number; signal?: { aborted: boolean }; onProgress?: (p: number) => void } = {},
 ): Promise<boolean> {
   const walls = wallsOf.get(mesh);
-  const ref = params.refinement;
-  if (!walls || walls.upper.x.length < 4 || !ref || isBaseline(ref)) return false;
+  const ref = params.refinement ?? MEDIUM;
+  if (!walls || walls.upper.x.length < 4 || isBaseline(ref)) return false;
   const machIn = params.lockFlight ? params.mach : params.flightMach;
   if (!Number.isFinite(machIn) || !Number.isFinite(alphaDeg) || !Number.isFinite(params.gamma) || params.gamma <= 1) return false;
   const mach = Math.max(1.05, machIn);
