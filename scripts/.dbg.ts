@@ -1,0 +1,16 @@
+import { ComputeClient } from "../src/lib/perf/client";
+import { studyVehicle } from "../src/lib/waverider/study";
+import { buildVehicle } from "../src/lib/waverider/generate";
+import { kernelFlags, solveWallRaw } from "../src/lib/perf/euler-kernel";
+import { DEFAULT_PARAMS } from "../src/lib/waverider/types";
+const mode = process.argv[2];
+const n=61; const x=Float64Array.from({length:n},(_,i)=>i/(n-1)); const z=x.map(v=>0.1*v);
+if (mode==="fast") solveWallRaw(x,z,5,1.4,0.1);
+if (mode==="ref") solveWallRaw(x,z,5,1.4,0.1,{reference:true});
+const p = { ...DEFAULT_PARAMS, nx: 24, ny: 16, aeroMethod: "euler" as const };
+const c = new ComputeClient({ runner: "inline", clone: true });
+const r = await c.study(p, "quick");
+kernelFlags.quality = "preview";
+const d = studyVehicle(buildVehicle(p), { quick: true });
+const d2 = studyVehicle(buildVehicle(p), { quick: true });
+console.log(mode, r.study.aero.cl, d.aero.cl, d2.aero.cl);

@@ -304,12 +304,23 @@ test("pipeline deny-list: buildVehicle ignores every ANALYSIS_ONLY field (all fa
   }
 });
 
+/** the pipeline runs `full` studies on the `standard` Euler tier; the direct reference must use the same tier */
+function withTier<T>(q: "legacy" | "preview" | "standard" | "converged", fn: () => T): T {
+  const prev = kernelFlags.quality;
+  kernelFlags.quality = q;
+  try {
+    return fn();
+  } finally {
+    kernelFlags.quality = prev;
+  }
+}
+
 test("pipeline: stage hits identical, flight change keeps geometry, geometry change invalidates", () => {
   const pl = new Pipeline();
   const p0 = { ...DEFAULT_PARAMS, nx: 24, ny: 16 };
   const a = pl.run(p0, "full");
   assert.deepEqual(a.hit, { geometry: false, study: false });
-  const direct = studyVehicle(buildVehicle(p0), {});
+  const direct = withTier("standard", () => studyVehicle(buildVehicle(p0), {}));
   assert.equal(a.study.aero.cl, direct.aero.cl);
   assert.equal(hashFloats(a.study.aero.cp), hashFloats(direct.aero.cp));
   const b = pl.run(p0, "full");
@@ -319,7 +330,7 @@ test("pipeline: stage hits identical, flight change keeps geometry, geometry cha
   const p1 = { ...p0, alphaDeg: 4.5, altKm: 31 };
   const c = pl.run(p1, "full");
   assert.deepEqual(c.hit, { geometry: true, study: false });
-  const d1 = studyVehicle(buildVehicle(p1), {});
+  const d1 = withTier("standard", () => studyVehicle(buildVehicle(p1), {}));
   assert.equal(c.study.aero.cl, d1.aero.cl);
   assert.equal(hashFloats(c.study.aero.cp), hashFloats(d1.aero.cp));
   assert.equal(c.built.params, p1);
@@ -388,7 +399,7 @@ await atest("client: study through the protocol equals the direct study; geometr
   const p = { ...DEFAULT_PARAMS, nx: 24, ny: 16, aeroMethod: "euler" as const };
   const r = await c.study(p, "quick");
   assert.ok(r.built);
-  const direct = studyVehicle(buildVehicle(p), { quick: true });
+  const direct = withTier("preview", () => studyVehicle(buildVehicle(p), { quick: true }));
   assert.equal(r.study.aero.cl, direct.aero.cl);
   assert.equal(hashFloats(r.study.aero.cp), hashFloats(direct.aero.cp));
   const r2 = await c.study({ ...p, alphaDeg: 5 }, "quick", r.geomKey);
@@ -416,9 +427,7 @@ await atest("client: latest-wins coalescing drops superseded queued requests, ke
   // request 0 starts immediately, 1..4 are replaced, 5 runs last
   assert.deepEqual(outcome.map((o) => o.slice(0, 4)).sort(), ["ok0:", "ok5:", "sup1", "sup2", "sup3", "sup4"].sort());
   const last = outcome.find((o) => o.startsWith("ok5"))!;
-  kernelFlags.grid = PREVIEW_GRID;
-  const want = studyVehicle(buildVehicle({ ...base, alphaDeg: 5 }), { quick: true });
-  kernelFlags.grid = undefined;
+  const want = withTier("preview", () => studyVehicle(buildVehicle({ ...base, alphaDeg: 5 }), { quick: true }));
   assert.ok(last.endsWith(want.aero.cl.toFixed(6)), `${last} vs ${want.aero.cl}`);
   // full and preview lanes are independent
   const [a, b] = await Promise.all([c.study(base, "full"), c.study(base, "preview")]);
