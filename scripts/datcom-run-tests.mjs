@@ -6,7 +6,10 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
-const test = join(root, "src/lib/waverider/datcom/validate-datcom.test.ts");
+const tests = [
+  join(root, "src/lib/waverider/datcom/validate-datcom.test.ts"),
+  join(root, "src/lib/waverider/datcom/stress.test.ts"),
+];
 const candidates = [
   process.env.NODE22,
   join(root, "../tools/node_modules/.bin/node"),
@@ -26,5 +29,5 @@ if (!node) {
   console.error("test:datcom requires Node >= 22 for --experimental-strip-types");
   process.exit(1);
 }
-const r = spawnSync(node, ["--experimental-strip-types", "--test", test], { stdio: "inherit" });
+const r = spawnSync(node, ["--experimental-strip-types", "--test", ...tests], { stdio: "inherit" });
 process.exit(r.status ?? 1);
