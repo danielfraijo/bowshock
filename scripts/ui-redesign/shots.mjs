@@ -20,9 +20,11 @@ const shot = async (name) => { if (only && !only.has(name)) return; await page.w
 // Works with both the old flat tab bar (buttons) and the new two-tier [role=tab] bar.
 const GROUP_OF = { Geom: "Design", Flight: "Design", Aero: "Analyze", Heat: "Analyze", Frontier: "Analyze", Stab: "Analyze", Cycle: "Analyze", Shocks: "Analyze", "6DOF": "Dynamics", Traj: "Dynamics", DATCOM: "Verify", Checks: "Verify", Data: "Output", CAD: "Output" };
 const tab = async (label) => {
-  const sel = (t) => page.locator(`button:text-is("${t}"), [role=tab]:text-is("${t}")`).first();
+  // scoped to the right-hand panel: the viewport colour-mode chip "HEAT" must not match the Heat tab
+  const sel = (t) => page.locator("aside").last().locator(`button, [role=tab]`).filter({ hasText: new RegExp(`^${t}$`) }).first();
   if (!(await sel(label).isVisible().catch(() => false))) await sel(GROUP_OF[label]).click();
   await sel(label).click();
+  if (process.env.DEBUG_TABS) console.log("tab", label, await page.locator("[role=tab][aria-selected=true]").allInnerTexts());
 };
 await shot("01-lab-geom");
 for (const [label, name] of [["Flight","02-flight"],["Aero","03-aero"],["Heat","04-heat"],["Frontier","05-frontier"],["Stab","06-stab"],["6DOF","07-6dof"],["Traj","08-traj"],["Checks","09-checks"]]) {
