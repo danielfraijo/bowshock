@@ -108,7 +108,7 @@ function solveCp(wall: Centerline, mach: number, gamma: number, alpha: number, t
   k.solve(k.ptr, n, mach, gamma, alpha);
   const out = new Float64Array(new Float64Array(k.memory.buffer, k.ptr + n * 16, n));
   solved.set(key, out);
-  if (solved.size > 24) {
+  if (solved.size > 256) {
     const first = solved.keys().next().value;
     if (first) solved.delete(first);
   }

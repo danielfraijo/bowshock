@@ -658,7 +658,10 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
     const m = mSweep[i];
     const d = 1;
     const mid = aeroPoint(built, p, p.alphaDeg, m);
+    // three aeroPoints per Mach (each can hold two wasm Euler solves): yield between them so no slice blocks > ~40 ms
+    yield { frac: 0.45 + (0.2 * (i + 0.34)) / mSweep.length, label: `Mach sweep ${m.toFixed(1)} (α+${d}°)` };
     const up = aeroPoint(built, p, p.alphaDeg + d, m).a;
+    yield { frac: 0.45 + (0.2 * (i + 0.67)) / mSweep.length, label: `Mach sweep ${m.toFixed(1)} (α−${d}°)` };
     const dn = aeroPoint(built, p, p.alphaDeg - d, m).a;
     const cla = (up.cl - dn.cl) / (2 * d * DEG);
     const cma = (up.cm - dn.cm) / (2 * d * DEG);
