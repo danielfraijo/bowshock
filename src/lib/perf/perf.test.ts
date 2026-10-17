@@ -6,6 +6,9 @@
 import assert from "node:assert/strict";
 import { Hasher, hashFloats, hashValue } from "./hash";
 import { LRU } from "./lru";
+import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { eulerAsync, eulerSync, resetEulerForTest, wasmSource } from "./euler-kernel";
 import { PREVIEW_GRID, eulerCache, eulerKey, kernelFlags, primeWallCp, solveWallCp, solveWallRaw } from "./euler-kernel";
 import { atmosphere } from "../waverider/atmosphere";
 import { solveEulerWedge } from "../waverider/euler2d";
@@ -431,6 +434,37 @@ await atest("client: errors surface as rejections and the lane keeps working; ex
   ]);
   assert.ok(x[0].blob.size > 0 && y[0].blob.size > 0);
   c.dispose();
+});
+
+await atest("wasm loading: streaming (application/wasm), buffered fetch (wrong MIME), embedded fallback (404) all give the same kernel", async () => {
+  const bytes = readFileSync(new URL("../../../public/cuspis_euler.wasm", import.meta.url));
+  const srv = createServer((req, res) => {
+    if (req.url === "/ok.wasm") res.writeHead(200, { "content-type": "application/wasm" }).end(bytes);
+    else if (req.url === "/mime.wasm") res.writeHead(200, { "content-type": "application/octet-stream" }).end(bytes);
+    else res.writeHead(404).end("no");
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  const port = (srv.address() as { port: number }).port;
+  const w = wall(40, "ogive");
+  const base = (() => {
+    resetEulerForTest();
+    eulerSync();
+    eulerCache.clear();
+    return solveWallRaw(w.x, w.z, 7, 1.4, 0.03).slice();
+  })();
+  try {
+    for (const [path, want] of [["ok.wasm", "streaming"], ["mime.wasm", "fetch"], ["gone.wasm", "embedded"]] as const) {
+      resetEulerForTest();
+      eulerCache.clear();
+      await eulerAsync(`http://127.0.0.1:${port}/${path}`);
+      assert.equal(wasmSource, want, path);
+      assert.equal(hashFloats(solveWallRaw(w.x, w.z, 7, 1.4, 0.03)), hashFloats(base), `${path} kernel result differs`);
+    }
+  } finally {
+    srv.close();
+    resetEulerForTest();
+    eulerSync();
+  }
 });
 
 console.log(`perf tests passed: ${passed}`);

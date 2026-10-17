@@ -60,6 +60,7 @@ function adopt(instance: WebAssembly.Instance): EulerExports {
 /** Synchronous instantiation from the embedded bytes (small module, ~ms). */
 export function eulerSync(): EulerExports {
   if (exportsRef) return exportsRef;
+  wasmSource = "embedded";
   return adopt(new WebAssembly.Instance(new WebAssembly.Module(wasmBytesFromBase64()), {}));
 }
 
@@ -70,24 +71,48 @@ export function eulerSync(): EulerExports {
 export async function eulerAsync(url?: string | URL): Promise<EulerExports> {
   if (exportsRef) return exportsRef;
   if (url) {
-    try {
-      const href = typeof url === "string" ? url : url.href;
-      if (typeof fetch === "function" && /^https?:|^\//.test(href) && typeof WebAssembly.instantiateStreaming === "function") {
-        const { instance } = await WebAssembly.instantiateStreaming(fetch(href), {});
-        return adopt(instance);
+    const href = typeof url === "string" ? url : url.href;
+    if (typeof fetch === "function" && /^https?:|^\//.test(href)) {
+      // 1) streaming compile (needs Content-Type: application/wasm)
+      if (typeof WebAssembly.instantiateStreaming === "function") {
+        try {
+          const { instance } = await WebAssembly.instantiateStreaming(fetch(href), {});
+          if (!exportsRef) wasmSource = "streaming";
+          return exportsRef ?? adopt(instance);
+        } catch {
+          /* wrong MIME type or network error: try the buffered path */
+        }
       }
-      if (typeof fetch === "function" && /^https?:|^\//.test(href)) {
+      // 2) buffered compile
+      try {
         const res = await fetch(href);
-        const mod = await WebAssembly.compile(await res.arrayBuffer());
-        return adopt(await WebAssembly.instantiate(mod, {}));
+        if (res.ok) {
+          const mod = await WebAssembly.compile(await res.arrayBuffer());
+          const inst = await WebAssembly.instantiate(mod, {});
+          if (!exportsRef) wasmSource = "fetch";
+          return exportsRef ?? adopt(inst);
+        }
+      } catch {
+        /* fall through to the embedded copy */
       }
-    } catch {
-      /* fall through to the embedded copy */
     }
   }
   const mod = await WebAssembly.compile(wasmBytesFromBase64());
-  return adopt(await WebAssembly.instantiate(mod, {}));
+  const inst = await WebAssembly.instantiate(mod, {});
+  if (!exportsRef) wasmSource = "embedded";
+  return exportsRef ?? adopt(inst);
 }
+
+/** Test hook: forget the live instance so the next load path can be exercised. */
+export function resetEulerForTest() {
+  exportsRef = null;
+  scratchPtr = 0;
+  scratchCap = 0;
+  wasmSource = "none";
+}
+
+/** How the live instance was created (diagnostics). */
+export let wasmSource: "none" | "streaming" | "fetch" | "embedded" = "none";
 
 export function eulerLoaded(): boolean {
   return exportsRef !== null;

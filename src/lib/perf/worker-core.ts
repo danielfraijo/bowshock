@@ -5,7 +5,7 @@
  */
 import { cfdZip, fileBlobs } from "../waverider/export-kit";
 import { studyJson } from "../waverider/study";
-import { eulerAsync, eulerLoaded } from "./euler-kernel";
+import { eulerAsync, eulerSync, wasmSource } from "./euler-kernel";
 import type { DesignParams } from "../waverider/types";
 import { Pipeline } from "./pipeline";
 import type { ExportSources, WorkerReply, WorkerRequest } from "./protocol";
@@ -18,24 +18,18 @@ export class WorkerCore {
   constructor(private post: (r: WorkerReply, transfer?: Transferable[]) => void) {}
 
   async init(wasmUrl?: string) {
-    let how: "streaming" | "embedded" = "embedded";
     try {
-      if (!eulerLoaded() && wasmUrl) {
-        await eulerAsync(wasmUrl);
-        how = "streaming";
-      } else {
-        await eulerAsync();
-      }
+      await eulerAsync(wasmUrl);
     } catch {
-      await eulerAsync();
+      eulerSync();
     }
-    this.post({ type: "ready", wasm: how });
+    this.post({ type: "ready", wasm: wasmSource });
   }
 
   async handle(req: WorkerRequest) {
     try {
       if (req.type === "init") return await this.init(req.wasmUrl);
-      if (req.type === "stats") return this.post({ type: "stats", id: req.id, stats: this.pipeline.stats() });
+      if (req.type === "stats") return this.post({ type: "stats", id: req.id, stats: { ...this.pipeline.stats(), wasm: wasmSource } });
       if (req.type === "study") {
         const out = this.pipeline.run(req.params, req.mode);
         this.post({

@@ -63,7 +63,9 @@ class WebWorkerTransport implements Transport {
   constructor(wasmUrl?: string) {
     this.w = new Worker(new URL("./compute.worker.ts", import.meta.url), { type: "module" });
     this.w.onmessage = (e: MessageEvent<WorkerReply>) => this.onreply(e.data);
-    this.w.postMessage({ type: "init", wasmUrl } satisfies WorkerRequest);
+    // Default: the worker instantiates the wasm embedded in its bundle (54 KB: ~0.6 ms to compile+instantiate,
+    // no extra request). Pass `wasmUrl` to stream a hosted copy instead (see NOTES.md for why that is opt-in).
+    if (wasmUrl) this.w.postMessage({ type: "init", wasmUrl } satisfies WorkerRequest);
   }
   post(req: WorkerRequest) {
     this.w.postMessage(req);
@@ -184,6 +186,7 @@ export class ComputeClient {
     });
   }
 
+  /** Pipeline cache stats of the fast-lane worker (plus how its wasm was loaded). */
   stats(): Promise<unknown> {
     return new Promise((resolve, reject) => {
       this.fast.submit({
@@ -204,7 +207,11 @@ export class ComputeClient {
 let shared: ComputeClient | null = null;
 /** Process-wide client. In the browser it spawns its workers lazily on first use. */
 export function getComputeClient(): ComputeClient {
-  if (!shared) shared = new ComputeClient({ wasmUrl: "/cuspis_euler.wasm" });
+  if (!shared) {
+    shared = new ComputeClient();
+    // introspection hook for smoke tests / the console: await __bowshockCompute.stats()
+    if (typeof window !== "undefined") (window as unknown as Record<string, unknown>).__bowshockCompute = shared;
+  }
   return shared;
 }
 
