@@ -5,9 +5,9 @@
  * Fidelity target: above a CBAERO panel run, below a Cart3D volume Euler.
  * Nothing here changes a physics model — only where grid points go and how many.
  *
- * Defaults: `medium` reproduces the pre-refinement behaviour exactly
- * (surface nx/ny = DEFAULT_PARAMS 40x28, wedge-anchor Euler 72x24x280,
- * symmetry-plane kernel 88x28x42, no clustering). See refinement.test.ts.
+ * Defaults: `legacy` reproduces the pre-refinement behaviour (b5fdccc) exactly (surface 40x28, wedge-anchor Euler 72x24x280,
+ * symmetry-plane kernel 88x28x42, no clustering, unconverged). `medium` (the default when nothing is set) keeps the same
+ * surface and cell counts but adds wall/shock clustering and a convergence stop. See refinement.test.ts.
  */
 import { betaFromThetaM } from "./math";
 
@@ -61,7 +61,7 @@ export interface RefinementSettings {
   volume: VolumeRefinement;
 }
 
-/** Legacy grids this module must reproduce at `medium`. */
+/** Legacy grids this module must reproduce at `legacy`. */
 export const LEGACY = {
   surface: { nx: 40, ny: 28 },
   wedge: { ni: 72, nj: 24, iters: 280 },
