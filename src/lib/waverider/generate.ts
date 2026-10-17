@@ -15,7 +15,7 @@ import {
 import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, gridPoint, makeGrid, orientOutward, setGridPoint, stitchGrid, zipperSharpEdges } from "./mesh";
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 import { bindCenterline } from "./sym-euler";
-import { collapseTipRows, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
+import { collapseTipRows, flipPinchEdges, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -1240,7 +1240,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     }
   }
 
-  mesh = removeDoubleFaces(compactMesh(mesh));
+  mesh = flipPinchEdges(removeDoubleFaces(compactMesh(mesh)));
   orientOutward(mesh);
   orientConsistent(mesh);
   lockFrame(mesh, grids, shock, params.halfModel);

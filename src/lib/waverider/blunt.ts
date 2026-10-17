@@ -32,6 +32,8 @@ const CHORD_FRAC = 0.12;
 const S_LIP = 0.5;
 /** Longest LE edge over shortest arc facet the fillet strips may have. */
 const LE_ASPECT = 400;
+/** Arcs smaller than this fraction of the body length are not tessellated (they leave micro holes between unwelded grids). */
+const LE_MIN_SCALE = 2e-4;
 
 export type LeBlend = "circular" | "g2";
 
@@ -415,7 +417,7 @@ export function applyLeadingFillet(
     for (let k = 1; k < a.pts.length; k++) l += vlen(vsub(a.pts[k], a.pts[k - 1]));
     return l;
   };
-  const okProbe = probe.map((a, j) => !!a && a.scale > 1e-9 && dyOf(j) <= FILLET_ASPECT * a.scale && dyOf(j) <= (LE_ASPECT * arcLen(a)) / 6);
+  const okProbe = probe.map((a, j) => !!a && a.scale > LE_MIN_SCALE * L && dyOf(j) <= FILLET_ASPECT * a.scale && dyOf(j) <= (LE_ASPECT * arcLen(a)) / 6);
   let nFit = nAngle;
   for (let j = 0; j < nj; j++) {
     if (!okProbe[j]) continue;
@@ -424,7 +426,7 @@ export function applyLeadingFillet(
   }
   const nArc = clamp(nFit, 7, nAngle) | 1;
   const arcs: (Arc | null)[] = nArc === nAngle ? probe : frames.map((f, j) => (f.ok && f.s > 1e-9 * L ? buildArc(f, f.s, P[j][1], nArc, blend) : null));
-  const live = arcs.map((a, j) => !!a && okProbe[j] && a.scale > 1e-9 && dyOf(j) <= FILLET_ASPECT * a.scale);
+  const live = arcs.map((a, j) => !!a && okProbe[j] && a.scale > LE_MIN_SCALE * L && dyOf(j) <= FILLET_ASPECT * a.scale);
   let nLive = 0;
   for (const v of live) if (v) nLive++;
   if (nLive < 3) return null;
