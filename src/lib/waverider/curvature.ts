@@ -221,3 +221,44 @@ export function curvatureAdaptiveParams(
   for (let i = 1; i < t.length; i++) if (!(t[i] > t[i - 1])) t[i] = Math.min(1, t[i - 1] + 1e-9);
   return { t, corners: cornerT, maxTurnDeg: (maxTurn * 180) / Math.PI };
 }
+
+/**
+ * Re-distribute spanwise loft stations by curvature of the leading-edge / keel curve.
+ *
+ * `ys` is the existing (ascending, cosine-clustered) station list: [-yMax .. 0 .. yMax] for a full model or [0 .. yMax] for a
+ * half model. The stations are re-sampled in the *index* parameter of that list (piecewise linear), so strength 0 returns the
+ * very same stations, the end stations (y = 0 and ±yMax, which stay off the zero-chord pole) are never moved, y = 0 is kept
+ * on a full model, a sharp corner of the curve is always a station, and the result is mirror-symmetric and strictly ascending.
+ * Station count is unchanged. Any non-finite input falls back to `ys`.
+ */
+export function curvatureStations(ys: number[], strength: number, curveAt: (y: number) => Pt3): number[] {
+  const n = ys.length;
+  if (!(strength > 0) || n < 5 || !ys.every(Number.isFinite)) return ys;
+  const full = ys[0] < 0;
+  const i0 = full ? (n - 1) >> 1 : 0;
+  const half = ys.slice(i0); // ascending from 0 .. yMax
+  const m = half.length;
+  if (m < 4 || !(half[m - 1] > half[0])) return ys;
+  const yAt = (u: number) => {
+    const x = Math.min(Math.max(u, 0), 1) * (m - 1);
+    const k = Math.min(Math.floor(x), m - 2);
+    return half[k] + (half[k + 1] - half[k]) * (x - k);
+  };
+  let s: CurvatureSampling;
+  try {
+    s = curvatureAdaptiveParams((u) => curveAt(yAt(u)), m, { strength });
+  } catch {
+    return ys;
+  }
+  const out = Array.from(s.t, (u) => yAt(u));
+  out[0] = half[0];
+  out[m - 1] = half[m - 1];
+  for (let k = 1; k < m; k++) if (!(out[k] > out[k - 1])) return ys;
+  if (!full) return out;
+  const res = new Array<number>(n);
+  for (let k = 0; k < m; k++) {
+    res[i0 + k] = out[k];
+    res[i0 - k] = -out[k];
+  }
+  return res;
+}

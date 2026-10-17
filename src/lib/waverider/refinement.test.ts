@@ -465,6 +465,7 @@ describe("surface presets", () => {
       const firstGap = (le: number) => {
         const r = presetSettings("fine");
         r.surface.leClustering = le;
+        r.surface.curvature = 0; // isolate the chordwise effect
         const b = buildVehicle({ ...DEFAULT_PARAMS, family, nx: 56, ny: 28, refinement: r });
         const g = b.grids[0];
         const j = Math.min(g.nj - 2, ((g.nj - 1) >> 1) + 4);

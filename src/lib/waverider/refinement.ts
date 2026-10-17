@@ -83,7 +83,7 @@ export const REFINEMENT_LIMITS = {
     /** Hard cap on cells of one 2-D grid. Memory is ~140 B/cell, so this is far inside browser limits. */
     maxCells: 60000,
     /** Hard cap on cell-updates (cells x iterations): bounds wall-clock time (~10-15 s at the measured TypeScript rates). */
-    maxWork: 5e7,
+    maxWork: 2.5e7,
   },
 } as const;
 
@@ -94,7 +94,7 @@ export const REFINEMENT_LIMITS = {
  */
 export const COST_MODEL = {
   jsRateWedge: 3.4e6,
-  jsRateStrip: 5.5e6,
+  jsRateStrip: 4.5e6,
   wasmRateStrip: 8e6,
 } as const;
 
@@ -150,7 +150,7 @@ const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> =
   },
   fine: {
     preset: "fine",
-    surface: { nx: 96, ny: 32, leClustering: 0.6, curvature: 0.5 },
+    surface: { nx: 96, ny: 32, leClustering: 0.3, curvature: 0.5 },
     volume: {
       nStream: 96,
       nCross: 32,
@@ -445,17 +445,15 @@ export function stripDims(v: VolumeRefinement): { ni: number; nj: number; iters:
 }
 
 /**
- * Spanwise points above this trip pre-existing non-manifold aft-tip edges in generate.ts / mesh.ts weldAft
- * (tolerance 8e-4 L is larger than the tip spacing). Measured on b5fdccc: caret is manifold at ny <= 32 and
- * not at ny >= 34. Streamwise points (nx) are not affected. See NOTES.md.
+ * Surface-mesh advisories. Dense spanwise sampling used to produce non-manifold aft-tip edges (weld tolerance larger than the
+ * tip spacing); `weldAftRobust` (mesh-repair.ts) fixed that for every family, so there is no manifold warning any more. What is
+ * left is a cost note for very dense sheets.
  */
-export const SPAN_MANIFOLD_SAFE_NY = 32;
-
 export function surfaceWarnings(r: RefinementSettings): string[] {
   const out: string[] = [];
-  if (r.surface.ny > SPAN_MANIFOLD_SAFE_NY) {
+  if (r.surface.nx * r.surface.ny > 12000) {
     out.push(
-      `Spanwise points ${r.surface.ny} > ${SPAN_MANIFOLD_SAFE_NY}: several families currently report non-manifold aft-tip edges at this density (existing weld tolerance; still watertight). Check the CAD tab.`,
+      `Surface sheet of ${r.surface.nx}x${r.surface.ny} points: meshing, aero and exports slow down noticeably (triangle count grows with nx*ny).`,
     );
   }
   return out;
