@@ -24,6 +24,8 @@ import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import kernelSource from "../../native/bowshock_kernel.c?raw";
 import { fmt } from "@/lib/waverider/math";
 import { studyJson, studyVehicle } from "@/lib/waverider/study";
+import { exportOffThread } from "@/lib/perf/client";
+import { useLiveVehicle } from "@/lib/perf/use-live-vehicle";
 import { loadSavedParams, PRESETS, saveParams } from "@/lib/waverider/presets";
 import {
   COLOR_MODES,
@@ -175,31 +177,9 @@ export function Designer() {
     });
   };
 
-  const gKey = geomKey(params);
-  const built = useMemo(() => buildVehicle(params), [gKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const study = useMemo(
-    // built.params is frozen at the last *geometry* change; alpha, altitude, Mach, method etc. are
-    // not in geomKey, so pass the live params or the study (and the Data tab) read stale values.
-    () => studyVehicle({ ...built, params }, { quick: dragging || !hydrated }),
-    [
-      built,
-      params.flightMach,
-      params.lockFlight,
-      params.alphaDeg,
-      params.betaDeg,
-      params.altKm,
-      params.cgFrac,
-      params.aeroMethod,
-      params.twK,
-      params.fuel,
-      params.phi,
-      params.gammaDeg,
-      params.rhoKgM3,
-      params.massKg,
-      dragging,
-      hydrated,
-    ], // eslint-disable-line react-hooks/exhaustive-deps
-  );
+  // perf: geometry + study run in a worker (latest-wins, coarse preview while dragging, full on release);
+  // see src/lib/perf/use-live-vehicle.ts. The sync useMemo pair this replaces is in NOTES.md.
+  const { built, study } = useLiveVehicle(params, { dragging, hydrated });
   const q = built.quality;
   const a = built.aero;
   const fam = FAMILY_META[params.family];
@@ -230,6 +210,12 @@ export function Designer() {
   async function save(kind: string) {
     setBusy(kind);
     try {
+      // perf: heavy CAD builds run in the worker; falls through to the inline path when unavailable.
+      const off = await exportOffThread(kind, params, { python, cSrc, cppSrc, kernelSource });
+      if (off) {
+        for (const f of off) downloadBlob(f.blob, f.name);
+        return;
+      }
       const cadKinds = new Set(["stl", "stl-ascii", "stl-regions", "step", "step-nurbs", "step-tess", "step-facet", "iges", "plot3d", "obj", "kit"]);
       const src =
         cadKinds.has(kind)

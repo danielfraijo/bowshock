@@ -105,7 +105,15 @@ function ensureScratch(k: EulerExports, bytes: number): number {
  * Test / diagnostic switches. `reference` routes every solve through the original
  * (pre-optimisation) wasm entry point; `wedge` enables the wasm 2-D wedge march.
  */
-export const kernelFlags = { reference: false, wedge: true };
+export interface EulerGrid {
+  ni: number;
+  nj: number;
+  iters: number;
+}
+/** Coarse grid used for drag previews (|dCp| <~ 2e-3 vs the default grid on the default caret, ~8x cheaper). */
+export const PREVIEW_GRID: EulerGrid = { ni: 44, nj: 14, iters: 30 };
+
+export const kernelFlags: { reference: boolean; wedge: boolean; grid?: EulerGrid } = { reference: false, wedge: true, grid: undefined };
 
 /** Bumped when the kernel's numerics change; part of every persisted/cached key. */
 export const KERNEL_VERSION = "cuspis-euler/fast-1";
@@ -117,7 +125,7 @@ export function wallKey(x: Float64Array, z: Float64Array): string {
 
 export const eulerCache = new LRU<Float64Array>(512, 8 * 1024 * 1024);
 
-export function eulerKey(x: Float64Array, z: Float64Array, mach: number, gamma: number, alpha: number, grid?: { ni: number; nj: number; iters: number }): string {
+export function eulerKey(x: Float64Array, z: Float64Array, mach: number, gamma: number, alpha: number, grid?: EulerGrid): string {
   const h = new Hasher().str(KERNEL_VERSION).str(kernelFlags.reference ? "ref" : "fast").num(mach).num(gamma).num(alpha);
   if (grid) h.int(grid.ni).int(grid.nj).int(grid.iters);
   return h.digest() + wallKey(x, z);
@@ -130,7 +138,7 @@ export function solveWallRaw(
   mach: number,
   gamma: number,
   alpha: number,
-  opts?: { reference?: boolean; grid?: { ni: number; nj: number; iters: number } },
+  opts?: { reference?: boolean; grid?: EulerGrid },
 ): Float64Array {
   const k = eulerSync();
   const n = x.length;
@@ -150,16 +158,16 @@ export function solveWallRaw(
 
 /** Cached wall-Cp solve. The returned array is shared: treat it as read-only. */
 export function solveWallCp(x: Float64Array, z: Float64Array, mach: number, gamma: number, alpha: number): Float64Array {
-  const key = eulerKey(x, z, mach, gamma, alpha);
+  const key = eulerKey(x, z, mach, gamma, alpha, kernelFlags.grid);
   const hit = eulerCache.get(key);
   if (hit) return hit;
-  const out = solveWallRaw(x, z, mach, gamma, alpha, { reference: kernelFlags.reference });
+  const out = solveWallRaw(x, z, mach, gamma, alpha, { reference: kernelFlags.reference, grid: kernelFlags.grid });
   return eulerCache.set(key, out, out.byteLength);
 }
 
 /** Insert a result computed elsewhere (a worker, a persisted store). */
-export function primeWallCp(x: Float64Array, z: Float64Array, mach: number, gamma: number, alpha: number, cp: Float64Array) {
-  eulerCache.set(eulerKey(x, z, mach, gamma, alpha), cp, cp.byteLength);
+export function primeWallCp(x: Float64Array, z: Float64Array, mach: number, gamma: number, alpha: number, cp: Float64Array, grid?: EulerGrid) {
+  eulerCache.set(eulerKey(x, z, mach, gamma, alpha, grid), cp, cp.byteLength);
 }
 
 /** 2-D HLLC wedge march (euler2d.ts anchor) on the wasm kernel, or null when unavailable. */

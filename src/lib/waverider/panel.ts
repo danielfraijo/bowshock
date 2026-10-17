@@ -41,6 +41,7 @@ import {
 import type { Atmosphere } from "./atmosphere";
 import { integrateShockExpansion } from "./shockexp";
 import { bodyCf, surfaceHeat, xLeadingOf, type HeatCtx } from "./heating";
+import { memoPanel } from "../perf/panel-memo";
 
 export interface PanelAero {
   cl: number;
@@ -182,7 +183,23 @@ export interface RateState {
   r: number;
 }
 
+/** perf: content-addressed memo in front of the solver (src/lib/perf/panel-memo.ts). */
 export function panelAero(
+  mesh: TriMesh,
+  params: DesignParams,
+  atm: Atmosphere,
+  alphaDeg: number,
+  betaDeg: number,
+  sRef: number,
+  lRef: number,
+  rates?: RateState,
+): PanelAero {
+  return memoPanel(mesh, params, atm, alphaDeg, betaDeg, sRef, lRef, rates, () =>
+    panelAeroCompute(mesh, params, atm, alphaDeg, betaDeg, sRef, lRef, rates),
+  );
+}
+
+export function panelAeroCompute(
   mesh: TriMesh,
   params: DesignParams,
   atm: Atmosphere,
