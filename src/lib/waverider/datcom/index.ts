@@ -12,3 +12,6 @@ export * from "./presets.ts";
 export * from "./output.ts";
 export * from "./deck.ts";
 export * from "./sweep.ts";
+
+export * from "./extras.ts";
+export * from "./validate-input.ts";

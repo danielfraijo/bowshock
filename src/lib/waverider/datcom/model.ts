@@ -21,6 +21,8 @@ import { cfOptions, flowConditions, type Flow } from "./flow.ts";
 import { bodyAxial, bodyDamping, bodyNormal, type BodyAxial, type BodyCtx } from "./body.ts";
 import { finAxial, finCLa, finXcp, flapEffectiveness, panelNormal, panelRollDamping, type FinAxial } from "./fin.ts";
 import { inducedVelocity, interferenceFactors, makeVortex, type KFactors, type Vortex } from "./interference.ts";
+import { ellipticIntegrals, ellipticToProfile, inletIncrements, isElliptic, protuberanceIncrements } from "./extras.ts";
+import { sanitizeConfig, sanitizeFlight } from "./validate-input.ts";
 import { DEG, RAD, clamp, smoothstep } from "./util.ts";
 
 export interface Model {
@@ -35,21 +37,48 @@ export interface Model {
   geometry: GeometrySummary;
 }
 
-export function buildModel(cfg: VehicleConfig): Model {
-  const prof = cfg.body ? buildBody(cfg.body) : null;
+export function buildModel(cfgIn: VehicleConfig): Model {
+  const cfg = sanitizeConfig(cfgIn);
+  let prof = null as ReturnType<typeof buildBody> | null;
+  let ints = null as ReturnType<typeof bodyIntegrals> | null;
+  if (cfg.body) {
+    if (isElliptic(cfg.body) && cfg.body.elliptic) {
+      prof = ellipticToProfile(cfg.body.elliptic);
+      const ei = ellipticIntegrals(cfg.body.elliptic);
+      ints = {
+        volume: ei.volume,
+        planform: ei.planform,
+        wetted: ei.wetted,
+        baseArea: ei.baseArea,
+        xPlanform: ei.xPlanform,
+        xVolume: ei.xVolume,
+      };
+      prof.warnings.push(`elliptic eccentricity path active (max e≈ engineering)`);
+    } else {
+      prof = buildBody(cfg.body);
+      ints = bodyIntegrals(prof);
+    }
+  }
   const fins = cfg.sets.map((s) => finGeom(s, prof));
+  // drop buried panels softly
+  for (const f of fins) {
+    if (f.exposedSpan < 1e-8) {
+      f.exposedSpan = 1e-8;
+      f.area = Math.max(f.area, 1e-12);
+      f.aspect = Math.max(f.aspect, 1e-4);
+    }
+  }
   const refs = resolveRefs(cfg, prof, fins);
-  return {
-    cfg,
-    prof,
-    ints: prof ? bodyIntegrals(prof) : null,
-    fins,
-    sRef: refs.sRef,
-    lRef: refs.lRef,
-    latRef: refs.latRef,
-    xcg: refs.xcg,
-    geometry: summarizeGeometry(cfg, prof, fins),
-  };
+  const sRef = Math.max(refs.sRef, 1e-12);
+  const lRef = Math.max(refs.lRef, 1e-12);
+  const latRef = Math.max(refs.latRef, 1e-12);
+  const xcg = Number.isFinite(refs.xcg) ? refs.xcg : 0;
+  const geometry = summarizeGeometry(cfg, prof, fins);
+  geometry.sRef = sRef;
+  geometry.lRef = lRef;
+  geometry.latRef = latRef;
+  geometry.xcg = xcg;
+  return { cfg, prof, ints, fins, sRef, lRef, latRef, xcg, geometry };
 }
 
 interface SetState {
@@ -160,6 +189,21 @@ export function forces(ms: MachState, aT: number, psi: number, dOverride?: (setI
     bodyTag = bn.tag;
     bodyNotes = bn.notes;
   }
+  // Inlet + protuberance engineering increments
+  if (m.cfg.inlets?.length) {
+    const inc = inletIncrements(m.cfg.inlets, flow, sRef, lRef, xcg);
+    const c: Component = { name: "inlets", CN: inc.CN * cosPsi, CY: inc.CY, CA: inc.CA, Cm: inc.Cm * cosPsi, Cn: inc.Cn, Cl: 0 };
+    comps.push(c);
+    CN += c.CN; CY += c.CY; CA += c.CA; Cm += c.Cm; Cn += c.Cn;
+    bodyNotes = [...bodyNotes, ...inc.notes];
+  }
+  if (m.cfg.protuberances?.length) {
+    const inc = protuberanceIncrements(m.cfg.protuberances, flow, sRef, lRef, xcg, m.geometry.length);
+    const c: Component = { name: "protuberances", CN: 0, CY: 0, CA: inc.CA, Cm: 0, Cn: 0, Cl: 0 };
+    comps.push(c);
+    CA += c.CA;
+    bodyNotes = [...bodyNotes, ...inc.notes];
+  }
   const vortices: Vortex[] = [];
   const g = flow.gamma;
   ms.sets.forEach((ss, si) => {
@@ -209,7 +253,7 @@ export function forces(ms: MachState, aT: number, psi: number, dOverride?: (setI
       comp.Cl += (FW * geo.yBar) / bRef;
       const dCAind = -ss.sucFrac * FW * Math.sin(aEff);
       comp.CA += (ss.ax.cd0 * geo.area) / sRef * Math.cos(aT) + dCAind;
-      const vx = makeVortex(geo, phiDeg, FW, sRef, ms.decay);
+      const vx = makeVortex(geo, phiDeg, FW, sRef, ms.decay, Math.abs(aT));
       if (vx) newVort.push(vx);
     }
     vortices.push(...newVort);
@@ -221,7 +265,8 @@ export function forces(ms: MachState, aT: number, psi: number, dOverride?: (setI
     Cn += comp.Cn;
     Cl += comp.Cl;
   });
-  return { CN, CY, CA, Cm, Cn, Cl, comps, bodyTag, bodyNotes };
+  const fin = (x: number) => (Number.isFinite(x) ? x : 0);
+  return { CN: fin(CN), CY: fin(CY), CA: fin(CA), Cm: fin(Cm), Cn: fin(Cn), Cl: fin(Cl), comps, bodyTag, bodyNotes };
 }
 
 /** body-axis (alpha, beta) -> (total alpha, crossflow azimuth). */
@@ -313,8 +358,12 @@ export function assessValidity(ms: MachState, aT: number, body: boolean): Validi
     notes.push("total angle of attack > 30 deg: low confidence");
   }
   if (aDeg > 60) {
+    down("low");
+    notes.push("total angle of attack > 60 deg: engineering extrapolation — low confidence");
+  }
+  if (aDeg > 120) {
     valid = false;
-    notes.push("total angle of attack > 60 deg: outside the supported range");
+    notes.push("total angle of attack > 120 deg: outside the supported range");
   }
   if (ms.sets.length) {
     if (ms.sets.some((s) => s.g.aspect > 8)) {
@@ -445,18 +494,21 @@ export function evalPoint(ms: MachState, alphaDeg: number, betaDeg: number, phiD
   };
 }
 
-export function runCases(cfg: VehicleConfig, flight: FlightSpec): RunResult {
-  const model = buildModel(cfg);
-  const warnings = [...model.geometry.warnings];
+export function runCases(cfgIn: VehicleConfig, flightIn: FlightSpec): RunResult {
+  const flight = sanitizeFlight(flightIn);
+  const model = buildModel(cfgIn);
+  const warnings = [...model.geometry.warnings, ...(model.cfg.notes ?? []).filter((n) => n.includes("→"))];
   const cases: CaseResult[] = [];
   const phi = flight.phi ?? 0;
   const beta = flight.beta ?? 0;
-  if (cfg.sets.some((s) => s.dihedral && Math.abs(s.dihedral) > 1e-9)) warnings.push("panel dihedral is accepted but not modelled in the loads");
+  if (model.cfg.sets.some((s) => s.dihedral && Math.abs(s.dihedral) > 1e-9)) warnings.push("panel dihedral is accepted but not modelled in the loads");
+  if (isElliptic(model.cfg.body)) warnings.push("ELLBOD: elliptical body via equivalent-radius + Ramanujan perimeter (engineering)");
+  if (model.cfg.inlets?.length) warnings.push("INLET: additive-drag / ramp-CN engineering model active");
+  if (model.cfg.protuberances?.length) warnings.push("PROTUB: Hoerner-style protuberance drag active");
   const machs = [...flight.machs];
   machs.forEach((_mach, i) => {
     const flow = flowConditions({ ...flight, machs }, i);
     const ms = machState(model, flow);
-    const L = model.prof ? model.prof.length : model.geometry.length;
     const points = flight.alphas.map((a) => evalPoint(ms, a, beta, phi));
     cases.push({
       mach: flow.mach,
@@ -468,7 +520,6 @@ export function runCases(cfg: VehicleConfig, flight: FlightSpec): RunResult {
       vMs: flow.V,
       points,
     });
-    void L;
   });
-  return { config: cfg, flight, geometry: model.geometry, cases, warnings };
+  return { config: model.cfg, flight, geometry: model.geometry, cases, warnings };
 }

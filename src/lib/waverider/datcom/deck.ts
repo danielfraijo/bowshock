@@ -6,6 +6,9 @@
  *   $REFQ    SREF, LREF, LATREF, XCG, ZCG, ROUGH, BLAYER, SCALE
  *   $AXIBOD  Option 1 (TNOSE, LNOSE, DNOSE, BNOSE, POWER, LCENTR, DCENTR, TAFT, LAFT, DAFT, DEXIT)
  *            Option 2 (NX, X, R, BNOSE, DEXIT)
+ *   $ELLBOD  Option 2 subset: NX, X, H, W / ELLIP (semi-axes); Option 1 → warning for partial support
+ *   $INLET   NIN, INTYPE, XINLT, PHI, capture via W/H or equiv area, MFR, RAMP, COVER (subset)
+ *   $PROTUB  NPROT, PTYPE, XPROT, NLOC, LPROT, WPROT, HPROT (subset)
  *   $FINSETn SSPAN, CHORD, XLE, SWEEP, STA, LER, NPANEL, PHIF, GAM, SECTYP, ZUPPER,
  *            LMAXU, LFLATU, CFOC
  *   $DEFLCT  DELTA1..DELTA4
@@ -25,7 +28,10 @@ import type {
   BodySpec,
   FinSet,
   FlightSpec,
+  InletSpec,
   NoseKind,
+  ProtuberanceKind,
+  ProtuberanceSpec,
   SectionKind,
   SurfaceRole,
   VehicleConfig,
@@ -45,10 +51,7 @@ export interface DeckParse {
 }
 
 const UNSUPPORTED_NAMELISTS = new Set([
-  "ELLBOD",
-  "PROTUB",
   "TRIM",
-  "INLET",
   "EXPR",
   "PROPWR",
   "JETPWR",
@@ -275,6 +278,8 @@ function buildFromMissile(lists: NL[], units: "m" | "ft" | "in" | "cm", caseId: 
   let blayer: "turb" | "natural" | undefined;
   const deltas: number[][] = [[], [], [], []];
   const nacaBySet: Record<number, string> = {};
+  const inlets: InletSpec[] = [];
+  const prots: ProtuberanceSpec[] = [];
 
   for (const nl of lists) {
     const V = nl.vars;
@@ -382,6 +387,92 @@ function buildFromMissile(lists: NL[], units: "m" | "ft" | "in" | "cm", caseId: 
       sets[idx] = set;
     } else if (nl.name === "DEFLCT") {
       for (let k = 1; k <= 4; k++) deltas[k - 1] = arr(V[`DELTA${k}`]);
+    } else if (nl.name === "ELLBOD") {
+      if (V.NX !== undefined) {
+        const X = arr(V.X).map(L);
+        const H = arr(V.H).map(L);
+        const W = arr(V.W).map(L);
+        const ELL = arr(V.ELLIP);
+        const n = Math.min(num(V.NX, X.length), X.length);
+        const elliptic = [] as { x: number; a: number; b: number }[];
+        for (let i = 0; i < n; i++) {
+          let a = W[i], b = H[i];
+          if ((a === undefined || b === undefined) && ELL[i] !== undefined) {
+            if (a !== undefined) b = a * ELL[i];
+            else if (b !== undefined) a = b / Math.max(ELL[i], 1e-9);
+          }
+          elliptic.push({ x: X[i] ?? 0, a: a ?? 0, b: b ?? 0 });
+        }
+        body = { ...(body ?? {}), elliptic, exitDiameter: V.DEXIT !== undefined ? L(num(V.DEXIT)) : body?.exitDiameter };
+        warnings.push("$ELLBOD option-2 loaded (equivalent-radius synthesis)");
+      } else {
+        warnings.push("$ELLBOD option-1 not fully mapped — provide NX/X/H/W");
+      }
+    } else if (nl.name === "INLET") {
+      const nIn = Math.max(1, Math.round(num(V.NIN, 1)));
+      const kindRaw = str(V.INTYPE) || "AXI";
+      const kind = /2DTOP/i.test(kindRaw) ? "2dtop" as const : /2DSIDE/i.test(kindRaw) ? "2dside" as const : "axi" as const;
+      const Hs = arr(V.H).map(L);
+      const Ws = arr(V.W).map(L);
+      let Ac = 0;
+      if (kind === "axi") {
+        const d = Ws[1] ?? Ws[0] ?? Hs[0] ?? 0.1;
+        Ac = Math.PI * (d / 2) ** 2;
+      } else {
+        Ac = Math.max(Hs[1] ?? Hs[0] ?? 0.1, 0) * Math.max(Ws[1] ?? Ws[0] ?? 0.1, 0);
+      }
+      const phis = arr(V.PHI);
+      const mfrs = arr(V.MFR);
+      for (let i = 0; i < nIn; i++) {
+        inlets.push({
+          name: `inlet${i + 1}`,
+          kind,
+          x: L(num(V.XINLT)),
+          captureArea: Ac,
+          mfr: mfrs[i] ?? mfrs[0] ?? 0.9,
+          rampDeg: num(V.RAMP, 0),
+          phi: phis[i] ?? phis[0] ?? 0,
+          covered: V.COVER === true || V.COVER === 1,
+        });
+      }
+      for (const k of Object.keys(V)) {
+        if (!["NIN","INTYPE","XINLT","XDIV","HDIV","LDIV","PHI","X","H","W","COVER","RAMP","ADD","MFR"].includes(k)) {
+          warnings.push(`$INLET unsupported key ${k}`);
+        }
+      }
+    } else if (nl.name === "PROTUB") {
+      const nProt = Math.max(0, Math.round(num(V.NPROT, 0)));
+      const types = (Array.isArray(V.PTYPE) ? V.PTYPE : V.PTYPE !== undefined ? [V.PTYPE] : []) as (string | number)[];
+      const xprot = arr(V.XPROT).map(L);
+      const nloc = arr(V.NLOC);
+      const lprot = arr(V.LPROT).map(L);
+      const wprot = arr(V.WPROT).map(L);
+      const hprot = arr(V.HPROT).map(L);
+      const mapKind = (t: string): ProtuberanceKind => {
+        const u = t.toUpperCase();
+        if (u.includes("VCYL") || u.includes("HCYL") || u === "CYLINDER") return "cylinder";
+        if (u.includes("FAIR")) return "fairing";
+        if (u.includes("SHOE") || u.includes("LUG") || u.includes("BLOCK")) return "block";
+        return "block";
+      };
+      for (let i = 0; i < nProt; i++) {
+        const raw = String(types[i] ?? "BLOCK");
+        prots.push({
+          name: `protub${i + 1}`,
+          kind: mapKind(raw),
+          x: xprot[i] ?? 0,
+          length: lprot[i] ?? 0.1,
+          width: wprot[i] ?? 0.05,
+          height: hprot[i] ?? 0.05,
+          count: Math.max(1, Math.round(nloc[i] ?? 1)),
+        });
+      }
+      for (const k of Object.keys(V)) {
+        if (!["NPROT","PTYPE","XPROT","NLOC","LPROT","WPROT","HPROT","OPROT"].includes(k)) {
+          warnings.push(`$PROTUB unsupported key ${k}`);
+        }
+      }
+      if (V.OPROT !== undefined) warnings.push("$PROTUB OPROT (offset) accepted but not modelled");
     } else if (nl.name === "OPTINS" || nl.name === "SYNTHS" || nl.name === "BODY" || /^(WG|HT|VT|CANARD)/.test(nl.name)) {
       // handled in aircraft path
     } else {
@@ -398,6 +489,8 @@ function buildFromMissile(lists: NL[], units: "m" | "ft" | "in" | "cm", caseId: 
     body,
     sets: sets.filter(Boolean),
     ref: { xcg, sRef, lRef, latRef, roughness, blayer },
+    inlets: inlets.length ? inlets : undefined,
+    protuberances: prots.length ? prots : undefined,
     units,
     caseId,
   };
