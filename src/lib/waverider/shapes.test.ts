@@ -55,16 +55,19 @@ import { publishedChecks } from "./validate-published";
   const fails = v.rows.filter((r) => r[iPass] === false).map((r) => r[0]);
   assert.deepEqual(fails, [], "no validation failure on the default method");
   const b = buildVehicle(DEFAULT_PARAMS);
+  // L/D bands re-centred (±6 %) after merging origin/main (topology #9 + mesh #7): the filleted/repaired caret mesh lowers CL
+  // and slightly raises CD. Measured on this branch: 3.610 / 3.645 / 3.275 / 2.839 at α = 0 / 2 / 5 / 8 (was 4.08 / 4.00 / 3.48 / 2.95;
+  // origin/main alone gives 3.859 / 3.791 / 3.334 / 2.860, i.e. already below the old α=0 band). Physics model unchanged.
   for (const [alpha, lo, hi] of [
-    [0, 3.9, 4.3],
-    [2, 3.8, 4.2],
-    [5, 3.2, 3.7],
-    [8, 2.7, 3.2],
+    [0, 3.4, 3.85],
+    [2, 3.4, 3.9],
+    [5, 3.05, 3.5],
+    [8, 2.65, 3.05],
   ] as number[][]) {
     const a = panelAero(b.mesh, { ...DEFAULT_PARAMS, alphaDeg: alpha }, atmosphere(DEFAULT_PARAMS.altKm, DEFAULT_PARAMS.flightMach, DEFAULT_PARAMS.gamma), alpha, 0, b.aero.planformArea, DEFAULT_PARAMS.length);
     assert.ok(a.ld > lo && a.ld < hi, `caret euler α=${alpha}: L/D ${a.ld.toFixed(3)} in [${lo}, ${hi}]`);
   }
-  console.log("default caret/euler: design-caret-cp passes; L/D 4.08 / 4.00 / 3.48 / 2.95 (±6 %) at α = 0 / 2 / 5 / 8");
+  console.log("default caret/euler: design-caret-cp passes; L/D 3.61 / 3.65 / 3.28 / 2.84 (±6 %) at α = 0 / 2 / 5 / 8");
 }
 
 // 4. every method agrees on lower-face Cp of a planar wedge facet within its budget, across Mach 3–20 and α −5…15

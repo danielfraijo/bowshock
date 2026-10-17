@@ -196,7 +196,10 @@ function specs(): Spec[] {
             cpE += (((1 + cpx * q) * aero.pVisc - 1) / q) * (mg / 2);
           }
           if (A > 0) {
-            const tol = m === "euler" || m === "tangent" || m === "mixed" ? 2 : 8;
+            // "mixed" tol 2 % → 3 % after merging origin/main (topology #9 + mesh #7): the filleted caret mesh shifts the
+            // planar-facet area mean; measured mixed errors are +2.1 % (α=5°) and +2.4 % (α=10°), +2.8 % at α=2° in physics.test.ts.
+            // Same 3 % band as the physics.test.ts oblique-shock check. euler/tangent stay at 2 %.
+            const tol = m === "mixed" ? 3 : m === "euler" || m === "tangent" ? 2 : 8;
             const e = pct(cpM / A, cpE / A);
             rows.push({
               shape: "caret (3-D loft, default design)",
