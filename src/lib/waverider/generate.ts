@@ -15,6 +15,7 @@ import {
 import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, fairTrailingEdge, gridPoint, makeGrid, matchTrailingEdge, orientOutward, setGridPoint, stitchGrid, weldAft, zipperSharpEdges } from "./mesh";
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 import { bindCenterline } from "./sym-euler";
+import { orientConsistent, tidyTrailingEdge } from "./topology";
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -1039,8 +1040,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     if (!isDuct) {
-      matchTrailingEdge(built.upper, built.lower, params.length);
-      fairTrailingEdge(built.upper, built.lower, params.length);
+      tidyTrailingEdge(built.upper, built.lower, params.length);
       enforceMonotoneChord(built.upper);
       enforceMonotoneChord(built.lower);
     }
@@ -1078,8 +1078,8 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   }
 
   mesh = compactMesh(mesh);
-  mesh = weldAft(mesh, params.length);
   orientOutward(mesh);
+  orientConsistent(mesh);
   lockFrame(mesh, grids, shock, params.halfModel);
   const usedX = (() => {
     let m = Infinity;
