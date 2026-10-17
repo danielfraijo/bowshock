@@ -7,6 +7,7 @@ import { refineGrids, scaleGrids, scaleMesh } from "./mesh";
 import { unitScale } from "./math";
 import { designJson, pythonRunner, readmeFor } from "./kit-text";
 import { buildZip, utf8 } from "./zip";
+import { packFiles, type DataPack } from "./datapack";
 
 export function scaledClone(built: BuiltVehicle) {
   const s = unitScale(built.params.unit);
@@ -109,6 +110,7 @@ export async function cfdZip(
     impact?: Float32Array;
   },
   kernelSource = "",
+  dataPack?: DataPack,
 ): Promise<Blob> {
   const f = fileBlobs(built, fields);
   const n = f.name;
@@ -136,6 +138,8 @@ export async function cfdZip(
   if (kernelSource) files.push({ name: `${n}/bowshock_kernel.c`, data: enc.encode(kernelSource) });
   if (cppSource) files.push({ name: `${n}/bowshock.cpp`, data: enc.encode(cppSource) });
   if (analysis) files.push({ name: `${n}/analysis.json`, data: utf8(analysis) });
+  // Data package: one CSV per table + datapack.json + README data dictionary (src/lib/waverider/datapack.ts)
+  if (dataPack) for (const f of packFiles(dataPack, `${n}/data`)) files.push({ name: f.name, data: utf8(f.content) });
   return buildZip(files);
 }
 

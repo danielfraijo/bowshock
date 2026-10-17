@@ -209,7 +209,7 @@ function tmDeriv(vr: number, vt: number, th: number, gamma: number) {
  * Integrate Taylor–Maccoll from the shock inward.
  * Velocities are nondimensional by Vmax.
  */
-export function taylorMaccoll(M: number, beta: number, gamma = 1.4): TmTable | null {
+export function taylorMaccoll(M: number, beta: number, gamma = 1.4, stepScale = 1): TmTable | null {
   if (!(M > 1) || !(beta > 0)) return null;
   const gm1 = gamma - 1;
   const vInf = Math.sqrt((gm1 * 0.5 * M * M) / (1 + gm1 * 0.5 * M * M));
@@ -221,9 +221,10 @@ export function taylorMaccoll(M: number, beta: number, gamma = 1.4): TmTable | n
   const theta = [th];
   const vrA = [vr];
   const vtA = [vt];
-  const dth = -Math.min(0.25 * DEG, beta / 80);
+  const dth = -Math.min(0.25 * DEG, beta / 80) * stepScale;
   let cone = 0;
-  for (let k = 0; k < 4000; k++) {
+  const maxSteps = Math.ceil(4000 / stepScale);
+  for (let k = 0; k < maxSteps; k++) {
     if (th + dth <= 1e-3) break;
     const k1v = vt;
     const k1t = tmDeriv(vr, vt, th, gamma);
@@ -240,28 +241,77 @@ export function taylorMaccoll(M: number, beta: number, gamma = 1.4): TmTable | n
     vrA.push(vr);
     vtA.push(vt);
     if (vt >= 0) {
-      cone = th - dth * (vtA[vtA.length - 2] / (vtA[vtA.length - 2] - vt + 1e-16));
+      // Cubic-Hermite root of vθ on the last step (vθ' = tmDeriv at both ends).
+      // Linear interpolation left ±0.4 % noise in Cp from step to step.
+      const n = vtA.length;
+      const t0 = theta[n - 2];
+      const t1 = th;
+      const h = t1 - t0;
+      const v0 = vtA[n - 2];
+      const v1 = vt;
+      const d0 = tmDeriv(vrA[n - 2], v0, t0, gamma);
+      const d1 = tmDeriv(vr, v1, t1, gamma);
+      const herm = (u: number) => {
+        const u2 = u * u;
+        const u3 = u2 * u;
+        return (2 * u3 - 3 * u2 + 1) * v0 + (u3 - 2 * u2 + u) * h * d0 + (-2 * u3 + 3 * u2) * v1 + (u3 - u2) * h * d1;
+      };
+      let lo = 0;
+      let hi = 1;
+      for (let it = 0; it < 50; it++) {
+        const mid = 0.5 * (lo + hi);
+        if (herm(mid) < 0) lo = mid;
+        else hi = mid;
+      }
+      const uRoot = 0.5 * (lo + hi);
+      cone = t0 + uRoot * h;
+      const r0 = vrA[n - 2];
+      const u2 = uRoot * uRoot;
+      const u3 = u2 * uRoot;
+      const vrC = (2 * u3 - 3 * u2 + 1) * r0 + (u3 - 2 * u2 + uRoot) * h * v0 + (-2 * u3 + 3 * u2) * vr + (u3 - u2) * h * v1;
+      theta[n - 1] = cone;
+      vrA[n - 1] = vrC;
+      vtA[n - 1] = 0;
       break;
     }
   }
   if (cone <= 0 || cone >= beta) return null;
+  // A cone only a few steps wide is resolved poorly (near the Mach cone the cone
+  // angle is hypersensitive to β). Re-run with a 10× finer step.
+  if (cone < 25 * -dth && stepScale > 2e-3) return taylorMaccoll(M, beta, gamma, stepScale * 0.1) ?? { theta, vr: vrA, vt: vtA, cone };
   return { theta, vr: vrA, vt: vtA, cone };
 }
 
+/** Cone half-angle for a Taylor–Maccoll run from shock angle β: 0 if the integration never reached vθ = 0, NaN if invalid. */
+function tmConeAngle(M: number, beta: number, gamma: number): number {
+  const tm = taylorMaccoll(M, beta, gamma);
+  if (tm) return tm.cone;
+  return NaN;
+}
+
+/**
+ * Shock angle β of the attached conical shock on a cone of half-angle `cone`.
+ * Bisection on β ∈ [μ, 70°]. The lower bound used to be μ+0.15° (or cone+0.2°),
+ * which clipped every cone smaller than the one whose shock sits 0.15° off the
+ * Mach wave (≈2° at M=8): a 1° cone returned the 2° cone's β and ~4× its Cp.
+ */
 export function solveConeShock(M: number, cone: number, gamma = 1.4): number {
   const mu = Math.asin(clamp(1 / M, 0, 1));
-  let lo = Math.max(mu + 0.15 * DEG, cone + 0.2 * DEG);
+  let lo = Math.max(mu * (1 + 1e-7), mu + 1e-7);
   let hi = 70 * DEG;
   let best = lo;
-  for (let i = 0; i < 28; i++) {
+  for (let i = 0; i < 40; i++) {
     const mid = 0.5 * (lo + hi);
-    const tm = taylorMaccoll(M, mid, gamma);
-    if (!tm) {
-      hi = mid;
+    const c = tmConeAngle(M, mid, gamma);
+    if (Number.isNaN(c)) {
+      // No crossing before the pole: the cone this β describes is smaller than any requested cone
+      // when β is near μ, and invalid (detached / strong-branch) when β is large.
+      if (mid < 0.5 * (mu + 70 * DEG) && cone > 1e-4) lo = mid;
+      else hi = mid;
       continue;
     }
     best = mid;
-    if (tm.cone < cone) lo = mid;
+    if (c < cone) lo = mid;
     else hi = mid;
   }
   return best;
@@ -400,7 +450,7 @@ export function airMu(T: number): number {
 export function skinCf(Re: number): number {
   if (!(Re > 100)) return 0.01;
   const log = Math.log10(Math.max(Re, 1e3));
-  return 0.455 / (log * log);
+  return 0.455 / Math.pow(log, 2.58);
 }
 
 /**
@@ -428,17 +478,34 @@ export function vanDriestII(Re: number, M: number, Te: number, Tw: number, gamma
   return CfiStar / Math.max(Fc, 0.35);
 }
 
-/** Sutton–Graves / Tauber TP-2914 Earth stagnation, W/cm². ρ kg/m³, Rn m, V m/s. */
-export function suttonGraves(rho: number, V: number, Rn: number, recov = 1): number {
-  return 1.83e-8 * Math.sqrt(rho / Math.max(Rn, 1e-8)) * V ** 3 * recov;
+/** Specific gas constant of air, J/(kg K). */
+export const R_AIR = 287.05287;
+
+/** cp = γR/(γ−1) for the calorically perfect gas used everywhere else (1004.7 J/kg/K at γ = 1.4). */
+export function cpGas(gamma = 1.4): number {
+  return (gamma * R_AIR) / Math.max(gamma - 1, 1e-6);
 }
 
 /**
- * Detra–Kemp–Riddell stagnation, W/cm² (Earth).
- * q = 5.21×10⁴ √(ρ/Rn) (V/10⁴)^3.15  W/m² → /10⁴ for W/cm².
+ * Sutton–Graves Earth stagnation-point convective heating, W/cm².
+ * q = k √(ρ/Rn) V³, k = 1.7415×10⁻⁴ (SI, W/m²) for Earth air (Sutton & Graves 1971,
+ * NASA TR R-376). ρ kg/m³, Rn m, V m/s. The earlier constant 1.83×10⁻⁸ (W/cm²) is the
+ * 97 % CO₂ / 3 % N₂ (Mars/Venus) value and ran 5.1 % hot for air.
+ */
+export function suttonGraves(rho: number, V: number, Rn: number, recov = 1): number {
+  return 1.7415e-8 * Math.sqrt(rho / Math.max(Rn, 1e-8)) * V ** 3 * recov;
+}
+
+/**
+ * Detra–Kemp–Riddell (1957) stagnation heating, W/cm², Earth air.
+ * Original form: q[BTU/ft²/s] = 17600 √(ρ/ρ_SL) / √(Rn[ft]) · (V/26000 ft/s)^3.15 · (1 − hw/hs).
+ * Converted to SI here (1 BTU/ft²/s = 1.13565 W/cm², ρ_SL = 1.225, 1 ft = 0.3048 m,
+ * 26000 ft/s = 7924.8 m/s). The earlier constant (5.21 W/cm² at V = 10 km/s, √(ρ/Rn)=1)
+ * was ≈4000× too small.
  */
 export function detraKempRiddell(rho: number, V: number, Rn: number, recov = 1): number {
-  return 5.21 * Math.sqrt(rho / Math.max(Rn, 1e-8)) * Math.pow(V / 1e4, 3.15) * recov;
+  const k = 17600 * 1.13565 * Math.sqrt(0.3048 / 1.225);
+  return k * Math.sqrt(Math.max(rho, 0) / Math.max(Rn, 1e-8)) * Math.pow(V / 7924.8, 3.15) * recov;
 }
 
 /** Radiation-equilibrium wall temperature from a convective flux in W/cm². ε=0.8. */
@@ -461,7 +528,7 @@ export function tauberTurbulent(rho: number, V: number, x: number, recov: number
 const _coneBeta = new Map<string, number>();
 
 function coneKey(M: number, cone: number, gamma: number) {
-  return `${M.toFixed(2)}:${(cone * RAD).toFixed(1)}:${gamma}`;
+  return `${M.toFixed(3)}:${(cone * RAD).toFixed(3)}:${gamma}`;
 }
 
 /** Cached Taylor–Maccoll shock angle for a cone. */
@@ -470,6 +537,7 @@ export function solveConeShockCached(M: number, cone: number, gamma = 1.4): numb
   const hit = _coneBeta.get(k);
   if (hit !== undefined) return hit;
   const b = solveConeShock(M, cone, gamma);
+  if (_coneBeta.size > 20000) _coneBeta.clear();
   _coneBeta.set(k, b);
   return b;
 }
@@ -483,25 +551,17 @@ export interface ConeState {
 }
 
 const _coneState = new Map<string, ConeState>();
+const CONE_NODE = 0.1 * DEG;
 
-/**
- * Inviscid cone surface state from Taylor–Maccoll (Sims NASA SP-3004).
- * Velocities in the integrator are V / Vmax. Surface Mach follows from
- * a² = ((γ−1)/2) Vmax² (1 − v²).
- */
-export function coneSurfaceState(M: number, cone: number, gamma = 1.4): ConeState {
-  if (cone <= 1e-5) return { cp: 0, pRatio: 1, M };
-  const k = coneKey(M, cone, gamma);
-  const hit = _coneState.get(k);
-  if (hit) return hit;
+/** Exact Taylor–Maccoll cone surface state (no interpolation). */
+export function coneSurfaceStateExact(M: number, cone: number, gamma = 1.4): ConeState {
+  if (cone <= 1e-9) return { cp: 0, pRatio: 1, M };
   const q = 0.5 * gamma * M * M;
-  const beta = solveConeShockCached(M, cone, gamma);
+  const beta = solveConeShock(M, cone, gamma);
   const tm = taylorMaccoll(M, beta, gamma);
   if (!tm) {
     const cp = newtonianCpMax(M, gamma) * Math.sin(cone) ** 2;
-    const st = { cp, pRatio: 1 + cp * q, M: Math.max(1.05, M * 0.6) };
-    _coneState.set(k, st);
-    return st;
+    return { cp, pRatio: 1 + cp * q, M: Math.max(1.05, M * 0.6) };
   }
   const sh = obliqueShock(M, beta, gamma);
   const v2 = tm.vr[0] ** 2 + tm.vt[0] ** 2;
@@ -512,9 +572,48 @@ export function coneSurfaceState(M: number, cone: number, gamma = 1.4): ConeStat
   const pc = p02 * TcT0 ** (gamma / (gamma - 1));
   const cp = (pc - 1) / q;
   const Msurf = vr / Math.sqrt(Math.max(1e-12, 0.5 * (gamma - 1) * (1 - vr * vr)));
-  const st = { cp, pRatio: pc, M: Math.max(1.01, Msurf) };
-  _coneState.set(k, st);
+  return { cp, pRatio: pc, M: Math.max(1.01, Msurf) };
+}
+
+function coneNode(M: number, k: number, gamma: number): ConeState {
+  const key = `${M.toFixed(3)}:${k}:${gamma}`;
+  const hit = _coneState.get(key);
+  if (hit) return hit;
+  const st = coneSurfaceStateExact(M, k * CONE_NODE, gamma);
+  if (_coneState.size > 20000) _coneState.clear();
+  _coneState.set(key, st);
   return st;
+}
+
+/**
+ * Inviscid cone surface state from Taylor–Maccoll (Sims NASA SP-3004).
+ * Velocities in the integrator are V / Vmax. Surface Mach follows from
+ * a² = ((γ−1)/2) Vmax² (1 − v²).
+ *
+ * Exact solutions are cached on a 0.1° grid and Cp/θ² (smooth in θ) is
+ * interpolated between nodes. The previous cache keyed on cone angle rounded
+ * to 0.1°, so Cp was a staircase in θ (up to ±10 % at θ = 2°).
+ */
+export function coneSurfaceState(M: number, cone: number, gamma = 1.4): ConeState {
+  if (cone <= 1e-5) return { cp: 0, pRatio: 1, M };
+  const u = cone / CONE_NODE;
+  const k0 = Math.max(1, Math.floor(u));
+  const f = u - k0;
+  const a = coneNode(M, k0, gamma);
+  if (u < 1) {
+    const s = (cone / CONE_NODE) ** 2;
+    const cp = a.cp * s;
+    return { cp, pRatio: 1 + cp * 0.5 * gamma * M * M, M: a.M };
+  }
+  if (f < 1e-9) return a;
+  const b = coneNode(M, k0 + 1, gamma);
+  const ta = (k0 * CONE_NODE) ** 2;
+  const tb = ((k0 + 1) * CONE_NODE) ** 2;
+  const ca = a.cp / ta;
+  const cb = b.cp / tb;
+  const cp = (ca + (cb - ca) * f) * cone * cone;
+  const q = 0.5 * gamma * M * M;
+  return { cp, pRatio: 1 + cp * q, M: a.M + (b.M - a.M) * f };
 }
 
 /** Inviscid cone surface Cp. Tangent-cone pressure for axisymmetric generating flows. */
@@ -690,8 +789,9 @@ export function fayRiddell(
   const mu2 = airMu(T2);
   const muW = airMu(TwK);
   const rhoW = p2 / (287.05287 * TwK);
-  const h0 = 1004.7 * T + 0.5 * V * V;
-  const hw = 1004.7 * TwK;
+  const cpg = cpGas(gamma);
+  const h0 = cpg * T + 0.5 * V * V;
+  const hw = cpg * TwK;
   const delta = billigStandoff(M);
   const duds =
     Math.sqrt((2 * Math.max(p2 - p, 0)) / Math.max(rho2, 1e-12)) /
@@ -875,8 +975,12 @@ export function newtonBusemannCp(theta: number, cpMax: number, gamma = 1.4): num
 }
 
 /**
- * Eckert reference-enthalpy Stanton number (Zoby / MINIVER / CBAERO class).
- * ReS uses edge values; T* from Eckert; Cf/2 ≈ St Pr^{2/3}.
+ * Eckert reference-temperature Stanton number based on EDGE properties:
+ * St_e = St_ref · (ρ_ref/ρe), so that q = St_e ρe Ue cp (Tr − Tw).
+ * ReS uses edge values; T* from Eckert; Cf_e/2 = 0.332 √C* / √Re_e (laminar) with
+ * C* = ρ_ref μ_ref/(ρe μe). St_ref is evaluated at Re_ref = ρ_ref Ue x / μ_ref. The earlier version
+ * returned St_ref and multiplied by ρe Ue, i.e. it dropped the ρ_ref/ρe = Te/T_ref factor:
+ * heating and Cf were high by T_ref/Te (≈2.6× at Me = 6.4, Tw = 800 K).
  */
 export function eckertStanton(
   ReS: number,
@@ -893,8 +997,8 @@ export function eckertStanton(
   const rhoRatio = Math.max(Te, 1) / Math.max(Tstar, 1);
   const ReStar = Math.max(ReS, 10) * rhoRatio * (muE / Math.max(muS, 1e-12));
   const Pr = 0.71;
-  if (turbulent) return 0.0296 * Math.pow(ReStar, -0.2) * Math.pow(Pr, -2 / 3);
-  return 0.332 * Math.pow(ReStar, -0.5) * Math.pow(Pr, -2 / 3);
+  const stStar = turbulent ? 0.0296 * Math.pow(ReStar, -0.2) * Math.pow(Pr, -2 / 3) : 0.332 * Math.pow(ReStar, -0.5) * Math.pow(Pr, -2 / 3);
+  return stStar * rhoRatio;
 }
 
 /**
@@ -918,14 +1022,15 @@ export function zobyHeatWcm2(
   const St = eckertStanton(ReS, Te, Tw, Me, gamma, turbulent);
   const r = turbulent ? 0.89 : Math.sqrt(0.71);
   const Tr = Te * (1 + r * 0.5 * (gamma - 1) * Me * Me);
-  const q = St * Math.max(rhoE, 0) * Math.max(Ue, 0) * 1004.7 * Math.max(Tr - Tw, 0);
+  const q = St * Math.max(rhoE, 0) * Math.max(Ue, 0) * cpGas(gamma) * Math.max(Tr - Tw, 0);
   return q / 1e4;
 }
 
 /** Skin friction from Reynolds analogy: Cf = 2 St Pr^{2/3}. */
-export function stantonToCf(St: number, turbulent = false): number {
+export function stantonToCf(St: number, _turbulent = false): number {
+  // Reynolds analogy with the same Pr^(−2/3) that eckertStanton applies in both regimes.
+  // The turbulent branch used Pr^(1/3) (0.89 vs 0.80, +12 %).
   const Pr = 0.71;
-  const n = turbulent ? 1 / 3 : 2 / 3;
-  return 2 * St * Math.pow(Pr, n);
+  return 2 * St * Math.pow(Pr, 2 / 3);
 }
 

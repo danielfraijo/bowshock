@@ -9,6 +9,8 @@ import { runValidation, validationSummary, type Check } from "./validate";
 import { solveSixDof, type SixDofResult } from "./sixdof";
 import { frontierPhysics, type FrontierResult } from "./frontier";
 import { effectiveLeRadius } from "./blunt";
+import { buildVehicle } from "./generate";
+import type { Cell, DataTable } from "./datapack";
 
 export interface LitBand {
   ld: [number, number];
@@ -308,4 +310,67 @@ export function studyJson(built: BuiltVehicle, study: StudyResult): string {
     null,
     2,
   );
+}
+
+/**
+ * One-variable parametric sweep of any numeric DesignParams field (shockDeg, span, height, mach, …).
+ * Rebuilds the vehicle for every value and returns the result in the same DataTable format as the
+ * data package (CSV/JSON-ready), so a parametric study and the Data tab share one schema.
+ * Static margin uses α ± 1° about the design α.
+ */
+export function parametricSweep(params: DesignParams, variable: keyof DesignParams, values: number[]): DataTable {
+  const rows: Cell[][] = [];
+  for (const v of values) {
+    const p = { ...params, [variable]: v } as DesignParams;
+    const built = buildVehicle(p);
+    const M = Math.max(1.05, flightMachOf(p));
+    const atm = atmosphere(p.altKm, M, p.gamma);
+    const S = Math.max(built.aero.planformArea, 1e-6);
+    const a0 = panelAero(built.mesh, p, atm, p.alphaDeg, p.betaDeg, S, p.length);
+    const up = panelAero(built.mesh, p, atm, p.alphaDeg + 1, p.betaDeg, S, p.length);
+    const dn = panelAero(built.mesh, p, atm, p.alphaDeg - 1, p.betaDeg, S, p.length);
+    const cla = (up.cl - dn.cl) / (2 * (Math.PI / 180));
+    const cma = (up.cm - dn.cm) / (2 * (Math.PI / 180));
+    rows.push([
+      v,
+      a0.cl,
+      a0.cd,
+      a0.ld,
+      a0.cm,
+      a0.xCp,
+      Math.abs(cla) > 1e-9 ? (-cma / cla) * 100 : null,
+      a0.qStag,
+      a0.qMax,
+      built.aero.planformArea,
+      built.aero.wettedArea,
+      built.aero.volume,
+      built.aero.volumetricEfficiency,
+      built.aero.thetaDeg,
+      built.quality.watertight,
+    ]);
+  }
+  const unit = /Deg$/.test(String(variable)) ? "deg" : /Mach$|^mach$/.test(String(variable)) ? "-" : /Km$/.test(String(variable)) ? "km" : /^(length|span|height|leRadius|finHeight|inletHeight)$/.test(String(variable)) ? "m" : "-";
+  return {
+    id: "sweep_parametric",
+    title: `Parametric sweep of ${String(variable)}`,
+    description: `All other inputs held at the current design (family ${params.family}, M=${flightMachOf(params)}, α=${params.alphaDeg}°, method ${params.aeroMethod}).`,
+    columns: [
+      { key: String(variable), unit, desc: "Swept DesignParams field" },
+      { key: "CL", unit: "-", desc: "Lift coefficient" },
+      { key: "CD", unit: "-", desc: "Drag coefficient" },
+      { key: "L_over_D", unit: "-", desc: "CL/CD" },
+      { key: "Cm", unit: "-", desc: "Pitching moment about the CG (nose-up +)" },
+      { key: "x_cp_m", unit: "m", desc: "Centre of pressure from the nose" },
+      { key: "static_margin_pct", unit: "% L", desc: "−Cm_α/CL_α ×100 (α ±1°)" },
+      { key: "q_stag_W_cm2", unit: "W/cm^2", desc: "Stagnation heat flux" },
+      { key: "q_max_W_cm2", unit: "W/cm^2", desc: "Peak heat flux" },
+      { key: "planform_area_m2", unit: "m^2", desc: "Planform area" },
+      { key: "wetted_area_m2", unit: "m^2", desc: "Wetted area (generator estimate)" },
+      { key: "volume_m3", unit: "m^3", desc: "Enclosed volume (generator estimate)" },
+      { key: "volumetric_efficiency", unit: "-", desc: "V^(2/3)/S_plan" },
+      { key: "theta_gen_deg", unit: "deg", desc: "Generating wedge angle" },
+      { key: "watertight", unit: "-", desc: "Mesh is closed" },
+    ],
+    rows,
+  };
 }
