@@ -176,6 +176,8 @@ interface GasTables {
   mach: Float64Array;
   theta: Float64Array;
   p2: Float64Array;
+  /** (p2/p1 − 1)/θ: smooth in θ (→ γM²/√(M²−1) as θ→0); interpolated instead of p2 so weak turns are not biased */
+  g2: Float64Array;
   m2: Float64Array;
   nu: Float64Array;
   nuM: Float64Array;
@@ -192,6 +194,7 @@ function gasTables(gamma: number): GasTables {
   const mach = new Float64Array(nM);
   const theta = new Float64Array(nT);
   const p2 = new Float64Array(nM * nT);
+  const g2 = new Float64Array(nM * nT);
   const m2 = new Float64Array(nM * nT);
   const nuM = new Float64Array(240);
   const nu = new Float64Array(240);
@@ -202,6 +205,7 @@ function gasTables(gamma: number): GasTables {
       const o = i * nT + j;
       if (theta[j] < 1e-6) {
         p2[o] = 1;
+        g2[o] = (gamma * mach[i] * mach[i]) / Math.sqrt(mach[i] * mach[i] - 1);
         m2[o] = mach[i];
         continue;
       }
@@ -213,6 +217,7 @@ function gasTables(gamma: number): GasTables {
       }
       const sh = obliqueShock(mach[i], beta, gamma);
       p2[o] = sh.p2p1;
+      g2[o] = (sh.p2p1 - 1) / theta[j];
       m2[o] = sh.M2;
     }
   }
@@ -220,7 +225,7 @@ function gasTables(gamma: number): GasTables {
     nuM[i] = 1 + (28 * i) / 239;
     nu[i] = prandtlMeyer(nuM[i], gamma);
   }
-  const tab = { gamma, mach, theta, p2, m2, nu, nuM };
+  const tab = { gamma, mach, theta, p2, g2, m2, nu, nuM };
   tables.set(gKey, tab);
   return tab;
 }
@@ -250,8 +255,14 @@ function sample2(tab: GasTables, M: number, th: number): { p2p1: number; M2: num
   const c = p2[i0 * nT + j1];
   const d = p2[i1 * nT + j1];
   if (a < 0 || b < 0 || c < 0 || d < 0) return null;
-  const p =
-    a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty;
+  // Interpolate g = (p2/p1 − 1)/θ, not p2/p1: bilinear interpolation of p2 over the 0.5° θ-nodes carried up to ~4 % error
+  // per facet on weak turns (smooth lofts accumulate it, and the error was non-monotone in the mesh size).
+  const ga = tab.g2[i0 * nT + j0];
+  const gb = tab.g2[i1 * nT + j0];
+  const gc = tab.g2[i0 * nT + j1];
+  const gd = tab.g2[i1 * nT + j1];
+  const gv = ga * (1 - tx) * (1 - ty) + gb * tx * (1 - ty) + gc * (1 - tx) * ty + gd * tx * ty;
+  const p = 1 + gv * th;
   const a2 = m2[i0 * nT + j0];
   const b2 = m2[i1 * nT + j0];
   const c2 = m2[i0 * nT + j1];
@@ -280,6 +291,33 @@ function expand(_tab: GasTables, M: number, dth: number, gamma: number): { p2p1:
   const M2 = Math.min(fastInvPrandtlMeyer(nu2, gamma), 40);
   const ratio = pOverP0(M2, gamma) / Math.max(1e-12, pOverP0(M1, gamma));
   return { p2p1: ratio, M2 };
+}
+
+/** Unit strip direction in the plane of facet `k` (central difference of facet centres, projected onto the plane). */
+function stripTangent(strip: Face[], k: number, n: Vec3): Vec3 | null {
+  const ka = Math.max(k - 1, 0);
+  const kb = Math.min(k + 1, strip.length - 1);
+  // Only on smooth runs: across a corner (leading-edge bevel → surface) the centre-to-centre direction is not the
+  // streamwise direction of the facet, so the caller falls back to projecting the flow direction.
+  const COS_SMOOTH = Math.cos(10 * DEG);
+  for (const kk of [ka, kb]) {
+    const m = strip[kk].n;
+    if (n[0] * m[0] + n[1] * m[1] + n[2] * m[2] < COS_SMOOTH) return null;
+  }
+  const a = strip[ka].c;
+  const b = strip[kb].c;
+  let dx = b[0] - a[0];
+  let dy = b[1] - a[1];
+  let dz = b[2] - a[2];
+  const dn = dx * n[0] + dy * n[1] + dz * n[2];
+  dx -= dn * n[0];
+  dy -= dn * n[1];
+  dz -= dn * n[2];
+  const m = Math.hypot(dx, dy, dz);
+  if (!(m > 1e-12)) return null;
+  // always point downstream
+  const sgn = dx < 0 ? -1 : 1;
+  return [(sgn * dx) / m, (sgn * dy) / m, (sgn * dz) / m];
 }
 
 function paint(cp: Float32Array, face: Face, value: number) {
@@ -466,7 +504,8 @@ export function integrateShockExpansion(
     // every panel is shocked or expanded from freestream, so an expanding
     // face keeps the freestream pressure of its own angle.
     let marching = method === "mixed";
-    for (const face of strip) {
+    for (let fi = 0; fi < strip.length; fi++) {
+      const face = strip[fi];
       const v = localVelocity(face, vhat, atm.V, rates, cg);
       const vf: Vec3 = marching && vcur ? vcur : v;
       const inc = turning(vf, face.n);
@@ -521,8 +560,16 @@ export function integrateShockExpansion(
         }
         if (Math.abs(dth) > 0.15 * DEG) virgin = false;
         // follow the surface: remove the normal component of the flow direction
-        const sn = -(vf[0] * face.n[0] + vf[1] * face.n[1] + vf[2] * face.n[2]);
-        vcur = norm([vf[0] + sn * face.n[0], vf[1] + sn * face.n[1], vf[2] + sn * face.n[2]]);
+        // The flow leaves this facet along the strip (the stream surface's own mesh line), i.e. the strip tangent
+        // projected into the facet plane. Re-projecting the previous direction instead (the old rule) let the
+        // direction drift spanwise on surfaces that roll along the strip (osculating lofts), so the summed turning grew
+        // with the mesh (Cp at x/L=1 rose 0.21 → 0.36 for nx 16 → 64) instead of converging.
+        const tdir = stripTangent(strip, fi, face.n);
+        if (tdir) vcur = tdir;
+        else {
+          const sn = -(vf[0] * face.n[0] + vf[1] * face.n[1] + vf[2] * face.n[2]);
+          vcur = norm([vf[0] + sn * face.n[0], vf[1] + sn * face.n[1], vf[2] + sn * face.n[2]]);
+        }
         if (!Number.isFinite(Me)) Me = Mloc;
       }
       accum(face, cpi, v, Me, visc);

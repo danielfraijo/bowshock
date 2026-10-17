@@ -19,9 +19,9 @@ export interface EulerAnchor {
   iters: number;
 }
 
-const NI = 72;
-const NJ = 24;
-const ITERS = 280;
+const DEF_NI = 72;
+const DEF_NJ = 24;
+const DEF_ITERS = 280;
 const CFL = 0.45;
 
 const F4 = new Float64Array(4);
@@ -125,7 +125,15 @@ export function eulerWedge(M: number, thetaDeg: number, gamma = 1.4): EulerAncho
   return solved;
 }
 
-function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4): EulerAnchor {
+/**
+ * PHYSICS-ACCURACY EDIT (Dina, small flagged edit to Roman's file): the grid is now a parameter so the convergence
+ * test can refine it. Defaults are the previous constants, results for eulerWedge() are bit-identical.
+ */
+export function eulerWedgeGrid(M: number, thetaDeg: number, gamma: number, ni: number, nj: number, iters: number): EulerAnchor {
+  return solveEulerWedge(M, thetaDeg, gamma, ni, nj, iters);
+}
+
+function solveEulerWedge(M: number, thetaDeg: number, gamma = 1.4, NI = DEF_NI, NJ = DEF_NJ, ITERS = DEF_ITERS): EulerAnchor {
   const theta = thetaDeg * DEG;
   const beta = betaFromThetaM(M, theta, gamma);
   const exact = Number.isFinite(beta) ? obliqueShock(M, beta, gamma) : null;
