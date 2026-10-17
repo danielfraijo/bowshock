@@ -33,7 +33,8 @@ function geopotential(h: number) {
   return (RE * h) / (RE + h);
 }
 
-export function atmosphere(altKm: number, M: number, gamma = GAMMA): Atmosphere {
+export function atmosphere(altKm: number, machIn: number, gamma = GAMMA): Atmosphere {
+  const M = Number.isFinite(machIn) ? machIn : 1; // [mesh-refinement] a non-finite Mach must not turn V / Re / q into NaN
   const h = Math.max(0, Math.min(altKm, 84.9)) * 1000;
   const H = geopotential(h);
   let layer = LAYERS[0];

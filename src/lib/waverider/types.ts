@@ -1,4 +1,4 @@
-// [mesh-refinement] optional user-selected mesh refinement (see refinement.ts). Absent = medium = legacy grids.
+// [mesh-refinement] optional user-selected mesh refinement (see refinement.ts). Absent = medium (same cell counts as the shipped run, but converged; "legacy" reproduces b5fdccc).
 import type { RefinementSettings } from "./refinement";
 
 export type WaveriderFamily =
@@ -84,7 +84,7 @@ export interface DesignParams {
   flowThrough: boolean;
   rhoKgM3: number;
   massKg: number;
-  /** [mesh-refinement] coarse / medium / fine / custom surface + Euler volume grid. Undefined = medium. */
+  /** [mesh-refinement] legacy / coarse / medium / fine / custom surface + Euler volume grid. Undefined = medium (converged). */
   refinement?: RefinementSettings;
 }
 

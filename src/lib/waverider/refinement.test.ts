@@ -14,6 +14,7 @@ import { atmosphere } from "./atmosphere";
 import { panelAero } from "./panel";
 import {
   LEGACY,
+  LEGACY_SETTINGS,
   MEDIUM,
   REFINEMENT_LIMITS,
   clusterCoordinates,
@@ -28,6 +29,7 @@ import {
 } from "./refinement";
 import { stripStudy, surfaceStudy, wedgeStudy } from "./refinement-study";
 import { legacyStripGrid, solveStrip } from "./strip-euler";
+import { legacyStripGridRef, solveStripRef } from "./strip-euler-ref";
 import { DEFAULT_PARAMS, type WaveriderFamily } from "./types";
 
 const fixture = JSON.parse(
@@ -105,17 +107,20 @@ describe("validation and clamping", () => {
       volume: { nStream: Infinity, iters: "x" as never },
     });
     assert.equal(v.settings.surface.nx, LEGACY.surface.nx);
-    assert.equal(v.settings.volume.nStream, LEGACY.wedge.ni);
-    assert.equal(v.settings.volume.iters, LEGACY.wedge.iters);
-    assert.ok(v.warnings.length >= 3);
+    // +Infinity means "as much as allowed" (clamped, not garbage); NaN / strings fall back to the default
+    assert.ok(v.settings.volume.nStream <= REFINEMENT_LIMITS.volume.nStream[1]);
+    assert.ok(v.settings.volume.nStream > LEGACY.wedge.ni);
+    assert.ok(Number.isInteger(v.settings.volume.iters) && v.settings.volume.iters > 0);
+    assert.equal(validateRefinement({ preset: "custom", volume: { iters: "x" as never } }).settings.volume.iters, MEDIUM.volume.iters);
+    assert.ok(v.warnings.length >= 2);
   });
 
   it("empty custom input equals medium numbers", () => {
     const v = validateRefinement({ preset: "custom" });
     assert.equal(v.settings.preset, "custom");
-    assert.deepEqual(v.settings.volume, MEDIUM.volume);
-    assert.deepEqual(v.settings.surface, MEDIUM.surface);
-    assert.ok(isBaseline(v.settings));
+    assert.deepEqual(v.settings.volume, { ...MEDIUM.volume, order: 1 });
+    assert.deepEqual(v.settings.surface, { ...MEDIUM.surface, curvature: 0 });
+    assert.ok(!isBaseline(v.settings), "medium is no longer the legacy run");
   });
 });
 
@@ -166,11 +171,16 @@ describe("caps", () => {
     assert.ok(c[1].stripSeconds < c[2].stripSeconds);
   });
 
-  it("medium maps to the legacy kernel grids exactly", () => {
-    assert.deepEqual(stripDims(MEDIUM.volume), { ni: 88, nj: 28, iters: 42 });
-    assert.equal(MEDIUM.volume.nStream, 72);
-    assert.equal(MEDIUM.volume.nCross, 24);
-    assert.equal(MEDIUM.volume.iters, 280);
+  it("legacy maps to the shipped kernel grid exactly; medium keeps the cell counts but converges", () => {
+    assert.deepEqual(stripDims(LEGACY_SETTINGS.volume), { ni: 88, nj: 28, iters: 42 });
+    assert.equal(LEGACY_SETTINGS.volume.nStream, 72);
+    assert.equal(LEGACY_SETTINGS.volume.nCross, 24);
+    assert.equal(LEGACY_SETTINGS.volume.iters, 280);
+    assert.ok(isBaseline(LEGACY_SETTINGS) && !isBaseline(MEDIUM));
+    const md = stripDims(MEDIUM.volume);
+    assert.equal(md.ni, 88);
+    assert.equal(md.nj, 28);
+    assert.ok(md.iters > 42 && (MEDIUM.volume.tol ?? 0) > 0);
     assert.equal(MEDIUM.surface.nx, DEFAULT_PARAMS.nx);
     assert.equal(MEDIUM.surface.ny, DEFAULT_PARAMS.ny);
   });
@@ -273,12 +283,12 @@ describe("clustering", () => {
   });
 });
 
-describe("medium == baseline (captured from 45e7c83 = topology + physics-datapack, before the refinement merge)", () => {
-  it("wedge anchor: default and explicit-medium results are bitwise identical to the base", () => {
+describe("legacy == baseline (captured from 45e7c83 = topology + physics-datapack, before the refinement hardening)", () => {
+  it("wedge anchor: default and explicit-legacy results are bitwise identical to the base", () => {
     for (const key of Object.keys(fixture.wedge)) {
       const [M, th] = key.split("|").map(Number);
       const want = fixture.wedge[key];
-      for (const vol of [undefined, MEDIUM.volume]) {
+      for (const vol of [undefined, LEGACY_SETTINGS.volume]) {
         const r = eulerWedge(M, th, 1.4, vol);
         assert.equal(r.p2p1, want.p2p1, key);
         assert.equal(r.relErr, want.relErr, key);
@@ -289,11 +299,11 @@ describe("medium == baseline (captured from 45e7c83 = topology + physics-datapac
     }
   });
 
-  it("vehicles: mesh and Euler aero are bitwise identical with refinement undefined or medium", () => {
+  it("vehicles: mesh (any refinement) and Euler aero (legacy preset) are bitwise identical to the base", () => {
     for (const key of Object.keys(fixture.vehicles)) {
       const [family, alpha] = key.split("|");
       const want = fixture.vehicles[key];
-      for (const refinement of [undefined, presetSettings("medium")]) {
+      for (const refinement of [undefined, presetSettings("legacy")]) {
         const params = {
           ...DEFAULT_PARAMS,
           family: family as WaveriderFamily,
@@ -302,12 +312,25 @@ describe("medium == baseline (captured from 45e7c83 = topology + physics-datapac
         };
         const b = buildVehicle(params);
         const q = analyzeMesh(b.mesh);
+        if (want.manifold === false) {
+          // The only intended change to a default mesh: the base build was NON-manifold here (aft-tip weld,
+          // wedgecone). weldAftRobust repairs it; everything else about the case must stay close.
+          assert.equal(q.manifold, true, `${key} is repaired`);
+          assert.ok(Math.abs(q.triangles - want.triangles) <= 0.03 * want.triangles, `${key} triangles`);
+          if (!refinement) continue;
+          const atm0 = atmosphere(params.altKm, params.mach, params.gamma);
+          const a0 = panelAero(b.mesh, params, atm0, Number(alpha), 0, Math.max(b.aero.planformArea, 1e-6), params.length);
+          assert.ok(Math.abs(a0.cl - want.cl) <= 0.03 * Math.abs(want.cl) + 1e-4, `${key} cl ${a0.cl} vs ${want.cl}`);
+          assert.ok(Math.abs(a0.cd - want.cd) <= 0.03 * Math.abs(want.cd) + 1e-4, `${key} cd ${a0.cd} vs ${want.cd}`);
+          continue;
+        }
         assert.equal(q.triangles, want.triangles, key);
         assert.equal(q.vertices, want.vertices, key);
         assert.equal(q.watertight, want.watertight, key);
         assert.equal(q.manifold, want.manifold, key);
         assert.equal(fnv(b.mesh.positions), want.posHash, `${key} positions`);
         assert.equal(fnv(Array.from(b.mesh.indices)), want.idxHash, `${key} indices`);
+        if (!refinement) continue; // default = medium: the mesh is identical, the Euler aero is now converged (see below)
         const atm = atmosphere(params.altKm, params.mach, params.gamma);
         const a = panelAero(
           b.mesh,
@@ -318,21 +341,27 @@ describe("medium == baseline (captured from 45e7c83 = topology + physics-datapac
           Math.max(b.aero.planformArea, 1e-6),
           params.length,
         );
-        assert.equal(a.cl, want.cl, key);
-        assert.equal(a.cd, want.cd, key);
-        assert.equal(a.cm, want.cm, key);
-        assert.equal(a.ca, want.ca, key);
-        assert.equal(fnv(Array.from(a.cp)), want.cpHash, `${key} cp`);
+        // Some base results depend on what ran earlier in the process (a coarse cache in math.ts's cone-shock model, plus the
+        // base's own colliding Euler cache key - see NOTES.md), so osculating / cone are compared to 2 % (they differ from a
+        // fresh-process run by up to ~1 % in measured cases); caret and liftbody are history-free and must match bit for bit.
+        const exact = family === "caret" || family === "liftbody";
+        const same = (got: number, ref: number, what: string) =>
+          exact ? assert.equal(got, ref, `${key} ${what}`) : assert.ok(Math.abs(got - ref) <= 2e-2 * Math.abs(ref) + 1e-9, `${key} ${what} ${got} vs ${ref}`);
+        same(a.cl, want.cl, "cl");
+        same(a.cd, want.cd, "cd");
+        same(a.cm, want.cm, "cm");
+        same(a.ca, want.ca, "ca");
+        if (exact) assert.equal(fnv(Array.from(a.cp)), want.cpHash, `${key} cp`);
         assert.equal(a.method, want.method);
         assert.ok(
           !a.notes.some((n) => n.startsWith("Mesh refinement")),
-          "medium adds no refinement note",
+          "legacy adds no refinement note",
         );
       }
     }
   });
 
-  it("TypeScript port of the symmetry-plane kernel reproduces the shipped wasm (1e-12)", () => {
+  it("reference TypeScript port reproduces the shipped wasm (1e-12); the optimised kernel too on upper walls", () => {
     const bin = atob(EULER_WASM_B64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -359,13 +388,16 @@ describe("medium == baseline (captured from 45e7c83 = topology + physics-datapac
       }
       const res = ex.euler_solve(ptr, n, 8, 1.4, alpha);
       const cp = new Float64Array(ex.memory.buffer, ptr + n * 16, n);
+      const ref = solveStripRef(x, z, 8, 1.4, alpha, legacyStripGridRef());
       const ts = solveStrip(x, z, 8, 1.4, alpha, legacyStripGrid());
-      for (let i = 0; i < n; i++)
-        assert.ok(
-          Math.abs(cp[i] - ts.cp[i]) < 1e-12,
-          `${name} cp[${i}] wasm ${cp[i]} ts ${ts.cp[i]}`,
-        );
-      assert.ok(Math.abs(res - ts.residual) < 1e-9 * Math.max(1, Math.abs(res)), name);
+      const upper = z[n >> 1] >= 0;
+      for (let i = 0; i < n; i++) {
+        assert.ok(Math.abs(cp[i] - ref.cp[i]) < 1e-12, `${name} cp[${i}] wasm ${cp[i]} ref ${ref.cp[i]}`);
+        // the optimised kernel mirrors lower walls (the wasm / reference do not: that is the fixed bug), so compare upper walls
+        if (upper) assert.ok(Math.abs(cp[i] - ts.cp[i]) < 1e-12, `${name} cp[${i}] wasm ${cp[i]} ts ${ts.cp[i]}`);
+      }
+      assert.ok(Math.abs(res - ref.residual) < 1e-9 * Math.max(1, Math.abs(res)), name);
+      if (upper) assert.ok(Math.abs(res - ts.residual) < 1e-9 * Math.max(1, Math.abs(res)), name);
     }
   });
 
@@ -401,7 +433,7 @@ describe("medium == baseline (captured from 45e7c83 = topology + physics-datapac
 
 describe("surface presets", () => {
   it("triangle counts grow with the preset; watertight everywhere; manifold for the default family", () => {
-    const rows = surfaceStudy(["caret", "osculating", "cone"]);
+    const rows = surfaceStudy(["caret", "osculating", "cone"], ["coarse", "medium", "fine"]);
     for (const fam of ["caret", "osculating", "cone"]) {
       const r = rows.filter((x) => x.family === fam);
       assert.equal(r.length, 3);
@@ -433,6 +465,7 @@ describe("surface presets", () => {
       const firstGap = (le: number) => {
         const r = presetSettings("fine");
         r.surface.leClustering = le;
+        r.surface.curvature = 0; // isolate the chordwise effect
         const b = buildVehicle({ ...DEFAULT_PARAMS, family, nx: 56, ny: 28, refinement: r });
         const g = b.grids[0];
         const j = Math.min(g.nj - 2, ((g.nj - 1) >> 1) + 4);
@@ -475,25 +508,27 @@ describe("grid convergence vs exact oblique shock (M=8)", () => {
     for (const th of [8, 30]) {
       const fine = find(th, "fine");
       const med = find(th, "medium");
+      const leg = find(th, "legacy");
       assert.ok(fine.pErrPct < 1, `${th} deg fine p err ${fine.pErrPct}`);
       assert.ok(Math.abs(fine.shockErrDeg) < 0.5, `${th} deg fine beta err ${fine.shockErrDeg}`);
-      assert.ok(
-        fine.pErrPct <= med.pErrPct,
-        `${th} deg fine ${fine.pErrPct} vs medium ${med.pErrPct}`,
-      );
+      assert.ok(fine.pErrPct <= leg.pErrPct, `${th} deg fine ${fine.pErrPct} vs legacy ${leg.pErrPct}`);
+      assert.ok(med.pErrPct < 1.5 && med.pErrPct < leg.pErrPct / 5, `${th} deg medium ${med.pErrPct} vs legacy ${leg.pErrPct}`);
       assert.ok(fine.cells > med.cells);
     }
   });
-  it("medium reproduces the known baseline error (13.5 % / 36.2 %) - the legacy grid is under-resolved", () => {
-    assert.ok(Math.abs(find(8, "medium").pErrPct - 13.518) < 0.01);
-    assert.ok(Math.abs(find(30, "medium").pErrPct - 36.23) < 0.01);
+  it("legacy reproduces the known baseline error (13.5 % / 36.2 %) - the legacy grid is under-resolved", () => {
+    assert.ok(Math.abs(find(8, "legacy").pErrPct - 13.518) < 0.01);
+    assert.ok(Math.abs(find(30, "legacy").pErrPct - 36.23) < 0.01);
   });
-  it("converged residuals are small on the refined grids", () => {
-    for (const th of [8, 30])
-      assert.ok(find(th, "fine").residual < 1e-3, `${th} residual ${find(th, "fine").residual}`);
+  it("fine stops on the convergence test, well before the iteration cap", () => {
+    for (const th of [8, 30]) {
+      const r = eulerWedge(8, th, 1.4, presetSettings("fine").volume);
+      assert.ok(r.iters < presetSettings("fine").volume.iters, `${th} deg used ${r.iters} sweeps`);
+      assert.ok(r.relErr * 100 < 1, `${th} err ${r.relErr * 100}`);
+    }
   });
   it(
-    "shock clustering at the medium cell count already beats the uniform medium grid",
+    "shock clustering at the legacy cell count already beats the uniform legacy grid",
     { timeout: 60000 },
     () => {
       const vol: VolumeRefinement = { ...MEDIUM.volume, iters: 1600, shockClustering: 6 };
@@ -502,7 +537,7 @@ describe("grid convergence vs exact oblique shock (M=8)", () => {
         assert.equal(r.ni, 72);
         assert.equal(r.nj, 24);
         assert.ok(r.relErr * 100 < 1, `${th} deg 72x24 clustered err ${r.relErr * 100}`);
-        assert.ok(r.relErr * 100 < find(th, "medium").pErrPct / 10);
+        assert.ok(r.relErr * 100 < find(th, "legacy").pErrPct / 10);
       }
     },
   );
@@ -547,14 +582,16 @@ describe("symmetry-plane kernel convergence vs exact oblique shock (M=8)", () =>
       `strip ${r.thetaDeg} deg ${r.preset.padEnd(6)} ${r.grid.padEnd(12)} cells=${String(r.cells).padEnd(5)} ${r.ms.toFixed(0).padStart(5)} ms  Cp=${r.cp.toFixed(4)} (exact ${r.exactCp.toFixed(4)}) err=${r.cpErrPct.toFixed(1)}%  beta=${r.shockDeg.toFixed(2)} (exact ${r.exactShockDeg.toFixed(2)})`,
     );
   }
-  it("fine and coarse (converged) are within 3 %, the shipped 88x28x42 run is not", () => {
+  it("coarse is within 3 %, medium and fine within 2 % and 0.3 deg, the shipped 88x28x42 run is not", () => {
     for (const th of [8, 30]) {
       const f = rows.find((r) => r.thetaDeg === th && r.preset === "fine")!;
       const c = rows.find((r) => r.thetaDeg === th && r.preset === "coarse")!;
       const m = rows.find((r) => r.thetaDeg === th && r.preset === "medium")!;
-      assert.ok(f.cpErrPct < 3, `${th} fine ${f.cpErrPct}`);
+      const l = rows.find((r) => r.thetaDeg === th && r.preset === "legacy")!;
+      assert.ok(f.cpErrPct < 2 && Math.abs(f.shockDeg - f.exactShockDeg) < 0.3, `${th} fine ${f.cpErrPct}`);
+      assert.ok(m.cpErrPct < 2 && Math.abs(m.shockDeg - m.exactShockDeg) < 0.3, `${th} medium ${m.cpErrPct}`);
       assert.ok(c.cpErrPct < 3, `${th} coarse ${c.cpErrPct}`);
-      assert.ok(m.cpErrPct > 20, `${th} medium (legacy, unconverged) ${m.cpErrPct}`);
+      assert.ok(l.cpErrPct > 20, `${th} legacy (unconverged) ${l.cpErrPct}`);
     }
   });
 });
