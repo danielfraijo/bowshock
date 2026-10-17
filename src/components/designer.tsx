@@ -170,7 +170,9 @@ export function Designer() {
   const gKey = geomKey(params);
   const built = useMemo(() => buildVehicle(params), [gKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const study = useMemo(
-    () => studyVehicle(built, { quick: dragging || !hydrated }),
+    // built.params is frozen at the last *geometry* change; alpha, altitude, Mach, method etc. are
+    // not in geomKey, so pass the live params or the study (and the Data tab) read stale values.
+    () => studyVehicle({ ...built, params }, { quick: dragging || !hydrated }),
     [
       built,
       params.flightMach,
@@ -188,7 +190,7 @@ export function Designer() {
       params.massKg,
       dragging,
       hydrated,
-    ],
+    ], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const q = built.quality;
   const a = built.aero;

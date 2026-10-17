@@ -517,7 +517,7 @@ export function cpGas(gamma = 1.4): number {
 /**
  * Sutton–Graves Earth stagnation-point convective heating, W/cm².
  * q = k √(ρ/Rn) V³, k = 1.7415×10⁻⁴ (SI, W/m²) for Earth air (Sutton & Graves 1971,
- * NASA TR R-376). ρ kg/m³, Rn m, V m/s. The earlier constant 1.83×10⁻⁴ is the
+ * NASA TR R-376). ρ kg/m³, Rn m, V m/s. The earlier constant 1.83×10⁻⁸ (W/cm²) is the
  * 97 % CO₂ / 3 % N₂ (Mars/Venus) value and ran 5.1 % hot for air.
  */
 export function suttonGraves(rho: number, V: number, Rn: number, recov = 1): number {

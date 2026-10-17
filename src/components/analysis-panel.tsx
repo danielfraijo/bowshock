@@ -89,7 +89,7 @@ export function HeatBlock({ study }: { study: StudyResult }) {
       <div className="mt-3 space-y-2">
         <Formula name="Fay–Riddell" expr="q = 0.763 Pr⁻⁰·⁶ (ρeμe)⁰·⁴ (ρwμw)⁰·¹ √(due/ds) (h0−hw)" note="Sphere stagnation, Lewis=1. due/ds = Rn⁻¹ √(2(pe−p∞)/ρe)." />
         <Formula name="Zoby / Eckert" expr="q = St ρe Ue (hr − hw)    St from T* reference enthalpy" note="Edge (pe, Ue, Te) from the local shock or Prandtl–Meyer expansion. Closest panel heating to CFD." />
-        <Formula name="Sutton–Graves" expr="q_s = 1.83×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-802; Tauber TP-2914 units." />
+        <Formula name="Sutton–Graves" expr="q_s = 1.7415×10⁻⁸ √(ρ/Rn) V³ (1 − hw/h0)    W/cm²" note="Sutton & Graves NASA TR R-376 (Earth air; 1.83×10⁻⁸ is the CO₂ value)." />
         <Formula name="Detra–Kemp–Riddell" expr="q = 5.21×10⁴ √(ρ/Rn) (V/10⁴)^3.15    W/m²" note="DKR stagnation; reported as Tw_eq from the SG flux." />
         <Formula name="Radiation equilibrium" expr="σ ε Tw⁴ = q_conv    ε = 0.8" />
         <Formula name="Tauber–Sutton radiative" expr="q_r = 4.736×10⁸ Rn^1.072 ρ^1.22 (V/10⁴)^8.5    (V ≳ 2.5 km/s)" />

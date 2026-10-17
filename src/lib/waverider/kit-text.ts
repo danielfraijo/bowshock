@@ -141,7 +141,7 @@ leaves on a face that turns back. Modified Newtonian (Lees) if the shock
 detaches. Love base Cp = −1/M². van Driest II Cf (Hopkins–Inouye).
 The 2D HLLC wedge in bowshock_kernel.c is an Euler anchor for that shock.
 It is not a 3D Cart3D run.
-Heating: Sutton–Graves stagnation (TR R-802, q in W/cm² with k=1.83e-8) +
+Heating: Sutton–Graves stagnation (TR R-376, q in W/cm² with k=1.7415e-8 for Earth air) +
 Tauber running-length (TP-2914) + Tauber–Sutton radiative (JSR 1991).
 Stability: finite-difference CLα, Cmα, Cnβ, Clβ, static margin about CG x/L.
 Mass: closed-mesh tetrahedron integrals. Trajectory: RK4 3DOF point-mass using

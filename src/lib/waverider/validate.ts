@@ -5,7 +5,7 @@
  *
  * Sources: Anderson, Modern Compressible Flow; NACA 1135; Sims NASA SP-3004
  * conical-flow tables; US Standard Atmosphere 1976; Heiser & Pratt; Lees
- * modified Newtonian; Sutton & Graves NASA TR R-802; Tauber NASA TP-2914;
+ * modified Newtonian; Sutton & Graves NASA TR R-376; Tauber NASA TP-2914;
  * Kantrowitz & Donaldson NACA WR L-713; van Driest II / Hopkins–Inouye.
  */
 
@@ -39,15 +39,24 @@ import {
 import { expansionAnchor, flatWedgeAnchor } from "./anchors";
 import { atmosphere } from "./atmosphere";
 import { eulerWedge } from "./euler2d";
+import { extendedChecks } from "./validate-ref";
 
 export interface Check {
   id: string;
   domain: "gas" | "external" | "internal";
   name: string;
   formula: string;
+  /** reference value */
   expected: number;
+  /** value computed by the Bowshock code */
   got: number;
   relErr: number;
+  /** |got − expected| */
+  absErr: number;
+  /** relative tolerance used for pass/fail */
+  tol: number;
+  /** how the reference was obtained: closed form / independent code / invariant */
+  basis: "closed-form" | "independent-code" | "invariant" | "consistency";
   pass: boolean;
   source: string;
 }
@@ -61,9 +70,25 @@ function chk(
   got: number,
   source: string,
   tol = 0.012,
+  basis: Check["basis"] = "closed-form",
+  absTol = 1e-9,
 ): Check {
-  const relErr = Math.abs(got - expected) / Math.max(Math.abs(expected), 1e-12);
-  return { id, domain, name, formula, expected, got, relErr, pass: relErr <= tol || Math.abs(got - expected) < 1e-4, source };
+  const absErr = Math.abs(got - expected);
+  const relErr = absErr / Math.max(Math.abs(expected), 1e-12);
+  return {
+    id,
+    domain,
+    name,
+    formula,
+    expected,
+    got,
+    relErr,
+    absErr,
+    tol,
+    basis,
+    pass: Number.isFinite(got) && (relErr <= tol || absErr <= absTol),
+    source,
+  };
 }
 
 let validationCache: Check[] | null = null;
@@ -158,11 +183,12 @@ export function runValidation(): Check[] {
       "sims-beta",
       "external",
       "Cone shock β  M=8, θc=10°",
-      "Taylor–Maccoll shock angle vs Sims table",
-      12.95,
+      "Taylor–Maccoll shock angle, independent RK4 at dθ=0.001° (scripts/indep_taylor_maccoll.py)",
+      12.9855,
       betaC * RAD,
-      "Sims NASA SP-3004",
-      0.04,
+      "Sims NASA SP-3004 method, independent re-implementation",
+      3e-4,
+      "independent-code",
     ),
   );
 
@@ -183,11 +209,11 @@ export function runValidation(): Check[] {
       "sg-unit",
       "external",
       "Sutton–Graves units",
-      "q = 1.83×10⁻⁸ √(ρ/Rn) V³   (ρ=1, Rn=1, V=1000) = 18.3 W/cm²",
-      18.3,
+      "q = 1.7415×10⁻⁴ √(ρ/Rn) V³ W/m²  (ρ=1, Rn=1, V=1000) = 17.415 W/cm² (Earth air; 1.83×10⁻⁴ is CO₂)",
+      17.415,
       suttonGraves(1, 1000, 1, 1),
-      "Sutton & Graves NASA TR R-802 / Tauber TP-2914",
-      0.002,
+      "Sutton & Graves NASA TR R-376 / NTRS 20200002354",
+      1e-6,
     ),
   );
 
@@ -197,11 +223,11 @@ export function runValidation(): Check[] {
       "schlicht",
       "external",
       "Prandtl–Schlichting Cf, Re=10⁷",
-      "Cf = 0.455 / (log₁₀ Re)²",
-      0.455 / 49,
+      "Cf = 0.455 / (log₁₀ Re)^2.58 = 0.455 / 7^2.58",
+      0.455 / Math.pow(7, 2.58),
       cfInc,
-      "Schlichting, Boundary Layer Theory",
-      0.002,
+      "Schlichting, Boundary Layer Theory (turbulent flat plate)",
+      1e-6,
     ),
   );
 
@@ -211,7 +237,7 @@ export function runValidation(): Check[] {
       "vd2-incomp",
       "external",
       "van Driest II → Schlichting as M→0",
-      "Cf(M=0.1) ≈ 0.455/(log₁₀ Re)²",
+      "Cf(M=0.1) ≈ 0.455/(log₁₀ Re)^2.58",
       cfInc,
       cfVD,
       "Hopkins & Inouye 1971 / van Driest 1956",
@@ -239,18 +265,19 @@ export function runValidation(): Check[] {
   );
 
   const V30 = 8 * km30.a;
-  const qSG30 = suttonGraves(km30.rho, V30, 0.01, 0.5);
-  const qFR30 = fayRiddell(km30.rho, V30, 0.01, km30.T, km30.p, 800, 1.4);
+  const qSG30 = suttonGraves(km30.rho, V30, 0.01, 1);
+  const qFR30 = fayRiddell(km30.rho, V30, 0.01, km30.T, km30.p, 300, 1.4);
   out.push(
     chk(
       "fr-sg",
       "external",
-      "Fay–Riddell vs Sutton–Graves, M8 / 30 km",
-      "q_FR / q_SG ~ O(1)",
+      "Fay–Riddell (cold wall) vs Sutton–Graves, M8 / 30 km",
+      "q_FR(Tw=300 K) / q_SG, Rn=1 cm. SG is a cold-wall fit, so compare at a cold wall; agreement to ~10 % is expected",
       1,
       qFR30 / Math.max(qSG30, 1e-9),
-      "Fay & Riddell 1958 / TR R-802",
-      0.65,
+      "Fay & Riddell 1958 / NASA TR R-376",
+      0.15,
+      "consistency",
     ),
   );
 
@@ -300,6 +327,8 @@ export function runValidation(): Check[] {
       lighthillAlpha(300, 1.2, 59500, 1.5e5),
       "Lighthill ideal dissociating gas",
       0.001,
+      "closed-form",
+      1e-3,
     ),
   );
   const tauMW = millikanWhiteTau(3000, 101325);
@@ -366,6 +395,9 @@ export function runValidation(): Check[] {
     expected: ramp.exactAft,
     got: ramp.aftCp,
     relErr: rampErr / Math.max(Math.abs(ramp.exactAft), 1e-6),
+    absErr: rampErr,
+    tol: 0.012,
+    basis: "closed-form",
     pass: rampErr < 0.012 && twErr > rampErr + 0.008,
     source: "Oblique shock + Prandtl–Meyer. Tangent-wedge recomputes that face from freestream.",
   });
@@ -383,6 +415,8 @@ export function runValidation(): Check[] {
       0.08,
     ),
   );
+
+  out.push(...extendedChecks());
 
   validationCache = out;
   return out;
