@@ -8,6 +8,8 @@
 //! (needs the wasm32-unknown-unknown target) the same algorithm runs in TypeScript
 //! (src/lib/waverider/strip-euler.ts) and the two are cross-checked by the tests.
 
+mod fast;
+
 const NI: usize = 88;
 const NJ: usize = 28;
 const ITERS: usize = 42;

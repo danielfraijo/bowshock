@@ -43,3 +43,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# rust build output
+native/cuspis-euler/target/
+bench-results.json
