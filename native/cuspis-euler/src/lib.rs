@@ -1,11 +1,19 @@
-//! Coarse symmetry-plane Euler. First-order HLLC, slip wall, local dt.
+//! Symmetry-plane Euler. First-order HLLC, slip wall, local dt.
 //! Input in wasm memory: n pairs (x, z) of the wall, nose at the first point.
 //! Output: n Cp values written immediately after the input.
+//!
+//! [mesh-refinement] `euler_solve` is the original entry point and keeps its 88x28x42 grid.
+//! `euler_solve_ex` takes the grid (cells, iterations) and wall / shock clustering from the
+//! caller. The shipped euler-wasm.ts predates `euler_solve_ex`; until the wasm is rebuilt
+//! (needs the wasm32-unknown-unknown target) the same algorithm runs in TypeScript
+//! (src/lib/waverider/strip-euler.ts) and the two are cross-checked by the tests.
 
 const NI: usize = 88;
 const NJ: usize = 28;
 const ITERS: usize = 42;
 const CFL: f64 = 0.5;
+/// Legacy wall stretching: eta = s^WALL_EXP.
+const WALL_EXP: f64 = 1.55;
 
 #[no_mangle]
 pub extern "C" fn euler_alloc(n_bytes: i32) -> *mut u8 {
@@ -36,6 +44,105 @@ pub extern "C" fn euler_solve(ptr: *mut u8, n: i32, mach: f64, gamma: f64, alpha
     residual
 }
 
+/// Refined-grid entry point.
+/// Buffer layout (f64): [0, 2n) wall (x, z) pairs, [2n, 3n) Cp out, [3n, 3n + ni + 1) shock position s per
+/// node column (read only when `shock_amp > 0`). Allocate `(3n + ni + 1 + 16) * 8` bytes with `euler_alloc`.
+/// Returns the final residual, or -1 when the arguments are rejected (nothing is written).
+#[no_mangle]
+pub extern "C" fn euler_solve_ex(
+    ptr: *mut u8,
+    n: i32,
+    mach: f64,
+    gamma: f64,
+    alpha: f64,
+    ni: i32,
+    nj: i32,
+    iters: i32,
+    wall_amp: f64,
+    shock_amp: f64,
+    shock_width: f64,
+) -> f64 {
+    if ptr.is_null() || n < 4 || ni < 8 || nj < 6 || iters < 1 || ni > 1000 || nj > 400 || iters > 20000 {
+        return -1.0;
+    }
+    let n = n as usize;
+    let ni = ni as usize;
+    let nj = nj as usize;
+    let input = unsafe { std::slice::from_raw_parts(ptr as *const f64, n * 3 + ni + 1) };
+    let mut xw = vec![0.0; n];
+    let mut zw = vec![0.0; n];
+    for i in 0..n {
+        xw[i] = input[i * 2];
+        zw[i] = input[i * 2 + 1];
+    }
+    let shock_s: Vec<f64> = input[n * 3..n * 3 + ni + 1].to_vec();
+    let grid = Grid {
+        ni,
+        nj,
+        iters: iters as usize,
+        wall_amp: wall_amp.max(0.0),
+        shock_amp: shock_amp.max(0.0),
+        shock_width,
+        shock_s: if shock_amp > 0.0 { Some(shock_s) } else { None },
+    };
+    let (cp, residual) = solve_wall_grid(&xw, &zw, mach, gamma, alpha, &grid);
+    let out = unsafe { std::slice::from_raw_parts_mut(ptr.add(n * 16) as *mut f64, n) };
+    out.copy_from_slice(&cp);
+    residual
+}
+
+pub struct Grid {
+    pub ni: usize,
+    pub nj: usize,
+    pub iters: usize,
+    pub wall_amp: f64,
+    pub shock_amp: f64,
+    pub shock_width: f64,
+    /// Per node column (ni + 1): predicted shock position in s. None = no shock clustering.
+    pub shock_s: Option<Vec<f64>>,
+}
+
+/// Equidistribute m(s) = 1 + wall*exp(-s/lw) + shock*exp(-((s-c)/w)^2): n + 1 strictly increasing
+/// coordinates from exactly 0 to exactly 1. Same algorithm as clusterCoordinates in refinement.ts.
+pub fn cluster_coordinates(n: usize, wall: f64, shock: f64, pos: f64, width: f64) -> Vec<f64> {
+    let mut out = vec![0.0; n + 1];
+    if !(wall > 0.0) && !(shock > 0.0) {
+        for j in 0..=n {
+            out[j] = j as f64 / n as f64;
+        }
+        return out;
+    }
+    let samples = 1024usize.max(8 * n);
+    let lw = 0.12;
+    let c = pos.max(0.0).min(1.0);
+    let w = width.max(1e-3);
+    let monitor = |s: f64| {
+        let d = (s - c) / w;
+        1.0 + wall * (-s / lw).exp() + shock * (-d * d).exp()
+    };
+    let mut cum = vec![0.0; samples + 1];
+    let mut prev = monitor(0.0);
+    for k in 1..=samples {
+        let m = monitor(k as f64 / samples as f64);
+        cum[k] = cum[k - 1] + 0.5 * (prev + m) / samples as f64;
+        prev = m;
+    }
+    let total = cum[samples];
+    let mut k = 0usize;
+    out[0] = 0.0;
+    for j in 1..n {
+        let target = total * j as f64 / n as f64;
+        while k < samples - 1 && cum[k + 1] < target {
+            k += 1;
+        }
+        let span = cum[k + 1] - cum[k];
+        let t = if span > 0.0 { (target - cum[k]) / span } else { 0.0 };
+        out[j] = (k as f64 + t) / samples as f64;
+    }
+    out[n] = 1.0;
+    out
+}
+
 fn wall_z(x: f64, xw: &[f64], zw: &[f64]) -> f64 {
     if x <= xw[0] {
         return zw[0];
@@ -60,6 +167,15 @@ fn wall_z(x: f64, xw: &[f64], zw: &[f64]) -> f64 {
 }
 
 fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec<f64>, f64) {
+    let grid = Grid { ni: NI, nj: NJ, iters: ITERS, wall_amp: 0.0, shock_amp: 0.0, shock_width: 0.09, shock_s: None };
+    solve_wall_grid(xw, zw, mach, gamma, alpha, &grid)
+}
+
+pub fn solve_wall_grid(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64, grid: &Grid) -> (Vec<f64>, f64) {
+    let gni = grid.ni;
+    let gnj = grid.nj;
+    let giters = grid.iters;
+    let clustered = grid.wall_amp > 0.0 || grid.shock_amp > 0.0;
     let n = xw.len();
     let x_nose = xw[0];
     let x_te = xw[n - 1];
@@ -68,15 +184,29 @@ fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec
     let xmin = x_nose - 0.12 * length;
     let xmax = x_te + 0.02 * length;
     let h_far = 0.55 * length;
-    let npx = NI + 1;
-    let npz = NJ + 1;
+    let npx = gni + 1;
+    let npz = gnj + 1;
     let mut px = vec![0.0; npx * npz];
     let mut pz = vec![0.0; npx * npz];
+    let col_s: Vec<Vec<f64>> = if clustered {
+        (0..npx)
+            .map(|i| {
+                let (amp, pos) = match &grid.shock_s {
+                    Some(v) => (grid.shock_amp, v[i].max(0.04).min(0.92)),
+                    None => (0.0, 0.3),
+                };
+                cluster_coordinates(gnj, grid.wall_amp, amp, pos, grid.shock_width)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     for j in 0..npz {
-        let s = j as f64 / NJ as f64;
-        let eta = s.powf(1.55);
+        let s0 = j as f64 / gnj as f64;
         for i in 0..npx {
-            let xf = i as f64 / NI as f64;
+            let s = if clustered { col_s[i][j] } else { s0 };
+            let eta = s.powf(WALL_EXP);
+            let xf = i as f64 / gni as f64;
             let x = xmin + (xmax - xmin) * xf;
             let zwall = if x <= x_nose { zw[0] } else { wall_z(x, xw, zw) };
             let id = j * npx + i;
@@ -85,20 +215,20 @@ fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec
         }
     }
 
-    let nc = NI * NJ;
+    let nc = gni * gnj;
     let mut vol = vec![0.0; nc];
     let mut fw = vec![0.0; nc * 2];
     let mut fe = vec![0.0; nc * 2];
     let mut fs = vec![0.0; nc * 2];
     let mut fnor = vec![0.0; nc * 2];
     let mut xc = vec![0.0; nc];
-    for j in 0..NJ {
-        for i in 0..NI {
+    for j in 0..gnj {
+        for i in 0..gni {
             let sw = j * npx + i;
             let se = sw + 1;
             let nw = (j + 1) * npx + i;
             let ne = nw + 1;
-            let id = j * NI + i;
+            let id = j * gni + i;
             let poly_x = [px[sw], px[se], px[ne], px[nw]];
             let poly_z = [pz[sw], pz[se], pz[ne], pz[nw]];
             let mut a = 0.0;
@@ -144,11 +274,11 @@ fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec
 
     let mut residual = 1.0;
     let gm1 = gamma - 1.0;
-    for _ in 0..ITERS {
+    for _ in 0..giters {
         let mut res_sum = 0.0;
-        for j in 0..NJ {
-            for i in 0..NI {
-                let id = j * NI + i;
+        for j in 0..gnj {
+            for i in 0..gni {
+                let id = j * gni + i;
                 let o = id * 4;
                 let r = u[o].max(1e-8);
                 let uu = u[o + 1] / r;
@@ -168,25 +298,25 @@ fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec
                     let f = hllc(r, uu, vv, pp, rho_inf, u_inf, v_inf, p_inf, fw[id * 2], fw[id * 2 + 1], gamma);
                     take(f, &mut d0, &mut d1, &mut d2, &mut d3);
                 } else {
-                    let ol = ((j * NI + (i - 1)) * 4) as usize;
+                    let ol = ((j * gni + (i - 1)) * 4) as usize;
                     let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
                     let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fw[id * 2], fw[id * 2 + 1], gamma);
                     take(f, &mut d0, &mut d1, &mut d2, &mut d3);
                 }
-                if i + 1 == NI {
+                if i + 1 == gni {
                     let f = hllc(r, uu, vv, pp, r, uu, vv, pp, fe[id * 2], fe[id * 2 + 1], gamma);
                     take(f, &mut d0, &mut d1, &mut d2, &mut d3);
                 } else {
-                    let ol = ((j * NI + (i + 1)) * 4) as usize;
+                    let ol = ((j * gni + (i + 1)) * 4) as usize;
                     let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
                     let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fe[id * 2], fe[id * 2 + 1], gamma);
                     take(f, &mut d0, &mut d1, &mut d2, &mut d3);
                 }
-                if j + 1 == NJ {
+                if j + 1 == gnj {
                     let f = hllc(r, uu, vv, pp, rho_inf, u_inf, v_inf, p_inf, fnor[id * 2], fnor[id * 2 + 1], gamma);
                     take(f, &mut d0, &mut d1, &mut d2, &mut d3);
                 } else {
-                    let ol = (((j + 1) * NI + i) * 4) as usize;
+                    let ol = (((j + 1) * gni + i) * 4) as usize;
                     let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
                     let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fnor[id * 2], fnor[id * 2 + 1], gamma);
                     take(f, &mut d0, &mut d1, &mut d2, &mut d3);
@@ -195,7 +325,7 @@ fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec
                     d1 += pp * fs[id * 2];
                     d2 += pp * fs[id * 2 + 1];
                 } else {
-                    let ol = (((j - 1) * NI + i) * 4) as usize;
+                    let ol = (((j - 1) * gni + i) * 4) as usize;
                     let (rr, ur, vr, pr) = cons_to_prim(&u, ol, gm1);
                     let f = hllc(r, uu, vv, pp, rr, ur, vr, pr, fs[id * 2], fs[id * 2 + 1], gamma);
                     take(f, &mut d0, &mut d1, &mut d2, &mut d3);
@@ -235,7 +365,7 @@ fn solve_wall(xw: &[f64], zw: &[f64], mach: f64, gamma: f64, alpha: f64) -> (Vec
         let x = xw[k];
         let mut best = 0usize;
         let mut best_d = f64::MAX;
-        for i in 0..NI {
+        for i in 0..gni {
             let d = (xc[i] - x).abs();
             if d < best_d {
                 best_d = d;
@@ -328,4 +458,123 @@ fn hllc(
 
 fn flux(r: f64, un: f64, ut: f64, p: f64, e: f64) -> (f64, f64, f64, f64) {
     (r * un, r * un * un + p, r * un * ut, (e + p) * un)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wedge(theta_deg: f64, n: usize, length: f64) -> (Vec<f64>, Vec<f64>) {
+        let x: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
+        let z: Vec<f64> = x.iter().map(|v| v * (theta_deg * std::f64::consts::PI / 180.0).tan()).collect();
+        (x, z)
+    }
+
+    #[test]
+    fn legacy_grid_is_unchanged() {
+        // Golden values from the shipped wasm (euler-wasm.ts, 88x28x42) on an 8 deg wedge wall, M=8, alpha=0.
+        let (x, z) = wedge(8.0, 60, 4.0);
+        let (cp, res) = solve_wall(&x, &z, 8.0, 1.4, 0.0);
+        assert!((cp[5] - 0.08404571308354909).abs() < 1e-9, "cp[5] = {}", cp[5]);
+        assert!((cp[30] - 0.08738305035709486).abs() < 1e-9, "cp[30] = {}", cp[30]);
+        assert!((cp[55] - 0.08738305035315007).abs() < 1e-9, "cp[55] = {}", cp[55]);
+        assert!((res - 7.204826897313447).abs() < 1e-9, "res = {}", res);
+    }
+
+    #[test]
+    fn clustering_is_monotone_exact_ends_and_off_is_uniform() {
+        let u = cluster_coordinates(12, 0.0, 0.0, 0.5, 0.1);
+        for j in 0..=12 {
+            assert_eq!(u[j], j as f64 / 12.0);
+        }
+        let c = cluster_coordinates(40, 2.0, 6.0, 0.3, 0.09);
+        assert_eq!(c[0], 0.0);
+        assert_eq!(c[40], 1.0);
+        for j in 1..=40 {
+            assert!(c[j] > c[j - 1], "not strictly increasing at {}", j);
+        }
+        // Finer spacing at the shock (s = 0.3) than far from it.
+        let near = (0..40).filter(|&j| c[j] < 0.3 && c[j + 1] >= 0.3).map(|j| c[j + 1] - c[j]).next().unwrap();
+        assert!(near < 0.5 * (1.0 / 40.0), "shock spacing {} not clustered", near);
+    }
+
+    #[test]
+    fn clustering_matches_typescript_reference() {
+        // clusterCoordinates(10, { wall: 2, shock: 6, shockPos: 0.3, shockWidth: 0.09 }) from refinement.ts
+        let want = [
+            0.0, 0.0913287796753181, 0.19645591394704617, 0.24861662385687627, 0.2831088829975087, 0.3140255579974827,
+            0.3483595736980215, 0.40178301370276004, 0.5627519821242225, 0.7805946023081516, 1.0,
+        ];
+        let got = cluster_coordinates(10, 2.0, 6.0, 0.3, 0.09);
+        for j in 0..=10 {
+            assert!((got[j] - want[j]).abs() < 1e-12, "j={} got {} want {}", j, got[j], want[j]);
+        }
+    }
+
+    #[test]
+    fn refined_grid_matches_typescript_port() {
+        // strip-euler.ts solveStrip: 64x20x150, wall 2, shock 6, width 0.09, shockS_i = 0.1 + 0.4 i / 64.
+        let (x, z) = wedge(8.0, 60, 4.0);
+        let ni = 64usize;
+        let shock_s: Vec<f64> = (0..=ni).map(|i| 0.1 + 0.4 * i as f64 / ni as f64).collect();
+        let grid = Grid { ni, nj: 20, iters: 150, wall_amp: 2.0, shock_amp: 6.0, shock_width: 0.09, shock_s: Some(shock_s) };
+        let (cp, res) = solve_wall_grid(&x, &z, 8.0, 1.4, 0.0, &grid);
+        assert!((cp[5] - 0.07180176310553892).abs() < 1e-9, "cp[5] = {}", cp[5]);
+        assert!((cp[30] - 0.06338922395989954).abs() < 1e-9, "cp[30] = {}", cp[30]);
+        assert!((cp[55] - 0.06307605241013038).abs() < 1e-9, "cp[55] = {}", cp[55]);
+        assert!((res - 0.3041611260342723).abs() < 1e-9, "res = {}", res);
+    }
+
+    #[test]
+    fn clustered_wedge_is_close_to_exact_oblique_shock() {
+        // M=8, 8 deg wedge: exact oblique-shock Cp = 0.06556. A converged shock-clustered grid must land within 2 %.
+        let (x, z) = wedge(8.0, 80, 1.0);
+        let (ni, nj) = (88usize, 28usize);
+        let beta = 13.5625f64.to_radians();
+        let theta = 8.0f64.to_radians();
+        let h_far = 0.55;
+        let xmin = -0.12;
+        let xmax = 1.02;
+        let shock_s: Vec<f64> = (0..=ni)
+            .map(|i| {
+                let xc = xmin + (xmax - xmin) * i as f64 / ni as f64;
+                let h = xc.max(0.0) * (beta.tan() - theta.tan());
+                (h / h_far).max(0.04).min(0.92).powf(1.0 / WALL_EXP)
+            })
+            .collect();
+        let grid = Grid { ni, nj, iters: 1000, wall_amp: 0.0, shock_amp: 6.0, shock_width: 0.09, shock_s: Some(shock_s) };
+        let (cp, _res) = solve_wall_grid(&x, &z, 8.0, 1.4, 0.0, &grid);
+        let mid: Vec<f64> = (0..80).filter(|&i| x[i] > 0.3 && x[i] < 0.8).map(|i| cp[i]).collect();
+        let mean = mid.iter().sum::<f64>() / mid.len() as f64;
+        let exact = 0.06556490633109267; // oblique shock, M=8, theta=8 deg, gamma=1.4
+        assert!((mean - exact).abs() / exact < 0.02, "mean Cp {} vs exact {}", mean, exact);
+    }
+
+    #[test]
+    fn euler_solve_ex_rejects_bad_args_and_matches_grid_call() {
+        let (x, z) = wedge(8.0, 40, 1.0);
+        let n = x.len();
+        let ni = 32usize;
+        let bytes = (n * 3 + ni + 1 + 16) * 8;
+        let ptr = euler_alloc(bytes as i32);
+        let buf = unsafe { std::slice::from_raw_parts_mut(ptr as *mut f64, n * 3 + ni + 1) };
+        for i in 0..n {
+            buf[2 * i] = x[i];
+            buf[2 * i + 1] = z[i];
+        }
+        for i in 0..=ni {
+            buf[3 * n + i] = 0.25;
+        }
+        assert_eq!(euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 4, 10, 50, 0.0, 0.0, 0.09), -1.0);
+        assert_eq!(euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 32, 10, 0, 0.0, 0.0, 0.09), -1.0);
+        let res = euler_solve_ex(ptr, n as i32, 8.0, 1.4, 0.0, 32, 10, 60, 1.0, 4.0, 0.09);
+        assert!(res >= 0.0 && res.is_finite());
+        let out = unsafe { std::slice::from_raw_parts(ptr.add(n * 16) as *const f64, n) }.to_vec();
+        let grid = Grid { ni: 32, nj: 10, iters: 60, wall_amp: 1.0, shock_amp: 4.0, shock_width: 0.09, shock_s: Some(vec![0.25; 33]) };
+        let (cp, res2) = solve_wall_grid(&x, &z, 8.0, 1.4, 0.0, &grid);
+        assert_eq!(res, res2);
+        for i in 0..n {
+            assert_eq!(out[i], cp[i]);
+        }
+    }
 }

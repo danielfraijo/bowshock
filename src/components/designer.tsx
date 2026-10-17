@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { WaveriderViewer, type ViewerOpts } from "@/components/viewer";
 import { NumberField, Seg, Stat } from "@/components/fields";
+import { RefinementControls } from "@/components/refinement-controls"; // [mesh-refinement]
 import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
 import { DataPanel } from "@/components/data-panel";
 import { computeDataPackAsync } from "@/lib/waverider/datapack";
@@ -98,6 +99,7 @@ function geomKey(p: DesignParams) {
     p.captureFrac,
     p.nx,
     p.ny,
+    JSON.stringify(p.refinement ?? null), // [mesh-refinement] re-build (and re-solve) when the refinement changes
     p.leRadius,
     p.leBlunt,
     p.halfModel,
@@ -627,6 +629,7 @@ export function Designer() {
                     ]}
                   />
                 </div>
+                <RefinementControls params={params} patch={patch} setDragging={setDragging} />
                 <div className="flex items-center justify-between gap-3 pt-1">
                   <span className="text-xs font-medium text-muted">Rounded leading edge</span>
                   <Switch

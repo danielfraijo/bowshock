@@ -16,6 +16,7 @@ import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, gridPoint,
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 import { bindCenterline } from "./sym-euler";
 import { collapseTipRows, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
+import { clusterFractionsToLE } from "./refinement"; // [mesh-refinement]
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -477,10 +478,13 @@ function lofts(
   const fracs = rowInfo.map((r, j) => {
     const m = mRow[j];
     const base = chordFractions(m, r.chord, Math.exp(lg[j]));
-    if (m >= nx) return base;
-    const out = new Float64Array(nx);
-    for (let i = 0; i < nx; i++) out[i] = base[Math.round((i * (m - 1)) / (nx - 1))];
-    return out;
+    let out = base;
+    if (m < nx) {
+      out = new Float64Array(nx);
+      for (let i = 0; i < nx; i++) out[i] = base[Math.round((i * (m - 1)) / (nx - 1))];
+    }
+    // [mesh-refinement] optional extra stretching toward the LE / nose; strength 0 returns the same array (unchanged).
+    return clusterFractionsToLE(out, params.refinement?.surface.leClustering ?? 0);
   });
   const sample = (i: number, j: number, isLower: boolean): Vec3 => {
     const y = ys[j];

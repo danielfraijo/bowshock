@@ -1,3 +1,6 @@
+// [mesh-refinement] optional user-selected mesh refinement (see refinement.ts). Absent = medium = legacy grids.
+import type { RefinementSettings } from "./refinement";
+
 export type WaveriderFamily =
   | "caret"
   | "cone"
@@ -81,6 +84,8 @@ export interface DesignParams {
   flowThrough: boolean;
   rhoKgM3: number;
   massKg: number;
+  /** [mesh-refinement] coarse / medium / fine / custom surface + Euler volume grid. Undefined = medium. */
+  refinement?: RefinementSettings;
 }
 
 export const DEFAULT_PARAMS: DesignParams = {
