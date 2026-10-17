@@ -422,6 +422,9 @@ function roundPlanformVertex(g: (t: number) => number, s: number, rho: number): 
   };
 }
 
+/** Rounded planform vertex radius (x LE radius) and nose station spacing divisor (dy = rho / NOSE_DY_DIV). */
+const NOSE_RHO_K = 6;
+const NOSE_DY_DIV = 24;
 /** Target max (row-to-row edge)/(chord gap) of loft cells; rows needing more use fewer chord points. */
 const CELL_ASPECT = 3.5;
 /** First chord gap at the LE is at least (row-to-row edge)/MIN_GAP_DIV. */
@@ -442,10 +445,10 @@ function lofts(
   const L = params.length;
   const s = params.span / 2;
   const Rle = effectiveLeRadius(params);
-  const rhoPlan = Rle > 0 && planform !== "rect" ? Math.min(3.5 * Rle, 0.04 * L, 0.2 * s) : 0;
+  const rhoPlan = Rle > 0 && planform !== "rect" ? Math.min(NOSE_RHO_K * Rle, 0.04 * L, 0.2 * s) : 0;
   const xleRaw = (t: number) => xLeading(t, L, s, planform, power, spat);
   const xle = rhoPlan > 0 ? roundPlanformVertex(xleRaw, s, rhoPlan) : xleRaw;
-  const ys = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / 12 } : undefined);
+  const ys = spanStations(params.ny, s, params.halfModel, rhoPlan > 0 ? { w: rhoPlan, dy: rhoPlan / NOSE_DY_DIV } : undefined);
   const nx = Math.max(8, params.nx);
   const nj = ys.length;
   const zPow = Math.max(0.6, zExp);
@@ -1170,6 +1173,9 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const isDuct = params.family === "ramjet" || params.family === "scramjet";
     const isLift = params.family === "liftbody";
     const R = effectiveLeRadius(params);
+    const zSign = params.lid === "bottom" ? -1 : 1;
+    // vertical-fin bumps also move LE-seam points of the lid, so they must precede the fillet (else the fillet strip detaches)
+    if (!isDuct) applyFins(built.upper, params, zSign);
     // deflect the elevon BEFORE the fillet is built so the LE fillet and tip caps follow the same rows
     if (!isDuct) applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
     let leading: SurfaceGrid | null = null;
@@ -1192,8 +1198,6 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
         extra.push(lip);
       }
     }
-    const zSign = params.lid === "bottom" ? -1 : 1;
-    if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     if (!isDuct) {
       tidyTrailingEdge(built.upper, built.lower, params.length);
