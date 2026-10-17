@@ -1,5 +1,6 @@
 import type { DesignParams } from "./types";
-import { DEFAULT_PARAMS } from "./types";
+import { DEFAULT_PARAMS, FAMILY_META } from "./types";
+import { validateRefinement } from "./refinement"; // [mesh-refinement]
 
 export interface Preset {
   id: string;
@@ -251,6 +252,36 @@ export const PRESETS: Preset[] = [
 
 const STORAGE_KEY = "cuspis.design.v1";
 
+/**
+ * [mesh-refinement] Saved designs come from an older build or a hand-edited localStorage: a null / NaN / wrong-typed field or an
+ * unknown family must not reach the generator. Every field is checked against the type of its default; refinement is
+ * re-validated (clamped / capped); anything wrong falls back to the default for that field.
+ */
+export function sanitizeParams(parsed: unknown): DesignParams {
+  const src = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  const out: Record<string, unknown> = { ...DEFAULT_PARAMS };
+  const def = DEFAULT_PARAMS as unknown as Record<string, unknown>;
+  for (const k of Object.keys(src)) {
+    const v = src[k];
+    if (k === "refinement") continue;
+    if (!(k in def)) {
+      out[k] = v;
+      continue;
+    }
+    const d = def[k];
+    if (typeof d === "number") {
+      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    } else if (typeof d === "boolean" || typeof d === "string") {
+      if (typeof v === typeof d) out[k] = v;
+    } else if (v !== undefined && v !== null) out[k] = v;
+  }
+  if (!(String(out.family) in FAMILY_META)) out.family = DEFAULT_PARAMS.family;
+  const ref = src.refinement;
+  if (ref && typeof ref === "object") out.refinement = validateRefinement(ref as Parameters<typeof validateRefinement>[0]).settings;
+  else delete out.refinement;
+  return out as unknown as DesignParams;
+}
+
 export function loadSavedParams(): DesignParams | null {
   try {
     const raw =
@@ -261,7 +292,7 @@ export function loadSavedParams(): DesignParams | null {
       localStorage.getItem("bowshock.design.v1");
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DesignParams>;
-    const merged: DesignParams = { ...DEFAULT_PARAMS, ...parsed };
+    const merged: DesignParams = sanitizeParams(parsed); // [mesh-refinement] was { ...DEFAULT_PARAMS, ...parsed }
     if (parsed.leBlunt === undefined) {
       merged.leBlunt = true;
       if (!(typeof parsed.leRadius === "number" && parsed.leRadius > 0)) {

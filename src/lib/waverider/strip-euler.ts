@@ -819,6 +819,30 @@ export async function solveStripAsync(
     }
     shown = Math.max(shown, Math.min(r.value, 0.99));
     opts.onProgress?.(shown);
-    await new Promise<void>((res) => setTimeout(res, 0));
+    await yieldToEventLoop();
   }
+}
+
+let channel: MessageChannel | null | undefined;
+let yields = 0;
+/**
+ * Give the event loop back (input, paint) and continue as soon as it is idle. `setTimeout(0)` is clamped to >= 4 ms after a few
+ * nested calls, which alone cost ~25% of a solve; a MessageChannel message has no clamp. Falls back to setTimeout.
+ */
+export function yieldToEventLoop(): Promise<void> {
+  if (channel === undefined) {
+    try {
+      channel = typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
+      (channel?.port1 as unknown as { unref?: () => void } | undefined)?.unref?.();
+    } catch {
+      channel = null;
+    }
+  }
+  const ch = channel;
+  // every 8th yield goes through the timer queue so timers (and, in some engines, rendering) are never starved by messages
+  if (!ch || ++yields % 8 === 0) return new Promise<void>((res) => setTimeout(res, 0));
+  return new Promise<void>((res) => {
+    ch.port1.onmessage = () => res();
+    ch.port2.postMessage(0);
+  });
 }
