@@ -35,6 +35,7 @@ import {
 import { panelAero, type PanelAero } from "./panel";
 import { runValidation, validationSummary, type Check } from "./validate";
 import { parametricSweep } from "./study";
+import { budgetSummary, errorBudgetSteps } from "./errorbudget";
 import { DEFAULT_PARAMS, SURFACE_ID, type BuiltVehicle, type DesignParams } from "./types";
 
 export const DATAPACK_FORMAT = "bowshock-datapack/1";
@@ -841,6 +842,51 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
     ],
   });
 
+  /* ---- per-method error budget (design-independent analytic bodies; computed once, then cached) */
+  yield { frac: 0.9, label: "error budget" };
+  const budgetIt = errorBudgetSteps();
+  let budgetStep = budgetIt.next();
+  while (!budgetStep.done) {
+    yield { frac: 0.9 + 0.04 * budgetStep.value, label: "error budget" };
+    budgetStep = budgetIt.next();
+  }
+  const budget = budgetStep.value;
+  tables.push({
+    id: "error_budget",
+    title: "Aero-method error budget",
+    description:
+      "Error of each aero method against an exact/closed-form reference on analytic bodies (wedge, flat plate at α, double wedge/ramp, sharp cone, sphere) and on the default caret loft. Independent of the current design: it shows which method to trust where. err_pct = 100·(value − reference)/|reference|; tol_pct is the tolerance we hold the method to and rationale says why. The sphere reference is modified Newtonian (not truth).",
+    columns: [
+      col("shape", "-", "Body"),
+      col("case", "-", "Case"),
+      col("mach", "-", "Freestream Mach"),
+      col("quantity", "-", "Quantity compared"),
+      col("method", "-", "Aero method"),
+      col("reference", "see quantity", "Exact / closed-form reference"),
+      col("value", "see quantity", "Value from the method"),
+      col("err_pct", "%", "100·(value − reference)/|reference|"),
+      col("tol_pct", "%", "Tolerance for this method on this shape"),
+      col("within_tol", "-", "TRUE if |err_pct| ≤ tol_pct"),
+      col("rationale", "-", "Why this tolerance"),
+    ],
+    rows: budget.map((r) => [r.shape, r.case, r.M, r.quantity, r.method, r.reference, r.value, r.errPct, r.tolPct, r.within, r.rationale]),
+  });
+  tables.push({
+    id: "error_budget_summary",
+    title: "Aero-method error budget — summary",
+    description: "Worst and mean |error| per shape and method from the error_budget table.",
+    columns: [
+      col("shape", "-", "Body"),
+      col("method", "-", "Aero method"),
+      col("n_cases", "-", "Number of comparisons"),
+      col("max_abs_err_pct", "%", "Worst |error|"),
+      col("mean_abs_err_pct", "%", "Mean |error|"),
+      col("tol_pct", "%", "Largest tolerance applied"),
+      col("all_within_tol", "-", "TRUE if every comparison is within tolerance"),
+    ],
+    rows: budgetSummary(budget).map((s) => [s.shape, s.method, s.n, s.maxAbsPct, s.meanAbsPct, s.tolPct, s.allWithin]),
+  });
+
   /* ---- validation */
   yield { frac: 0.95, label: "validation" };
   const checks: Check[] = [...runValidation(), ...designChecks(built, p, aero, tris, M, qInf, S)];
@@ -861,7 +907,7 @@ function* packSteps(params: DesignParams, optsIn: DataPackOptions | undefined, k
       col("rel_err", "-", "abs_err/|reference| (= abs_err when reference = 0)"),
       col("tol", "-", "Tolerance"),
       col("pass", "-", "TRUE if within tolerance"),
-      col("basis", "-", "closed-form / independent-code / invariant / consistency"),
+      col("basis", "-", "closed-form / independent-code / invariant / consistency / published-table / published-example / published-formula"),
       col("source", "-", "Citation"),
     ],
     rows: checks.map((c) => [c.id, c.id.startsWith("design-") ? "design" : "code", c.name, c.formula, c.expected, c.got, c.absErr, c.relErr, c.tol, c.pass, c.basis, c.source]),
@@ -918,7 +964,7 @@ function modelList(p: DesignParams, aero: PanelAero): string[] {
     tangent: "Aero method: tangent-wedge/cone",
     newtonian: "Aero method: modified Newtonian (Lees)",
     mixed: "Aero method: shock-expansion strip marching (oblique shock/Taylor–Maccoll at the nose, Prandtl–Meyer after)",
-    euler: "Aero method: CBAERO base blended with a symmetry-plane HLLC Euler solve (Rust → wasm) on the centreline",
+    euler: "Aero method: CBAERO base (exact oblique-shock/Taylor–Maccoll on attached surfaces) blended with a symmetry-plane HLLC Euler solve (Rust → wasm) only where the panel normal matches the centreline wall",
   };
   m.push(meth[p.aeroMethod] ?? `Aero method: ${p.aeroMethod}`);
   if (aero.notes.length) m.push(`Method notes: ${aero.notes.join(" ")}`);
