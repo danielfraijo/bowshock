@@ -34,6 +34,10 @@ const S_LIP = 0.5;
 const LE_ASPECT = 400;
 /** Arcs smaller than this fraction of the body length are not tessellated (they leave micro holes between unwelded grids). */
 const LE_MIN_SCALE = 2e-4;
+/** Coarse-grid radius boost: the arc size is raised until (station spacing) <= FILLET_BOOST x (arc size). */
+const FILLET_BOOST = 9;
+/** Upper bound on the boosted tangent length, in units of the requested radius. */
+const S_CAP_BOOST = 24;
 
 export type LeBlend = "circular" | "g2";
 
@@ -348,6 +352,22 @@ function buildArc(f: Frame, s: number, y: number, nArc: number, blend: LeBlend):
  * length, and by the local thickness, and varies at most S_LIP per unit LE length so
  * the radius tapers smoothly toward the tips instead of switching off station by station.
  */
+/** Largest tangent length allowed by the row chord and local thickness (the caps of the radius law, without the law). */
+function maxTangent(f: Frame, blend: LeBlend, Rreq: number): number {
+  const muU = Math.max(vlen(f.wU), 1e-9);
+  const muL = Math.max(vlen(f.wL), 1e-9);
+  let s = Math.min((CHORD_FRAC * chordLen(f.U)) / muU, (CHORD_FRAC * chordLen(f.Lo)) / muL, (blend === "g2" ? S_CAP_G2 : S_CAP_BOOST) * Rreq);
+  const sinH = Math.sin(f.h);
+  for (let it = 0; it < 3 && s > 0; it++) {
+    const tu = pointAtLength(f.U, s * muU).p;
+    const tl = pointAtLength(f.Lo, s * muL).p;
+    const sThick = (0.95 * vlen(vsub(tu, tl))) / Math.max(2 * sinH, 1e-9);
+    if (sThick >= s) break;
+    s = sThick;
+  }
+  return Math.max(s, 0);
+}
+
 export function applyLeadingFillet(
   upper: SurfaceGrid,
   lower: SurfaceGrid,
@@ -394,6 +414,25 @@ export function applyLeadingFillet(
       s = sThick;
     }
     f.s = Math.max(s, 0);
+  }
+  // Coarse grids: where the station spacing along the LE exceeds FILLET_ASPECT x the arc size the strip cannot
+  // resolve the requested radius and the fillet would simply stop (a step). Round it up to the smallest radius
+  // the spacing can carry instead (bounded by the same thickness / chord caps), so the fillet stays continuous.
+  const dyAt = (j: number) => {
+    let d = 0;
+    if (j > 0) d = Math.max(d, vlen(vsub(P[j], P[j - 1])));
+    if (j + 1 < nj) d = Math.max(d, vlen(vsub(P[j], P[j + 1])));
+    return d;
+  };
+  for (let j = 0; j < nj; j++) {
+    const f = frames[j];
+    if (!f.ok || !(f.s > 0)) continue;
+    const capS = maxTangent(f, blend, Rreq);
+    for (let it = 0; it < 8 && f.s < capS; it++) {
+      const a = buildArc(f, f.s, P[j][1], 7, blend);
+      if (!a || FILLET_BOOST * a.scale >= dyAt(j)) break;
+      f.s = Math.min(capS, f.s * 1.5);
+    }
   }
   // Lipschitz-limit the tangent length along the LE so the radius law is smooth
   const step = (j: number) => vlen(vsub(P[j], P[j - 1]));
