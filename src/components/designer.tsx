@@ -18,6 +18,8 @@ import { RefinementControls } from "@/components/refinement-controls"; // [mesh-
 import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
 import { DataPanel } from "@/components/data-panel";
 import { DatcomBlock } from "@/components/datcom-panel";
+import { HudTabs } from "@/components/ui/hud-tabs"; // [ui-redesign]
+import { Readout, ViewportChrome } from "@/components/ui/hud"; // [ui-redesign]
 import { computeDataPackAsync } from "@/lib/waverider/datapack";
 import { buildVehicle } from "@/lib/waverider/generate";
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
@@ -295,10 +297,10 @@ export function Designer() {
 
   return (
     <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-bg text-fg">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-6">
+      <header className="hud-header flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div className="min-w-0">
-          <p className="font-display text-xl font-semibold tracking-[0.22em] text-fg">CUSPIS</p>
-          <p className="truncate text-xs text-muted">
+          <p className="hud-wordmark text-xl">CUSPIS</p>
+          <p className="hud-label truncate !text-muted">
             {domain === "external" ? "Roma · hypersonic CAD · external" : "Roma · hypersonic CAD · internal"}
           </p>
         </div>
@@ -315,9 +317,9 @@ export function Designer() {
       </header>
 
       <div className="grid min-h-0 w-full flex-1 grid-cols-1 grid-rows-[minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,1fr)] overflow-hidden lg:grid-cols-[272px_minmax(0,1fr)_360px] lg:grid-rows-1">
-        <aside className="order-2 min-h-0 overflow-y-auto overscroll-contain border-t border-border lg:order-1 lg:border-t-0 lg:border-r">
+        <aside className="hud-rail order-2 min-h-0 overflow-y-auto overscroll-contain border-t border-line lg:order-1 lg:border-t-0 lg:border-r">
           <div className="p-4 sm:p-5">
-            <p className="mb-2 text-[11px] font-medium tracking-[0.16em] text-subtle uppercase">Toolkit</p>
+            <p className="hud-label hud-label-tick mb-2">Toolkit</p>
             <Seg
               value={domain}
               onChange={(d: FlowDomain) => goDomain(d)}
@@ -326,7 +328,7 @@ export function Designer() {
                 { id: "internal", label: "Internal" },
               ]}
             />
-            <p className="mt-3 mb-2 text-[11px] font-medium tracking-[0.16em] text-subtle uppercase">
+            <p className="hud-label hud-label-tick mt-4 mb-2">
               {domain === "external" ? "Vehicles" : "Inlets / engines"}
             </p>
             <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
@@ -338,12 +340,11 @@ export function Designer() {
                     key={id}
                     type="button"
                     onClick={() => pickFamily(id)}
-                    className={`min-h-11 min-w-[9.5rem] shrink-0 rounded-md px-3 py-2 text-left shadow-[0_0_0_1px_rgba(255,255,255,0.08)] transition-colors lg:min-w-0 ${
-                      on ? "bg-accent text-accent-fg" : "bg-surface-2 text-fg hover:bg-surface"
-                    }`}
+                    aria-pressed={on}
+                    className="hud-card min-h-11 min-w-[9.5rem] shrink-0 rounded-md px-3 py-2 transition-colors lg:min-w-0"
                   >
-                    <span className="block text-sm font-medium">{meta.label}</span>
-                    <span className={`mt-0.5 block text-[11px] leading-snug ${on ? "text-accent-fg/70" : "text-muted"}`}>
+                    <span className="hud-card-title block text-sm">{meta.label}</span>
+                    <span className="mt-0.5 block text-[11px] leading-snug text-muted">
                       {meta.generating}
                     </span>
                   </button>
@@ -353,7 +354,8 @@ export function Designer() {
 
             <button
               type="button"
-              className="mt-4 flex w-full items-center justify-between text-[11px] font-medium tracking-[0.16em] text-subtle uppercase"
+              className="hud-label hud-plain mt-5 flex min-h-9 w-full items-center justify-between"
+              aria-expanded={presetOpen}
               onClick={() => setPresetOpen((v) => !v)}
             >
               Presets
@@ -366,7 +368,7 @@ export function Designer() {
                     key={pr.id}
                     type="button"
                     onClick={() => setParams({ ...pr.params })}
-                    className="rounded-md bg-surface-2 px-3 py-2 text-left shadow-[0_0_0_1px_rgba(255,255,255,0.07)] hover:bg-surface"
+                    className="hud-card rounded-md px-3 py-2"
                   >
                     <span className="block text-sm text-fg">{pr.name}</span>
                     <span className="block text-[11px] text-muted">{pr.blurb}</span>
@@ -377,12 +379,14 @@ export function Designer() {
           </div>
         </aside>
 
-        <section className="relative order-1 min-h-0 overflow-hidden lg:order-2">
+        <section className="hud-viewport relative order-1 min-h-0 overflow-hidden lg:order-2">
           <div className="absolute inset-0">
             <WaveriderViewer built={built} study={study} opts={opts} />
+            <ViewportChrome />
             <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-bg/70 to-transparent" />
-            <div className="absolute top-3 left-3 rounded-md bg-bg/70 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur-sm">
-              <span className="font-medium text-fg">{fam.label}</span>
+            <div className="hud-chip-info absolute top-5 left-5 flex items-center gap-1 px-3 py-1.5 font-mono text-[11px] text-muted max-sm:hidden">
+              <span className="hud-led mr-1.5" aria-hidden />
+              <span className="font-display font-semibold tracking-[0.1em] text-accent uppercase">{fam.label}</span>
               <span className="mx-1.5 text-subtle">/</span>
               {domain}
               <span className="mx-1.5 text-subtle">/</span>
@@ -390,7 +394,7 @@ export function Designer() {
               <span className="mx-1.5 text-subtle">/</span>
               tip @ 0
             </div>
-            <div className="absolute top-3 right-3 flex flex-wrap justify-end gap-1">
+            <div className="absolute top-5 right-5 flex flex-wrap justify-end gap-1" role="group" aria-label="View modes">
               {(
                 [
                   ["wireframe", "Wires", opts.wireframe],
@@ -403,24 +407,22 @@ export function Designer() {
                   key={key}
                   type="button"
                   onClick={() => setOpts((o) => ({ ...o, [key]: !o[key] }))}
-                  className={`h-9 rounded-sm px-2.5 text-[11px] font-medium ${
-                    on ? "bg-accent text-accent-fg" : "bg-bg/70 text-muted backdrop-blur-sm"
-                  }`}
+                  aria-pressed={on}
+                  className="hud-toggle rounded-sm"
                 >
                   {label}
                 </button>
               ))}
             </div>
-            <div className="absolute bottom-3 left-3 flex flex-col gap-1.5">
-              <div className="flex max-w-[26rem] flex-wrap gap-1">
+            <div className="absolute bottom-5 left-5 flex flex-col gap-1.5">
+              <div className="flex max-w-[26rem] flex-wrap gap-1" role="group" aria-label="Surface colour mode">
                 {COLOR_MODES.map((c) => (
                   <button
                     key={c.id}
                     type="button"
                     onClick={() => setOpts((o) => ({ ...o, color: c.id }))}
-                    className={`h-8 rounded-sm px-2 text-[10px] font-medium uppercase ${
-                      opts.color === c.id ? "bg-accent text-accent-fg" : "bg-bg/70 text-muted backdrop-blur-sm"
-                    }`}
+                    aria-pressed={opts.color === c.id}
+                    className="hud-toggle hud-toggle--sm rounded-sm"
                   >
                     {c.label}
                   </button>
@@ -432,29 +434,16 @@ export function Designer() {
                 </div>
               ) : null}
             </div>
-            <div className="absolute right-3 bottom-3 font-mono text-[10px] tracking-wider text-subtle">
-              {hydrated ? `${fmt(study.elapsedMs, 0)} ms · ` : null}L/D {fmt(study.aero.ld, 2)}
-              <span className="mx-1.5 text-subtle">·</span>
-              CoP {fmt(study.aero.xCp / Math.max(params.length, 1e-8), 2)}L
+            <div className="hud-chip-info absolute right-5 bottom-5 flex items-end gap-5 px-4 py-2 max-sm:hidden">
+              <Readout label="L/D" value={fmt(study.aero.ld, 2)} />
+              <Readout label="CoP" value={fmt(study.aero.xCp / Math.max(params.length, 1e-8), 2)} unit="L" />
+              {hydrated ? <Readout size="sm" label="Solve" value={fmt(study.elapsedMs, 0)} unit="ms" /> : null}
             </div>
           </div>
         </section>
 
-        <aside className="order-3 flex min-h-0 flex-col overflow-hidden border-t border-border lg:border-t-0 lg:border-l">
-          <div className="flex gap-px overflow-x-auto border-b border-border bg-surface-2 p-1">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setTab(t.id)}
-                className={`h-9 shrink-0 rounded-sm px-2.5 text-xs font-medium ${
-                  tab === t.id ? "bg-accent text-accent-fg" : "text-muted hover:text-fg"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+        <aside className="hud-rail order-3 flex min-h-0 flex-col overflow-hidden border-t border-line lg:border-t-0 lg:border-l">
+          <HudTabs tabs={TABS} value={tab} onChange={setTab} />
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5">
             {!hydrated ? (
               <p className="text-sm leading-relaxed text-muted">{fam.blurb}</p>
@@ -470,7 +459,7 @@ export function Designer() {
                 {domain === "external" || params.family === "integrated" || params.family === "inward" || params.family === "busemann" ? (
                   <>
                 <div>
-                  <span className="mb-2 block text-xs font-medium text-muted">Flat lid</span>
+                  <span className="hud-label mb-2 block !text-muted">Flat lid</span>
                   <Seg
                     value={params.lid}
                     onChange={(lid: LidFace) => patch({ lid })}
@@ -550,13 +539,14 @@ export function Designer() {
                       <LiveField setDragging={setDragging} label="Superellipse n" value={params.superN} min={1} max={6} step={0.05} onChange={(superN) => patch({ superN })} />
                     ) : null}
                     <div>
-                      <span className="mb-2 block text-xs font-medium text-muted">Planform</span>
+                      <span className="hud-label mb-2 block !text-muted">Planform</span>
                       <div className="grid grid-cols-3 gap-1.5">
                         {(["delta", "power", "spatular", "rect", "double"] as PlanformKind[]).map((pl) => (
                           <button
                             key={pl}
                             type="button"
                             onClick={() => patch({ planform: pl })}
+                            aria-pressed={params.planform === pl}
                             className={`h-9 rounded-sm text-xs capitalize ${params.planform === pl ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted"}`}
                           >
                             {pl}
@@ -593,7 +583,7 @@ export function Designer() {
                     <LiveField setDragging={setDragging} label="Nozzle ER" value={params.nozzleER} min={1.5} max={12} step={0.1} onChange={(nozzleER) => patch({ nozzleER })} digits={1} />
                     {params.family === "integrated" ? (
                       <div>
-                        <span className="mb-2 block text-xs font-medium text-muted">Cowl</span>
+                        <span className="hud-label mb-2 block !text-muted">Cowl</span>
                         <Seg
                           value={params.cowlSide}
                           onChange={(cowlSide: CowlSide) => patch({ cowlSide })}
@@ -606,7 +596,7 @@ export function Designer() {
                     ) : null}
                     {params.family === "ramjet" || params.family === "scramjet" ? (
                       <div className="flex items-center justify-between gap-3 pt-1">
-                        <span className="text-xs font-medium text-muted">Flow-through (open duct)</span>
+                        <span className="hud-label !text-muted">Flow-through (open duct)</span>
                         <Switch checked={params.flowThrough} onCheckedChange={(flowThrough) => patch({ flowThrough })} />
                       </div>
                     ) : null}
@@ -615,7 +605,7 @@ export function Designer() {
                 <LiveField setDragging={setDragging} label="Streamwise pts" value={params.nx} min={12} max={160} step={1} digits={0} onChange={(nx) => patch({ nx: Math.round(nx) })} />
                 <LiveField setDragging={setDragging} label="Spanwise pts" value={params.ny} min={10} max={120} step={1} digits={0} onChange={(ny) => patch({ ny: Math.round(ny) })} />
                 <div>
-                  <span className="mb-2 block text-xs font-medium text-muted">Resolution</span>
+                  <span className="hud-label mb-2 block !text-muted">Resolution</span>
                   <Seg
                     value={params.nx >= 90 ? "cad" : params.nx >= 56 ? "hi" : params.nx <= 24 ? "fast" : "std"}
                     onChange={(r: "fast" | "std" | "hi" | "cad") => {
@@ -634,7 +624,7 @@ export function Designer() {
                 </div>
                 <RefinementControls params={params} patch={patch} setDragging={setDragging} />
                 <div className="flex items-center justify-between gap-3 pt-1">
-                  <span className="text-xs font-medium text-muted">Rounded leading edge</span>
+                  <span className="hud-label !text-muted">Rounded leading edge</span>
                   <Switch
                     checked={params.leBlunt !== false}
                     onCheckedChange={(leBlunt) =>
@@ -660,7 +650,7 @@ export function Designer() {
                   <p className="text-[11px] text-subtle">Sharp knife-edge — inviscid theory only. Pointwise needs a radius.</p>
                 )}
                 <div className="flex items-center justify-between gap-3 pt-1">
-                  <span className="text-xs font-medium text-muted">Half-model (Y≥0)</span>
+                  <span className="hud-label !text-muted">Half-model (Y≥0)</span>
                   <Switch checked={params.halfModel} onCheckedChange={(halfModel) => patch({ halfModel })} />
                 </div>
               </div>
@@ -669,7 +659,7 @@ export function Designer() {
             {tab === "flight" ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs font-medium text-muted">Lock flight Mach = design</span>
+                  <span className="hud-label !text-muted">Lock flight Mach = design</span>
                   <Switch checked={params.lockFlight} onCheckedChange={(lockFlight) => patch({ lockFlight })} />
                 </div>
                 <LiveField setDragging={setDragging}
@@ -699,7 +689,7 @@ export function Designer() {
                 <LiveField setDragging={setDragging} label="ρ structure" value={params.rhoKgM3} min={40} max={400} step={5} unit="kg/m³" digits={0} onChange={(rhoKgM3) => patch({ rhoKgM3 })} />
                 <LiveField setDragging={setDragging} label="Mass override" value={params.massKg} min={0} max={8000} step={10} unit="kg" digits={0} onChange={(massKg) => patch({ massKg })} />
                 <div>
-                  <span className="mb-2 block text-xs font-medium text-muted">Panel method</span>
+                  <span className="hud-label mb-2 block !text-muted">Panel method</span>
                   <Seg
                     value={params.aeroMethod}
                     onChange={(aeroMethod: AeroMethod) => patch({ aeroMethod })}
@@ -731,7 +721,7 @@ export function Designer() {
             {tab === "cycle" ? (
               <div className="space-y-4">
                 <div>
-                  <span className="mb-2 block text-xs font-medium text-muted">Fuel</span>
+                  <span className="hud-label mb-2 block !text-muted">Fuel</span>
                   <Seg
                     value={params.fuel}
                     onChange={(fuel: FuelKind) => patch({ fuel })}
@@ -783,7 +773,7 @@ export function Designer() {
                 />
                 <Stat k="Manifold" v={q.manifold ? "yes" : "check"} ok={q.manifold} />
                 <div className="mt-4">
-                  <span className="mb-2 block text-xs font-medium text-muted">Export unit</span>
+                  <span className="hud-label mb-2 block !text-muted">Export unit</span>
                   <Seg
                     value={params.unit}
                     onChange={(unit: LengthUnit) => patch({ unit })}
@@ -850,21 +840,21 @@ export function Designer() {
         </aside>
       </div>
 
-      <footer className="hidden shrink-0 items-center justify-between border-t border-border px-6 py-2 text-[11px] text-subtle sm:flex">
+      <footer className="hud-statusbar hidden shrink-0 items-center justify-between px-6 py-2 text-[11px] text-muted sm:flex">
         <span className="inline-flex items-center gap-1.5">
           {q.watertight || ((params.family === "ramjet" || params.family === "scramjet") && params.flowThrough) ? (
-            <Check className="size-3 text-fg" />
+            <Check className="size-3 text-accent" />
           ) : (
-            <Octagon className="size-3 text-muted" />
+            <Octagon className="size-3 text-warn" />
           )}
           {q.watertight
             ? "Closed manifold solid"
             : (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough
               ? "Flow-through duct — inlet & nozzle open"
               : "Open mesh — raise resolution"}
-          <span className="mx-2 text-border">·</span>
+          <span className="mx-2 text-subtle" aria-hidden>·</span>
           CL {fmt(study.aero.cl, 3)} · L/D {fmt(study.aero.ld, 2)} · q̇s {fmt(study.aero.qStag, 2)} W/cm²
-          <span className="mx-2 text-border">·</span>
+          <span className="mx-2 text-subtle" aria-hidden>·</span>
           {fmt(study.mass.mass, 0)} kg
         </span>
         <span className="font-mono tabular-nums">

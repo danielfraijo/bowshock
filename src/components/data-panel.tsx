@@ -122,7 +122,7 @@ export function DataPanel({ params, paused }: { params: DesignParams; paused: bo
         {err ? <Stat k="Error" v={err} ok={false} /> : null}
       </div>
 
-      <details className="rounded-sm bg-surface-2/50 p-2">
+      <details className="hud-panel hud-panel--flat p-2">
         <summary className="cursor-pointer text-xs text-muted">Sweeps</summary>
         <div className="mt-2 space-y-1.5">
           <Num label="α min °" value={opts.alphaSweep!.min} onChange={(min) => set({ alphaSweep: { ...opts.alphaSweep!, min } })} />
@@ -189,6 +189,7 @@ export function DataPanel({ params, paused }: { params: DesignParams; paused: bo
               key={t.id}
               type="button"
               onClick={() => setTableId(t.id)}
+              aria-pressed={t.id === table?.id}
               className={`rounded-sm px-2 py-1 text-[11px] ${t.id === table?.id ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted hover:text-fg"}`}
             >
               {t.id.replace(/_/g, " ")}
