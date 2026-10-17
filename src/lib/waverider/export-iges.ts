@@ -1,118 +1,125 @@
-import type { SurfaceGrid, Vec3 } from "./types";
-import { gridPoint } from "./mesh";
+import type { LengthUnit, SurfaceGrid } from "./types";
 import { surfacePatches } from "./export-plot3d";
+import { gridNet, interpolateNet } from "./export-nurbs";
 
-function pad80(s: string) {
-  return (s.length >= 80 ? s.slice(0, 80) : s + " ".repeat(80 - s.length));
+/** Fixed-format IGES 5.3 writer: one Rational B-Spline Surface (type 128) per patch. */
+
+const UNIT_FLAG: Record<LengthUnit, { flag: number; name: string }> = {
+  m: { flag: 6, name: "1HM" },
+  mm: { flag: 2, name: "2HMM" },
+  in: { flag: 1, name: "2HIN" },
+};
+
+/** One 80-column record: text in cols 1-72, section letter in col 73, sequence number in cols 74-80. */
+function rec(text: string, section: "S" | "G" | "D" | "P" | "T", seq: number): string {
+  if (text.length > 72) throw new Error(`IGES record too long: ${text.length}`);
+  return text.padEnd(72, " ") + section + String(seq).padStart(7, " ");
 }
 
-function deLine(type: number, paramStart: number, form: number, de: number, extra = 0) {
-  const seq = de * 2 - 1;
-  const a = `${String(type).padStart(8)}${String(paramStart).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}`;
-  const b = `${String(type).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(extra).padStart(8)}${String(form).padStart(8)}        ${String(0).padStart(8)}${String(seq + 1).padStart(8)}`;
-  return [pad80(a.slice(0, 72) + "D" + String(seq).padStart(7)), pad80(b.slice(0, 72) + "D" + String(seq + 1).padStart(7))];
+function hollerith(s: string): string {
+  const clean = s.replace(/[^\x20-\x7e,;]/g, "_").replace(/[,;]/g, "_");
+  return `${clean.length}H${clean}`;
 }
 
-function paramLines(type: number, values: Array<number | string>, de: number, startP: number): string[] {
-  const payload = `${type},${values.join(",")};`;
-  const chunks: string[] = [];
-  let i = 0;
-  const width = 64;
-  while (i < payload.length) {
-    chunks.push(payload.slice(i, i + width));
-    i += width;
-  }
-  return chunks.map((c, k) => {
-    const pnum = startP + k;
-    const body = c + " ".repeat(Math.max(0, 64 - c.length));
-    return pad80(`${body}${String(de).padStart(8)}P${String(pnum).padStart(7)}`);
-  });
+/** Real number in IGES free format (always with a decimal point). */
+function real(v: number): string {
+  if (!Number.isFinite(v) || Math.abs(v) < 1e-300) return "0.0";
+  const t = Number(v.toPrecision(15));
+  let out = t.toString();
+  if (/e/i.test(out)) {
+    const [m, e] = out.toLowerCase().split("e");
+    out = `${m.includes(".") ? m : `${m}.0`}E${e.replace("+", "")}`;
+  } else if (!out.includes(".")) out += ".0";
+  return out;
 }
 
-function knotsFor(nPoles: number, degree: number): number[] {
-  const p = Math.min(degree, nPoles - 1);
-  const knots: number[] = [];
-  for (let i = 0; i < p + 1; i++) knots.push(0);
-  const internal = nPoles - p - 1;
-  for (let i = 1; i <= internal; i++) knots.push(i / (internal + 1));
-  for (let i = 0; i < p + 1; i++) knots.push(1);
-  return knots;
-}
-
-function downsample(g: SurfaceGrid, capU = 80, capV = 64): Vec3[][] {
-  const cap = g.name === "leading" || g.name === "cowl_lip" || g.name.startsWith("tip") || g.ni <= 8 ? g.ni : capU;
-  const du = Math.max(1, Math.floor((g.ni - 1) / Math.min(cap, g.ni - 1)));
-  const dv = Math.max(1, Math.floor((g.nj - 1) / Math.min(capV, g.nj - 1)));
-  const poles: Vec3[][] = [];
-  const is: number[] = [];
-  for (let i = 0; i < g.ni; i += du) is.push(i);
-  if (is[is.length - 1] !== g.ni - 1) is.push(g.ni - 1);
-  const js: number[] = [];
-  for (let j = 0; j < g.nj; j += dv) js.push(j);
-  if (js[js.length - 1] !== g.nj - 1) js.push(g.nj - 1);
-  for (const i of is) {
-    const row: Vec3[] = [];
-    for (const j of js) row.push(gridPoint(g, i, j));
-    poles.push(row);
-  }
-  return poles;
-}
-
-export function gridsToIges(grids: SurfaceGrid[], name: string): string {
-  const start = new Date().toISOString();
-  const s: string[] = [];
-  s.push(pad80(`, Cuspis waverider CAD, ${name}`.slice(0, 72) + "S" + "1".padStart(7)));
-  const globals = [
-    `1H,,1H;,8H${(name + "        ").slice(0, 8)},7HIGES5.3,`,
-    `6HCuspis,6HCuspis,32,38,6,308,15,`,
-    `6HCuspis,1.,5,1HM,32768,0.,15H${start.replace(/[-:TZ]/g, "").slice(0, 15)},`,
-    `1.E-6,1000.,7HUnknown,7HUnknown,11,0,0;`,
-  ];
-  globals.forEach((line, i) => s.push(pad80(line + " ".repeat(Math.max(0, 72 - line.length)) + "G" + String(i + 1).padStart(7))));
-
-  const surfaces = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2).slice(0, 48);
-  const dLines: string[] = [];
-  const pLines: string[] = [];
-  let pCursor = 1;
-  let de = 1;
-
-  for (const g of surfaces) {
-    const poles = downsample(g);
-    const k1 = poles.length - 1;
-    const k2 = poles[0].length - 1;
-    const m1 = Math.min(3, k1);
-    const m2 = Math.min(3, k2);
-    const su = knotsFor(k1 + 1, m1);
-    const sv = knotsFor(k2 + 1, m2);
-    const vals: Array<number | string> = [k1, k2, m1, m2, 0, 0, 0, 0, 0];
-    for (const k of su) vals.push(k);
-    for (const k of sv) vals.push(k);
-    for (let i = 0; i <= k1; i++) for (let j = 0; j <= k2; j++) vals.push(1);
-    for (let i = 0; i <= k1; i++) {
-      for (let j = 0; j <= k2; j++) {
-        const p = poles[i][j];
-        vals.push(p[0], p[1], p[2]);
-      }
+/** Pack free-format fields into lines of <= width columns without splitting a field. */
+function pack(fields: string[], width: number, terminator: string): string[] {
+  const lines: string[] = [];
+  let cur = "";
+  fields.forEach((f, i) => {
+    const piece = f + (i === fields.length - 1 ? terminator : ",");
+    if (cur.length + piece.length > width && cur.length) {
+      lines.push(cur);
+      cur = "";
     }
-    vals.push(0, 1, 0, 1);
-    const pl = paramLines(128, vals, de, pCursor);
-    const [d1, d2] = deLine(128, pCursor, 0, (de + 1) / 2);
-    // deLine uses de index as entity number; keep sequential DE pointers 1,3,5...
-    void d1;
-    void d2;
-    const seq = de;
-    const dirA = `${String(128).padStart(8)}${String(pCursor).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}`;
-    const dirB = `${String(128).padStart(8)}${String(0).padStart(8)}${String(pl.length).padStart(8)}${String(0).padStart(8)}${String(0).padStart(8)}        ${String(0).padStart(8)}`;
-    dLines.push(pad80(dirA.slice(0, 72) + "D" + String(seq).padStart(7)));
-    dLines.push(pad80(dirB.slice(0, 72) + "D" + String(seq + 1).padStart(7)));
-    pLines.push(...pl);
-    pCursor += pl.length;
-    de += 2;
-  }
+    cur += piece;
+  });
+  if (cur) lines.push(cur);
+  return lines;
+}
 
-  s.push(...dLines);
-  s.push(...pLines);
-  const t = `S${String(1).padStart(7)}G${String(globals.length).padStart(7)}D${String(dLines.length).padStart(7)}P${String(pLines.length).padStart(7)}`;
-  s.push(pad80(t + " ".repeat(Math.max(0, 72 - t.length)) + "T" + "1".padStart(7)));
-  return s.join("\n") + "\n";
+function stamp(d: Date): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(d.getUTCFullYear(), 4)}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}.${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+}
+
+export function gridsToIges(grids: SurfaceGrid[], name: string, unit: LengthUnit = "m"): string {
+  const when = stamp(new Date());
+  const u = UNIT_FLAG[unit] ?? UNIT_FLAG.m;
+  const start = [rec(`Cuspis waverider CAD: ${name}`.slice(0, 72), "S", 1)];
+
+  const patches = surfacePatches(grids).filter((g) => g.ni >= 2 && g.nj >= 2);
+  let extent = 1;
+  for (const g of patches) for (let k = 0; k < g.xyz.length; k++) extent = Math.max(extent, Math.abs(g.xyz[k]));
+  const gfields = [
+    "1H,",
+    "1H;",
+    hollerith(name.slice(0, 40) || "waverider"),
+    hollerith(`${name.slice(0, 40) || "waverider"}.igs`),
+    hollerith("Cuspis"),
+    hollerith("Cuspis 1.0"),
+    "32",
+    "38",
+    "6",
+    "308",
+    "15",
+    hollerith(name.slice(0, 40) || "waverider"),
+    "1.0",
+    String(u.flag),
+    u.name,
+    "1",
+    "0.01",
+    `15H${when}`,
+    "1.0E-6",
+    real(Math.ceil(extent * 10)),
+    hollerith("Cuspis"),
+    hollerith("Cuspis"),
+    "11",
+    "0",
+    `15H${when}`,
+  ];
+  const glines = pack(gfields, 72, ";");
+  const global = glines.map((l, i) => rec(l, "G", i + 1));
+
+  const dEntries: string[] = [];
+  const pLines: string[] = [];
+  let deSeq = 1;
+  let pSeq = 1;
+  for (const g of patches) {
+    const net = interpolateNet(gridNet(g, 200), 3);
+    const k1 = net.ctrl.length - 1;
+    const k2 = net.ctrl[0].length - 1;
+    const fields: string[] = ["128", String(k1), String(k2), String(net.p), String(net.q), "0", "0", "1", "0", "0"];
+    for (const k of net.U) fields.push(real(k));
+    for (const k of net.V) fields.push(real(k));
+    for (let j = 0; j <= k2; j++) for (let i = 0; i <= k1; i++) fields.push("1.0");
+    // control points: first index (i, the U direction) varies fastest
+    for (let j = 0; j <= k2; j++)
+      for (let i = 0; i <= k1; i++) {
+        const c = net.ctrl[i][j];
+        fields.push(real(c[0]), real(c[1]), real(c[2]));
+      }
+    fields.push("0.0", "1.0", "0.0", "1.0");
+    const lines = pack(fields, 64, ";").map((l, k) => rec(l.padEnd(64, " ") + String(deSeq).padStart(8, " "), "P", pSeq + k));
+    const f8 = (v: number | string) => String(v).padStart(8, " ");
+    const line1 = [128, pSeq, 0, 0, 0, 0, 0, 0, "00000000"].map(f8).join("");
+    const line2 = [128, 0, 0, lines.length, 0, 0, 0, "", 0].map(f8).join("");
+    dEntries.push(rec(line1, "D", deSeq), rec(line2, "D", deSeq + 1));
+    pLines.push(...lines);
+    pSeq += lines.length;
+    deSeq += 2;
+  }
+  const t = `S${String(start.length).padStart(7, "0")}G${String(global.length).padStart(7, "0")}D${String(dEntries.length).padStart(7, "0")}P${String(pLines.length).padStart(7, "0")}`;
+  return [...start, ...global, ...dEntries, ...pLines, rec(t, "T", 1)].join("\n") + "\n";
 }
