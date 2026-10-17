@@ -64,20 +64,25 @@ export const REFINEMENT_LIMITS = {
     shockWidth: [0.02, 0.3],
     /** Hard cap on cells of one 2-D grid. Memory is ~140 B/cell, so this is far inside browser limits. */
     maxCells: 60000,
-    /** Hard cap on cell-updates (cells x iterations): bounds wall-clock time (~15 s in JS at 3-4 M/s). */
+    /** Hard cap on cell-updates (cells x iterations): bounds wall-clock time (~10-15 s at the measured TypeScript rates). */
     maxWork: 5e7,
   },
 } as const;
 
-/** Rough throughput on a desktop CPU, measured with refinement.bench (see NOTES.md). */
+/**
+ * Rough throughput in cell-updates per second, measured on this box (see NOTES.md; your CPU will differ):
+ * TypeScript wedge anchor ~3.4 M/s, TypeScript symmetry-plane solver ~5.5 M/s, shipped wasm ~8 M/s
+ * (measured on the legacy 88x28x42 run only - a small sample).
+ */
 export const COST_MODEL = {
-  /** cell-updates per second, TypeScript solver (euler2d.ts / strip-euler.ts). */
-  jsRate: 3.3e6,
-  /** Reference estimate only; the shipped wasm is not rebuilt in this patch. */
-  wasmRate: 8e6,
+  jsRateWedge: 3.4e6,
+  jsRateStrip: 5.5e6,
+  wasmRateStrip: 8e6,
 } as const;
 
 export const DEFAULT_SHOCK_WIDTH = 0.09;
+/** Warn (not clamp) when adjacent cell sizes in the cross-flow direction differ by more than this. The presets stay under it. */
+export const MAX_SMOOTH_STRETCH = 2;
 
 const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> = {
   coarse: {
@@ -196,6 +201,12 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
     warnings.push(`Volume grid capped at ${L.volume.maxCells} cells: now ${volume.nStream} x ${volume.nCross}.`);
     clamped = true;
   }
+  if (volume.wallClustering > 0 || volume.shockClustering > 0) {
+    const ratio = spacingStats(clusterCoordinates(volume.nCross, { wall: volume.wallClustering, shock: volume.shockClustering, shockPos: 0.3, shockWidth: volume.shockWidth })).maxAdjacentRatio;
+    if (ratio > MAX_SMOOTH_STRETCH) {
+      warnings.push(`Aggressive clustering: neighbouring cell sizes differ by up to ${ratio.toFixed(1)}x (> ${MAX_SMOOTH_STRETCH}). Add cells across the layer or lower the clustering strength, or expect a noisier shock.`);
+    }
+  }
   // Work cap applies to the larger of the wedge-anchor march and the two symmetry-plane wall solves.
   const workOf = (v: VolumeRefinement) => {
     const c = estimateCostOf(v);
@@ -282,7 +293,7 @@ export interface CostEstimate {
   wedgeSeconds: number;
   stripCells: number;
   stripWork: number;
-  /** Two wall solves (upper + lower) per aero evaluation, JS path. */
+  /** Two wall solves (upper + lower) per aero evaluation (wasm for the baseline, TypeScript otherwise). */
   stripSeconds: number;
   withinCaps: boolean;
 }
@@ -305,10 +316,10 @@ export function estimateCost(r: RefinementSettings): CostEstimate {
     surfaceTrianglesApprox: Math.round(4 * (r.surface.nx - 1) * (r.surface.ny - 1) * 1.04),
     wedgeCells,
     wedgeWork,
-    wedgeSeconds: wedgeWork / COST_MODEL.jsRate,
+    wedgeSeconds: wedgeWork / COST_MODEL.jsRateWedge,
     stripCells,
     stripWork,
-    stripSeconds: stripWork / COST_MODEL.jsRate,
+    stripSeconds: stripWork / (isBaseline(r) ? COST_MODEL.wasmRateStrip : COST_MODEL.jsRateStrip),
     withinCaps:
       r.surface.nx * r.surface.ny <= L.surface.maxPoints &&
       wedgeCells <= L.volume.maxCells &&
