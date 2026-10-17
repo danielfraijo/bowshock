@@ -25,6 +25,10 @@ await page.goto(url, { waitUntil: "networkidle" });
 await page.waitForTimeout(2500);
 console.log("workers:", workers);
 console.log("wasm/worker requests:", JSON.stringify(reqs, null, 1));
+// idle baseline: long tasks with no interaction (headless software WebGL rendering shows up here, not compute)
+await page.evaluate(() => (window.__long.length = 0));
+await page.waitForTimeout(3000);
+console.log("idle 3 s:", JSON.stringify(await page.evaluate(() => ({ n: window.__long.length, sum: Math.round(window.__long.reduce((a, b) => a + b, 0)), max: Math.max(0, ...window.__long) }))));
 // drag a slider: find first range input
 const sliders = await page.$$('[role="slider"]');
 console.log("sliders:", sliders.length);
@@ -58,6 +62,27 @@ if (box) {
   });
   console.log("drag:", JSON.stringify(r));
 }
+// heavy tabs: the Data tab tables and a DATCOM run must not block the main thread (they run on the bulk worker lane)
+async function phase(name, fn) {
+  await page.evaluate(() => (window.__long.length = 0));
+  const t0 = Date.now();
+  await fn();
+  const r = await page.evaluate(() => window.__long.slice());
+  console.log(`${name}: ${Date.now() - t0} ms wall, long tasks ${r.length} (max ${Math.max(0, ...r).toFixed(0)} ms, sum ${r.reduce((a, b) => a + b, 0).toFixed(0)} ms)`);
+}
+if ((await page.getByRole("button", { name: "Data", exact: true }).count()) === 0) console.log("Data tab: not present in this domain (external); skipped");
+else await phase("Data tab (datapack in worker)", async () => {
+  await page.getByRole("button", { name: "Data", exact: true }).click();
+  await page.waitForFunction(() => /Validation/.test(document.body.innerText) && /pass/.test(document.body.innerText), null, { timeout: 60000 }).catch(() => console.log("  (data pack text not seen)"));
+  await page.waitForTimeout(500);
+});
+await phase("DATCOM run (worker)", async () => {
+  await page.getByRole("button", { name: "DATCOM", exact: true }).click();
+  const run = page.getByRole("button", { name: /Run DATCOM/ });
+  await run.click();
+  await page.waitForTimeout(1500);
+});
+console.log("workers started:", workers.length, workers.map((w) => w.replace(/^https?:\/\/[^/]+/, "")));
 console.log("worker stats:", JSON.stringify(await page.evaluate(() => window.__bowshockCompute?.stats())));
 console.log("errors:", errors.length ? errors : "none");
 await browser.close();
