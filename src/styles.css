@@ -1,34 +1,87 @@
 @import "tailwindcss";
 
+/* Self-hosted (bundled by Vite via @fontsource) — no network font requests. */
+@import "@fontsource/chakra-petch/latin-400.css";
+@import "@fontsource/chakra-petch/latin-500.css";
+@import "@fontsource/chakra-petch/latin-600.css";
+@import "@fontsource/chakra-petch/latin-700.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-700.css";
+
+/*
+ * CUSPIS HUD theme — Roadster-style cockpit display, loosely Cyberpunk 2077.
+ *
+ *   • near-black cool surfaces, ONE neon accent (electric cyan)
+ *   • a second hue (hot red) is reserved for warnings / FAIL / destructive
+ *   • angular clipped-corner panels, corner brackets, tick marks, faint scanlines
+ *   • every token below is a CSS custom property; Tailwind utilities
+ *     (bg-bg, text-muted, border-border, bg-accent …) inherit from @theme.
+ *
+ * Contrast of every text/background pair is verified by
+ * scripts/ui-redesign/contrast.mjs (WCAG AA) — rerun it after touching tokens.
+ */
 @theme {
-  --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Barlow Condensed", "Barlow", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: "Chakra Petch", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-display: "Chakra Petch", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 
-  --color-bg: #080808;
-  --color-surface: #111111;
-  --color-surface-2: #1c1c1c;
-  --color-fg: #f4f4f4;
-  --color-muted: #9a9a9a;
-  --color-subtle: #6e6e6e;
-  --color-border: #2c2c2c;
-  --color-accent: #f2f2f2;
-  --color-accent-fg: #0a0a0a;
-  --color-steel: #8a8a8a;
-  --color-ok: #e8e8e8;
-  --color-warn: #8a8a8a;
+  /* surfaces (darkest → lightest) */
+  --color-bg: #05080b;
+  --color-surface: #0a1015;
+  --color-surface-2: #111a21;
+  --color-surface-3: #18242d;
 
-  --radius-xs: 4px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 24px;
+  /* text */
+  --color-fg: #e8f4f8;
+  --color-muted: #a3b6c0;
+  --color-subtle: #8399a5;
+  --color-disabled: #5f7480;
+
+  /* lines: border = decorative hairline, line = control outline (>= 3:1 non-text) */
+  --color-border: #1f2d36;
+  --color-line: #55737f;
+
+  /* the one neon accent + its dark-on-accent text */
+  --color-accent: #1fe5ff;
+  --color-accent-fg: #021117;
+  --color-accent-dim: #0c4a58; /* tinted fills / hover washes */
+  --color-steel: #8399a5;
+
+  /* semantic */
+  --color-ok: #1fe5ff; /* pass uses the accent (no 2nd hue) */
+  --color-warn: #ff5a6b; /* the sparing second colour */
+  --color-warn-dim: #4a1620;
+
+  /* chart series (see .recharts-* overrides): accent, light steel, dashed grey-blue */
+  --color-chart-1: #1fe5ff;
+  --color-chart-2: #e8f4f8;
+  --color-chart-3: #8fa9b8;
+
+  --radius-xs: 1px;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 4px;
+  --radius-xl: 4px;
+}
+
+:root {
+  color-scheme: dark;
+  --cut: 8px; /* clipped-corner size */
+  --cut-lg: 12px;
+  --accent-rgb: 31 229 255;
+  --warn-rgb: 255 90 107;
+  --glow-sm: 0 0 6px rgb(var(--accent-rgb) / 0.35);
+  --glow-md: 0 0 14px rgb(var(--accent-rgb) / 0.4);
+  --scan-opacity: 0.035;
+  --ease-hud: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    font-variant-numeric: tabular-nums;
   }
 
   html,
@@ -41,7 +94,8 @@
   }
 
   button:not(:disabled),
-  [role="button"]:not(:disabled) {
+  [role="button"]:not(:disabled),
+  [role="tab"] {
     cursor: pointer;
   }
 
@@ -54,8 +108,887 @@
   p {
     text-wrap: pretty;
   }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-accent-fg);
+  }
+
+  /* Buttons: clipped corners (top-left + bottom-right) + a hairline drawn along the cut. */
+  button:not([role="switch"]):not([role="tab"]):not(.hud-plain),
+  .hud-cut {
+    --edge: var(--color-line);
+    position: relative;
+    letter-spacing: 0.04em;
+    clip-path: polygon(
+      var(--cut) 0,
+      100% 0,
+      100% calc(100% - var(--cut)),
+      calc(100% - var(--cut)) 100%,
+      0 100%,
+      0 var(--cut)
+    );
+    transition:
+      background-color 120ms var(--ease-hud),
+      color 120ms var(--ease-hud),
+      box-shadow 120ms var(--ease-hud);
+  }
+  button:not([role="switch"]):not([role="tab"]):not(.hud-plain)::after,
+  .hud-cut::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(
+          to bottom right,
+          transparent calc(50% - 0.75px),
+          var(--edge) calc(50% - 0.75px),
+          var(--edge) calc(50% + 0.75px),
+          transparent calc(50% + 0.75px)
+        )
+        top left / var(--cut) var(--cut) no-repeat,
+      linear-gradient(
+          to bottom right,
+          transparent calc(50% - 0.75px),
+          var(--edge) calc(50% - 0.75px),
+          var(--edge) calc(50% + 0.75px),
+          transparent calc(50% + 0.75px)
+        )
+        bottom right / var(--cut) var(--cut) no-repeat;
+  }
+  button[class~="bg-accent"]:not([role="tab"]) {
+    --edge: var(--color-accent);
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  summary::-webkit-details-marker {
+    display: none;
+  }
+  details > summary::before {
+    content: "▸";
+    display: inline-block;
+    width: 1.1em;
+    color: var(--color-accent);
+    transition: transform 120ms var(--ease-hud);
+  }
+  details[open] > summary::before {
+    transform: rotate(90deg);
+  }
+
+  /* Tables: tabular numerals, small-caps headers, faint zebra + hover wash. */
+  table {
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+  th {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  tbody tr:nth-child(even) {
+    background: rgb(var(--accent-rgb) / 0.035);
+  }
+  tbody tr:hover {
+    background: rgb(var(--accent-rgb) / 0.09);
+  }
+  td {
+    font-feature-settings: "zero";
+  }
+
+  /* HUD mono data: slashed zero for unambiguous 0/O. */
+  .font-mono,
+  code,
+  pre,
+  kbd,
+  samp {
+    font-feature-settings: "zero";
+  }
+
+  hr {
+    border-color: var(--color-border);
+  }
 }
 
+/* ───────────────────────── focus + form controls (unlayered on purpose) ─────────────────────────
+ * Unlayered rules beat Tailwind utilities (incl. the legacy `outline-none`/`border-0`/`bg-surface-2`
+ * on raw inputs), so the whole lab gets one consistent, visible, AA-contrast focus ring and one input
+ * look without touching every call site.
+ */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+/* clipped buttons would crop an outside ring → draw it inside */
+button:focus-visible,
+[role="tab"]:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -3px;
+  box-shadow: inset 0 0 0 4px rgb(var(--accent-rgb) / 0.18);
+}
+button[class~="bg-accent"]:focus-visible,
+button[aria-pressed="true"]:focus-visible,
+[role="tab"][aria-selected="true"]:focus-visible,
+.hud-btn-primary:focus-visible {
+  outline-color: var(--color-accent-fg);
+  box-shadow: inset 0 0 0 4px rgb(255 255 255 / 0.35);
+}
+[role="switch"]:focus-visible,
+[role="slider"]:focus-visible {
+  outline-offset: 3px;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select,
+textarea {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  border: 1px solid var(--color-line);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-feature-settings: "zero";
+  font-variant-numeric: tabular-nums;
+  transition:
+    border-color 120ms var(--ease-hud),
+    box-shadow 120ms var(--ease-hud);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):hover,
+select:hover,
+textarea:hover {
+  border-color: var(--color-subtle);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+select:focus,
+textarea:focus {
+  border-color: var(--color-accent);
+  box-shadow: var(--glow-sm);
+}
+input:disabled,
+select:disabled,
+textarea:disabled {
+  color: var(--color-disabled);
+  border-color: var(--color-border);
+}
+select {
+  appearance: none;
+  padding-right: 1.4rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%231fe5ff'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.4rem center;
+}
+select option {
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-accent);
+  width: 1rem;
+  height: 1rem;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+textarea {
+  font-size: 11px;
+  line-height: 1.5;
+}
+::placeholder {
+  color: var(--color-subtle);
+  opacity: 1;
+}
+
+/* ───────────────────────── scrollbars ───────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) var(--color-surface);
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border: 2px solid var(--color-surface);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent);
+}
+::-webkit-scrollbar-corner {
+  background: var(--color-surface);
+}
+
+/* ───────────────────────── global scanline + vignette (very faint) ───────────────────────── */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(to bottom, rgb(0 0 0 / var(--scan-opacity)) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgb(0 0 0 / 0.35) 100%);
+}
+
+@layer components {
+  /* ── HUD labels, readouts, panels ── */
+  .hud-label {
+    font-family: var(--font-display);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-subtle);
+  }
+  .hud-label--accent {
+    color: var(--color-accent);
+  }
+  /* label with a leading tick — section heads */
+  .hud-label-tick {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .hud-label-tick::before {
+    content: "";
+    width: 10px;
+    height: 2px;
+    background: var(--color-accent);
+    box-shadow: var(--glow-sm);
+  }
+  .hud-label-tick::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, var(--color-line), transparent);
+  }
+
+  .hud-readout {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .hud-readout-value {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 1.6rem;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums slashed-zero;
+    color: var(--color-accent);
+    text-shadow: 0 0 10px rgb(var(--accent-rgb) / 0.45);
+  }
+  .hud-readout-value--sm {
+    font-size: 1.05rem;
+  }
+  .hud-readout-value--warn {
+    color: var(--color-warn);
+    text-shadow: 0 0 10px rgb(var(--warn-rgb) / 0.4);
+  }
+  .hud-readout-unit {
+    margin-left: 0.25em;
+    font-family: var(--font-display);
+    font-size: 0.6em;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    text-shadow: none;
+  }
+
+  /* panel: hairline border, one cut corner (bottom-right) with its diagonal drawn, corner brackets on top-left */
+  .hud-panel {
+    --panel-edge: var(--color-line);
+    position: relative;
+    background: linear-gradient(180deg, rgb(var(--accent-rgb) / 0.035), transparent 40%), var(--color-surface-2);
+    border: 1px solid var(--panel-edge);
+    clip-path: polygon(
+      0 0,
+      100% 0,
+      100% calc(100% - var(--cut)),
+      calc(100% - var(--cut)) 100%,
+      0 100%
+    );
+  }
+  .hud-panel::after {
+    content: "";
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: var(--cut);
+    height: var(--cut);
+    pointer-events: none;
+    background: linear-gradient(
+      to top left,
+      transparent calc(50% - 0.75px),
+      var(--panel-edge) calc(50% - 0.75px),
+      var(--panel-edge) calc(50% + 0.75px),
+      transparent calc(50% + 0.75px)
+    );
+  }
+  details.hud-panel::before {
+    display: none;
+  }
+  .hud-panel::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    width: 12px;
+    height: 12px;
+    pointer-events: none;
+    border-top: 2px solid var(--color-accent);
+    border-left: 2px solid var(--color-accent);
+  }
+  .hud-panel--flat {
+    background: var(--color-surface);
+  }
+
+  /* 4 corner brackets via one pseudo — for overlays/frames */
+  .hud-brackets::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    --b: var(--color-accent);
+    --l: 14px;
+    background:
+      linear-gradient(var(--b), var(--b)) top left / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) top left / 2px var(--l) no-repeat,
+      linear-gradient(var(--b), var(--b)) top right / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) top right / 2px var(--l) no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom left / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom left / 2px var(--l) no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom right / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom right / 2px var(--l) no-repeat;
+  }
+
+  /* ── lab viewport frame ── */
+  .hud-viewport {
+    background:
+      radial-gradient(ellipse at 50% 45%, rgb(var(--accent-rgb) / 0.04), transparent 65%),
+      var(--color-bg);
+  }
+  .hud-frame {
+    position: absolute;
+    inset: 8px;
+    pointer-events: none;
+    border: 1px solid rgb(var(--accent-rgb) / 0.18);
+  }
+  .hud-frame::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    --b: var(--color-accent);
+    --l: 22px;
+    background:
+      linear-gradient(var(--b), var(--b)) top left / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) top left / 2px var(--l) no-repeat,
+      linear-gradient(var(--b), var(--b)) top right / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) top right / 2px var(--l) no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom left / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom left / 2px var(--l) no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom right / var(--l) 2px no-repeat,
+      linear-gradient(var(--b), var(--b)) bottom right / 2px var(--l) no-repeat;
+    filter: drop-shadow(0 0 4px rgb(var(--accent-rgb) / 0.55));
+  }
+  /* tick ruler along the left + bottom edges (axis-triad margin) */
+  .hud-frame::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    top: 56px;
+    bottom: 56px;
+    width: 7px;
+    opacity: 0.55;
+    background: repeating-linear-gradient(to bottom, var(--color-accent) 0 1px, transparent 1px 12px);
+    mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 85%, transparent);
+  }
+  .hud-ticks-x {
+    position: absolute;
+    left: 56px;
+    right: 56px;
+    bottom: 14px;
+    height: 7px;
+    pointer-events: none;
+    opacity: 0.45;
+    background: repeating-linear-gradient(to right, var(--color-accent) 0 1px, transparent 1px 12px);
+    mask-image: linear-gradient(to right, transparent, #000 15%, #000 85%, transparent);
+  }
+  /* axis-triad overlay slot: anchored bottom-left above the colour-mode strip, reserved for an axis gizmo */
+  .hud-triad-slot {
+    position: absolute;
+    left: 20px;
+    bottom: 76px;
+    width: 64px;
+    height: 64px;
+    pointer-events: none;
+  }
+  /* scanline sweep (animated; disabled under prefers-reduced-motion) */
+  .hud-scan {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .hud-scan::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(to bottom, rgb(var(--accent-rgb) / 0.03) 0 1px, transparent 1px 4px);
+  }
+  .hud-scan::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 90px;
+    top: -90px;
+    background: linear-gradient(to bottom, transparent, rgb(var(--accent-rgb) / 0.07), transparent);
+    animation: hud-sweep 7s linear infinite;
+  }
+
+  .hud-chip-info {
+    border: 1px solid var(--color-line);
+    background: rgb(5 8 11 / 0.82);
+    backdrop-filter: blur(3px);
+    clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+  }
+  .hud-led {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: var(--color-accent);
+    box-shadow: 0 0 8px var(--color-accent);
+    animation: hud-pulse 2.4s ease-in-out infinite;
+  }
+
+  /* ── toggles / chips (aria-pressed) ── */
+  .hud-toggle {
+    height: 2.25rem;
+    padding: 0 0.7rem;
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    background: rgb(5 8 11 / 0.82);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+  }
+  .hud-toggle:hover {
+    color: var(--color-fg);
+    box-shadow: inset 0 0 0 1px var(--color-accent);
+  }
+  .hud-toggle[aria-pressed="true"] {
+    color: var(--color-accent-fg);
+    background: var(--color-accent);
+    box-shadow: inset 0 0 12px rgb(255 255 255 / 0.3);
+    --edge: var(--color-accent);
+  }
+  .hud-toggle--sm {
+    height: 2rem;
+    padding: 0 0.5rem;
+    font-size: 10px;
+  }
+
+  /* selectable cards (family list) */
+  .hud-card {
+    text-align: left;
+    background: var(--color-surface-2);
+    color: var(--color-fg);
+    box-shadow: inset 0 0 0 1px var(--color-border);
+  }
+  .hud-card:hover {
+    background: var(--color-surface-3);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+  }
+  .hud-card[aria-pressed="true"] {
+    background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.2), rgb(var(--accent-rgb) / 0.05));
+    box-shadow:
+      inset 3px 0 0 var(--color-accent),
+      inset 0 0 0 1px rgb(var(--accent-rgb) / 0.6);
+    --edge: rgb(var(--accent-rgb) / 0.7);
+  }
+  .hud-card .hud-card-title {
+    font-family: var(--font-display);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .hud-card[aria-pressed="true"] .hud-card-title {
+    color: var(--color-accent);
+  }
+
+  /* segmented control */
+  .hud-seg {
+    display: grid;
+    gap: 2px;
+    padding: 2px;
+    background: var(--color-bg);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  }
+  .hud-seg > button {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    clip-path: none;
+  }
+  .hud-seg > button::after {
+    display: none;
+  }
+
+  /* ── two-tier tabs ── */
+  .hud-tabs {
+    border-bottom: 1px solid var(--color-line);
+    background: var(--color-surface);
+  }
+  .hud-tab-primary {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    gap: 0;
+  }
+  .hud-tab-primary > [role="tab"] {
+    position: relative;
+    height: 2.5rem;
+    padding: 0 0.25rem;
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    background: var(--color-bg);
+    border-right: 1px solid var(--color-border);
+    border-bottom: 2px solid transparent;
+    transition:
+      color 120ms var(--ease-hud),
+      background-color 120ms var(--ease-hud);
+  }
+  .hud-tab-primary > [role="tab"]:last-child {
+    border-right: 0;
+  }
+  .hud-tab-primary > [role="tab"]:hover {
+    color: var(--color-fg);
+    background: var(--color-surface-2);
+  }
+  .hud-tab-primary > [role="tab"][aria-selected="true"] {
+    color: var(--color-accent);
+    background: linear-gradient(to top, rgb(var(--accent-rgb) / 0.16), transparent 80%), var(--color-surface);
+    border-bottom-color: var(--color-accent);
+    box-shadow: 0 6px 10px -8px var(--color-accent);
+  }
+  .hud-tab-secondary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 6px 8px;
+  }
+  .hud-tab-secondary > [role="tab"] {
+    height: 2rem;
+    padding: 0 0.75rem;
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+    background: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+    clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+  }
+  .hud-tab-secondary > [role="tab"]:hover {
+    color: var(--color-fg);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+  }
+  .hud-tab-secondary > [role="tab"][aria-selected="true"] {
+    color: var(--color-accent-fg);
+    background: var(--color-accent);
+    box-shadow: inset 0 0 10px rgb(255 255 255 / 0.3);
+  }
+
+  /* ── primary action ── */
+  .hud-btn-primary {
+    --edge: var(--color-accent);
+    letter-spacing: 0.1em;
+    font-family: var(--font-display);
+    font-weight: 700;
+    box-shadow: inset 0 0 14px rgb(255 255 255 / 0.25);
+  }
+  .hud-btn-primary:not(:disabled):hover {
+    background: #6ff0ff;
+    box-shadow: inset 0 0 18px rgb(255 255 255 / 0.5);
+  }
+
+  /* ── sliders ── */
+  .hud-slider::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 5px;
+    height: 4px;
+    pointer-events: none;
+    background: repeating-linear-gradient(to right, var(--color-line) 0 1px, transparent 1px calc(10% - 0.1px)),
+      linear-gradient(var(--color-line), var(--color-line)) right bottom / 1px 4px no-repeat;
+  }
+  .hud-slider-track {
+    background: var(--color-surface-3);
+    box-shadow: inset 0 0 0 1px var(--color-border);
+  }
+  .hud-slider-range {
+    background: var(--color-accent);
+    box-shadow: var(--glow-sm);
+  }
+  .hud-slider-thumb {
+    display: block;
+    width: 12px;
+    height: 22px;
+    background: var(--color-accent);
+    clip-path: polygon(0 4px, 4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%);
+    filter: drop-shadow(0 0 4px rgb(var(--accent-rgb) / 0.8));
+    transition: transform 120ms var(--ease-hud);
+  }
+  .hud-slider-thumb:hover {
+    transform: scaleY(1.12);
+  }
+  .hud-slider-thumb:focus-visible {
+    outline: 2px solid var(--color-fg);
+    outline-offset: 4px;
+    clip-path: none;
+    border-radius: 0;
+    box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+  }
+
+  /* ── switch ── */
+  .hud-switch {
+    background: var(--color-bg);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+  }
+  .hud-switch[data-state="checked"] {
+    background: rgb(var(--accent-rgb) / 0.22);
+    box-shadow:
+      inset 0 0 0 1px var(--color-accent),
+      var(--glow-sm);
+  }
+  .hud-switch-thumb {
+    background: var(--color-muted);
+  }
+  .hud-switch-thumb[data-state="checked"] {
+    background: var(--color-accent);
+    box-shadow: 0 0 6px var(--color-accent);
+  }
+
+  /* ── key/value stat rows ── */
+  .hud-stat {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px dashed var(--color-border);
+  }
+  .hud-stat:last-child {
+    border-bottom: 0;
+  }
+  .hud-stat-k {
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    white-space: pre;
+  }
+  .hud-stat-v {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums slashed-zero;
+    text-align: right;
+    color: var(--color-fg);
+  }
+  .hud-stat-v[data-ok="true"] {
+    color: var(--color-ok);
+  }
+  .hud-stat-v[data-ok="false"] {
+    color: var(--color-warn);
+  }
+  .hud-stat-v[data-ok="false"]::before {
+    content: "▲ ";
+    font-size: 0.8em;
+  }
+
+  /* ── footer status bar ── */
+  .hud-statusbar {
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-line);
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+  }
+  .hud-header {
+    background:
+      linear-gradient(to right, rgb(var(--accent-rgb) / 0.08), transparent 35%), var(--color-surface);
+    border-bottom: 1px solid var(--color-line);
+    position: relative;
+  }
+  .hud-header::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: -1px;
+    width: 160px;
+    height: 2px;
+    background: var(--color-accent);
+    box-shadow: var(--glow-sm);
+  }
+  .hud-wordmark {
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: 0.32em;
+    color: var(--color-fg);
+    text-shadow: 0 0 12px rgb(var(--accent-rgb) / 0.4);
+  }
+  .hud-rail {
+    background: var(--color-surface);
+  }
+
+  /* ── tooltips / dialogs / popovers / toasts (Radix + sonner + native <dialog>) ── */
+  [role="tooltip"],
+  [data-radix-popper-content-wrapper] > [data-state],
+  [role="dialog"],
+  [role="alertdialog"],
+  dialog,
+  [data-sonner-toast] {
+    background: var(--color-surface) !important;
+    color: var(--color-fg) !important;
+    border: 1px solid var(--color-line) !important;
+    border-radius: 0 !important;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    box-shadow:
+      0 0 0 1px var(--color-bg),
+      0 8px 28px rgb(0 0 0 / 0.7),
+      var(--glow-sm) !important;
+    clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+  }
+  [role="tooltip"] {
+    padding: 4px 8px;
+  }
+  dialog::backdrop,
+  [data-radix-dialog-overlay],
+  [data-state][class*="overlay"] {
+    background: rgb(2 6 9 / 0.78);
+    backdrop-filter: blur(2px);
+  }
+}
+
+/* ───────────────────────── charts (recharts renders SVG; style via classes + attribute hooks) ───────────────────────── */
+.recharts-wrapper {
+  font-family: var(--font-mono);
+  color: var(--color-chart-1); /* DATCOM series use stroke="currentColor" */
+}
+.recharts-cartesian-grid line {
+  stroke: var(--color-accent);
+  stroke-opacity: 0.1;
+  stroke-dasharray: 2 4;
+}
+.recharts-cartesian-axis-line,
+.recharts-cartesian-axis-tick-line {
+  stroke: var(--color-line);
+  stroke-opacity: 1;
+}
+.recharts-cartesian-axis-tick-value,
+.recharts-text.recharts-cartesian-axis-tick-value {
+  fill: var(--color-muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+/* the three hard-coded greys used by analysis-panel series → chart tokens (different dash patterns, not colour alone) */
+.recharts-wrapper [stroke="#f2f2f2"] {
+  stroke: var(--color-chart-1);
+}
+.recharts-wrapper [stroke="#8a8a8a"] {
+  stroke: var(--color-chart-2);
+}
+.recharts-wrapper [stroke="#5a5a5a"] {
+  stroke: var(--color-chart-3);
+}
+.recharts-wrapper [stroke="#8a8a8a"].recharts-line-curve {
+  stroke-dasharray: 6 3;
+}
+.recharts-wrapper [stroke="#5a5a5a"].recharts-line-curve {
+  stroke-dasharray: 2 3;
+}
+.recharts-legend-item-text {
+  color: var(--color-muted) !important;
+  font-family: var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.recharts-legend-wrapper {
+  font-size: 11px;
+}
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: var(--color-surface) !important;
+  border: 1px solid var(--color-accent) !important;
+  border-radius: 0 !important;
+  color: var(--color-fg) !important;
+  font-family: var(--font-mono);
+  box-shadow: var(--glow-sm);
+}
+.recharts-tooltip-cursor {
+  stroke: var(--color-accent);
+  stroke-opacity: 0.6;
+}
+.recharts-reference-line line {
+  stroke: var(--color-warn);
+}
+
+.recharts-line-curve {
+  stroke-width: 2px;
+}
+
+/* Jet colormap — analysis field legend only (Heat / Cp). Everything else stays on the HUD palette. */
+.jet-ramp {
+  background: linear-gradient(to top, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
+}
+.jet-ramp-h {
+  background: linear-gradient(to right, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
+}
+
+@keyframes hud-sweep {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(calc(100vh + 180px));
+  }
+}
+@keyframes hud-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Reduced motion: no scanline sweep, no glow pulses, no transitions. Static scanlines/glow stay (they do not move). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -63,13 +996,25 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .hud-scan::after,
+  .hud-led {
+    animation: none !important;
+  }
+  .hud-scan::after {
+    display: none;
   }
 }
 
-/* Jet colormap — analysis field legend only (Heat / Cp). Lab chrome stays B&W. */
-.jet-ramp {
-  background: linear-gradient(to top, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
-}
-.jet-ramp-h {
-  background: linear-gradient(to right, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
+/* High-contrast / forced colours: fall back to system colours so nothing depends on glow. */
+@media (forced-colors: active) {
+  body::before,
+  .hud-scan {
+    display: none;
+  }
+  button,
+  [role="tab"] {
+    border: 1px solid ButtonText;
+  }
 }

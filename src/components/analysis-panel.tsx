@@ -2,6 +2,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { detraKempRiddell, fmt } from "@/lib/waverider/math";
 import type { StudyResult } from "@/lib/waverider/study";
 import { Formula, Stat } from "@/components/fields";
+import { Readout } from "@/components/ui/hud"; // [ui-redesign]
 
 export function AeroBlock({ study }: { study: StudyResult }) {
   const a = study.aero;
@@ -9,6 +10,11 @@ export function AeroBlock({ study }: { study: StudyResult }) {
   const b = study.bench;
   return (
     <div>
+      <div className="hud-panel mb-3 grid grid-cols-3 gap-3 px-3 py-3">
+        <Readout label="L/D" value={fmt(a.ld, 2)} />
+        <Readout label="CL" value={fmt(a.cl, 4)} size="sm" />
+        <Readout label="CD" value={fmt(a.cd, 4)} size="sm" />
+      </div>
       <Stat k="Flight M" v={fmt(study.flightMach, 2)} />
       <Stat k="q∞" v={`${fmt(atm.q / 1000, 2)} kPa`} />
       <Stat k="T∞" v={`${fmt(atm.T, 1)} K`} />
@@ -148,6 +154,10 @@ export function StabBlock({ study }: { study: StudyResult }) {
   const s = study.stab;
   return (
     <div>
+      <div className="hud-panel mb-3 grid grid-cols-2 gap-3 px-3 py-3">
+        <Readout label="Static margin" value={fmt(s.staticMarginPct, 1)} unit="% L" tone={s.staticMargin > 0 ? "accent" : "warn"} />
+        <Readout label="Trim α" value={fmt(s.trimAlpha, 2)} unit="deg" size="sm" />
+      </div>
       <Stat k="CLα ( /rad )" v={fmt(s.cla, 3)} />
       <Stat k="Cmα ( /rad )" v={fmt(s.cma, 3)} ok={s.cma < 0} />
       <Stat k="Cnβ ( /rad )" v={fmt(s.cnb, 3)} ok={s.cnb > 0} />
@@ -190,7 +200,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
         Flight at M {fmt(study.flightMach, 2)}, {fmt(atm.h / 1000, 1)} km, {fmt(atm.V, 0)} m/s, q∞{" "}
         {fmt(atm.q / 1000, 2)} kPa. Linear 6DOF from shock-expansion derivatives; RK4 from a +2° α pulse.
       </p>
-      <p className="mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Static /rad</p>
+      <p className="mb-2 hud-label">Static /rad</p>
       <Stat k="CLα" v={fmt(d.cla, 3)} />
       <Stat k="Cmα" v={fmt(d.cma, 3)} ok={d.cma < 0} />
       <Stat k="CDα" v={fmt(d.cda, 3)} />
@@ -199,14 +209,14 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
       <Stat k="CYβ" v={fmt(d.cyb, 3)} />
       <Stat k="Static margin" v={`${fmt(d.staticMarginPct, 1)} % L`} ok={d.staticMargin > 0} />
       <Stat k="Trim α" v={`${fmt(d.trimAlpha, 2)}°`} />
-      <p className="mt-3 mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Rotary (per rate hat)</p>
+      <p className="mt-3 mb-2 hud-label">Rotary (per rate hat)</p>
       <Stat k="Cmq" v={fmt(d.cmq, 3)} ok={d.cmq < 0} />
       <Stat k="CLq" v={fmt(d.clq, 3)} />
       <Stat k="Clp" v={fmt(d.clp, 3)} ok={d.clp < 0} />
       <Stat k="Cnr" v={fmt(d.cnr, 3)} ok={d.cnr < 0} />
       <Stat k="Clr" v={fmt(d.clr, 3)} />
       <Stat k="Cnp" v={fmt(d.cnp, 3)} />
-      <p className="mt-3 mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Rigid-body modes (Etkin)</p>
+      <p className="mt-3 mb-2 hud-label">Rigid-body modes (Etkin)</p>
       {six.modes.map((m) => (
         <div key={m.name} className="border-b border-border/80 py-2 last:border-0">
           <div className="flex items-baseline justify-between gap-2">
@@ -225,7 +235,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
           <p className="mt-1 text-[10px] leading-snug text-muted">{m.note}</p>
         </div>
       ))}
-      <p className="mt-3 mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">
+      <p className="mt-3 mb-2 hud-label">
         RK4 6DOF · {six.iterations} steps · dt {six.dt}s · α₀+2°
       </p>
       <div className="h-40">
@@ -332,7 +342,7 @@ export function ShocksBlock({ study }: { study: StudyResult }) {
           <Stat k="T2/T1" v={fmt(s.T2T1, 3)} />
         </div>
       ))}
-      <p className="mb-2 text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">Stations</p>
+      <p className="mb-2 hud-label">Stations</p>
       {ic.stations.map((st) => (
         <Stat key={st.name} k={`${st.name}  M`} v={fmt(st.M, 3)} />
       ))}

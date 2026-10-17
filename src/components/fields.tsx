@@ -36,7 +36,7 @@ export function NumberField({
   return (
     <label className="block">
       <span className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-xs font-medium tracking-wide text-muted">{label}</span>
+        <span className="hud-label !text-muted">{label}</span>
         <span className="flex items-center gap-1">
           <input
             type="number"
@@ -55,9 +55,9 @@ export function NumberField({
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            className="h-7 w-[4.6rem] rounded-sm border-0 bg-surface-2 px-1.5 text-right font-mono text-xs tabular-nums text-fg outline-none ring-0 focus:bg-surface"
+            className="h-7 w-[4.6rem] rounded-sm border-0 bg-surface-2 px-1.5 text-right font-mono text-xs tabular-nums text-fg"
           />
-          {unit ? <span className="min-w-[1.6rem] text-[10px] text-subtle">{unit}</span> : null}
+          {unit ? <span className="min-w-[1.6rem] font-display text-[10px] font-semibold tracking-[0.1em] text-subtle uppercase">{unit}</span> : null}
         </span>
       </span>
       <Slider
@@ -75,9 +75,9 @@ export function NumberField({
 
 export function Stat({ k, v, ok }: { k: string; v: string; ok?: boolean }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-border/80 py-1.5 last:border-0">
-      <span className="text-xs text-muted">{k}</span>
-      <span className={`font-mono text-xs tabular-nums ${ok === false ? "text-warn" : ok === true ? "text-ok" : "text-fg"}`}>
+    <div className="hud-stat">
+      <span className="hud-stat-k">{k}</span>
+      <span className="hud-stat-v" data-ok={ok === undefined ? undefined : String(ok)}>
         {v}
       </span>
     </div>
@@ -94,13 +94,14 @@ export function Seg<T extends string>({
   options: { id: T; label: string }[];
 }) {
   return (
-    <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+    <div className="hud-seg" role="group" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
       {options.map((o) => (
         <button
           key={o.id}
           type="button"
           onClick={() => onChange(o.id)}
-          className={`h-9 rounded-sm text-xs ${value === o.id ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted"}`}
+          aria-pressed={value === o.id}
+          className={`h-9 rounded-sm text-xs ${value === o.id ? "bg-accent text-accent-fg" : "bg-transparent text-muted hover:text-fg"}`}
         >
           {o.label}
         </button>
@@ -111,8 +112,8 @@ export function Seg<T extends string>({
 
 export function Formula({ name, expr, note }: { name: string; expr: string; note?: string }) {
   return (
-    <div className="rounded-sm bg-surface-2 px-3 py-2">
-      <p className="text-[10px] font-medium tracking-[0.14em] text-subtle uppercase">{name}</p>
+    <div className="hud-panel hud-panel--flat px-3 py-2">
+      <p className="hud-label">{name}</p>
       <p className="mt-1 font-mono text-[11px] leading-snug text-fg">{expr}</p>
       {note ? <p className="mt-1 text-[11px] leading-snug text-muted">{note}</p> : null}
     </div>
