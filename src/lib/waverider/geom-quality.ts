@@ -3,6 +3,7 @@
  * Pure functions over TriMesh + exported text/binary — used by
  * topology.test.ts and scripts/topology-report.ts. Not imported by the app.
  */
+import { evalSurface, type NurbsNet } from "./export-nurbs";
 import type { TriMesh } from "./types";
 import { SURFACE_ID } from "./types";
 
@@ -247,7 +248,7 @@ export function checkIges(text: string): ExportCheck {
   const errors: string[] = [];
   const lines = text.split("\n").filter((l) => l.length);
   const cnt: Record<string, number> = { S: 0, G: 0, D: 0, P: 0, T: 0 };
-  let lastSeq: Record<string, number> = {};
+  const lastSeq: Record<string, number> = {};
   for (const l of lines) {
     if (l.length !== 80) errors.push(`line length ${l.length}: ${l.slice(0, 20)}`);
     const sec = l[72];
@@ -453,8 +454,6 @@ export function worstDihedrals(mesh: TriMesh, n = 10, filter?: (s0: number, s1: 
 // ---------------------------------------------------------------------------------------------
 // Geometric export checks: read the B-spline surfaces back and compare with the mesh.
 // ---------------------------------------------------------------------------------------------
-
-import { evalSurface, type NurbsNet } from "./export-nurbs";
 
 /** Parse every Rational B-Spline Surface (128) of an IGES file back into control nets (i = U index, fastest). */
 export function parseIgesSurfaces(text: string): NurbsNet[] {

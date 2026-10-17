@@ -1170,6 +1170,8 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     const isDuct = params.family === "ramjet" || params.family === "scramjet";
     const isLift = params.family === "liftbody";
     const R = effectiveLeRadius(params);
+    // deflect the elevon BEFORE the fillet is built so the LE fillet and tip caps follow the same rows
+    if (!isDuct) applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
     let leading: SurfaceGrid | null = null;
     const tips: SurfaceGrid[] = [];
     if (!isDuct && !isLift) {
@@ -1191,7 +1193,6 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
       }
     }
     const zSign = params.lid === "bottom" ? -1 : 1;
-    if (!isDuct) applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
     if (!isDuct) applyFins(built.upper, params, zSign);
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     if (!isDuct) {

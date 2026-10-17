@@ -111,28 +111,6 @@ function arcFractions(row: Vec3[]): number[] {
   return acc.map((v) => v / tot);
 }
 
-function resample(pts: Vec3[], n: number, power = 1.4): Vec3[] {
-  if (pts.length === 0) return pts;
-  if (n <= 1) return [pts[0]];
-  const acc: number[] = [0];
-  for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + vlen(vsub(pts[i], pts[i - 1])));
-  const total = acc[acc.length - 1];
-  if (total < 1e-15) return Array.from({ length: n }, () => pts[0]);
-  const out: Vec3[] = [];
-  for (let i = 0; i < n; i++) {
-    const u = n <= 1 ? 0 : i / (n - 1);
-    const s = Math.pow(u, power) * total;
-    let k = 0;
-    while (k < acc.length - 2 && acc[k + 1] < s) k++;
-    const span = acc[k + 1] - acc[k];
-    const t = span > 1e-15 ? (s - acc[k]) / span : 0;
-    out.push(vlerp(pts[k], pts[k + 1], clamp(t, 0, 1)));
-  }
-  out[0] = pts[0];
-  out[n - 1] = pts[pts.length - 1];
-  return out;
-}
-
 function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
   const d = clamp(vdot(a, b), -1, 1);
   const om = Math.acos(d);
@@ -321,9 +299,6 @@ export function leBlendProfile(halfAngle: number, blend: LeBlend, n = 201): { pt
 
 function buildArc(f: Frame, s: number, y: number, nArc: number, blend: LeBlend): Arc {
   const h = f.h;
-  const bis = vnorm(vadd(f.uU, f.uL));
-  const AU = vadd(f.P, vscale(f.uU, s));
-  const AL = vadd(f.P, vscale(f.uL, s));
   const { raw, R } = blendPoints(f.P, f.uL, f.uU, s, h, nArc, blend);
   const pts = raw.map((q) => {
     const D = vsub(q, f.P);
