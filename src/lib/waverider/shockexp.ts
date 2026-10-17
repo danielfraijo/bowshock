@@ -34,7 +34,6 @@ import {
   suttonGraves,
   tauberSutton,
   vacuumCp,
-  vanDriestII,
 } from "./math";
 import type { PanelAero, RateState } from "./panel";
 import { effectiveLeRadius } from "./blunt";
@@ -252,17 +251,6 @@ function sample2(tab: GasTables, M: number, th: number): { p2p1: number; M2: num
   const d2 = m2[i1 * nT + j1];
   const mm = a2 * (1 - tx) * (1 - ty) + b2 * tx * (1 - ty) + c2 * (1 - tx) * ty + d2 * tx * ty;
   return { p2p1: p, M2: Math.max(mm, 1.01) };
-}
-
-function invNu(tab: GasTables, angle: number): number {
-  const { nu, nuM } = tab;
-  if (angle <= nu[0]) return nuM[0];
-  if (angle >= nu[nu.length - 1]) return nuM[nuM.length - 1];
-  let hi = 1;
-  while (hi < nu.length - 1 && nu[hi] < angle) hi++;
-  const lo = hi - 1;
-  const u = (angle - nu[lo]) / (nu[hi] - nu[lo] || 1);
-  return nuM[lo] * (1 - u) + nuM[hi] * u;
 }
 
 function pOverP0(M: number, gamma: number) {
