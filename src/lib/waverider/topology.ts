@@ -281,3 +281,77 @@ export function tidyTrailingEdge(upper: SurfaceGrid, lower: SurfaceGrid, length:
     }
   }
 }
+
+/**
+ * Collapse the LE-fillet row at a wing tip that has degenerated to (almost) a point, together with the
+ * upper/lower seam points that are tied to it. Without this, a millimetre-sized arc at the tip leaves
+ * near-coincident but unwelded vertices from three grids, i.e. a tiny open hole.
+ */
+export function collapseTipRows(upper: SurfaceGrid, lower: SurfaceGrid, leading: SurfaceGrid | null, length: number, tolRel = 0.0008) {
+  if (!leading) return;
+  const nj = Math.min(upper.nj, lower.nj, leading.nj);
+  const tol = tolRel * Math.max(length, 1e-6);
+  for (const j of [0, nj - 1]) {
+    const pts: [number, number, number][] = [];
+    for (let i = 0; i < leading.ni; i++) pts.push(gp(leading, i, j));
+    pts.push(gp(upper, 0, j), gp(lower, 0, j));
+    const lo = [Infinity, Infinity, Infinity];
+    const hi = [-Infinity, -Infinity, -Infinity];
+    const c = [0, 0, 0];
+    for (const q of pts)
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], q[k]);
+        hi[k] = Math.max(hi[k], q[k]);
+        c[k] += q[k];
+      }
+    if (Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) > tol) continue;
+    const m: [number, number, number] = [c[0] / pts.length, c[1] / pts.length, c[2] / pts.length];
+    for (let i = 0; i < leading.ni; i++) sp(leading, i, j, m);
+    sp(upper, 0, j, m);
+    sp(lower, 0, j, m);
+  }
+}
+
+/**
+ * Remove back-to-back duplicate faces: two triangles on the same three (welded) vertices. They appear where
+ * the upper and lower sheets have been zipped together into a zero-thickness strip at a wing tip; leaving
+ * both makes every edge of the strip shared by four faces (non-manifold). Removing both closes the knife.
+ * Returns the same mesh when nothing was removed.
+ */
+export function removeDoubleFaces(mesh: TriMesh): TriMesh {
+  const nt = mesh.indices.length / 3;
+  const nv = mesh.positions.length / 3;
+  const K = BigInt(nv + 1);
+  const seen = new Map<bigint, number>();
+  const kill = new Uint8Array(nt);
+  let n = 0;
+  for (let t = 0; t < nt; t++) {
+    const v = [mesh.indices[t * 3], mesh.indices[t * 3 + 1], mesh.indices[t * 3 + 2]].sort((a, b) => a - b);
+    const key = (BigInt(v[0]) * K + BigInt(v[1])) * K + BigInt(v[2]);
+    const o = seen.get(key);
+    if (o === undefined) seen.set(key, t);
+    else if (o >= 0) {
+      kill[o] = 1;
+      kill[t] = 1;
+      seen.set(key, -1);
+      n += 2;
+    } else {
+      kill[t] = 1; // third copy: drop as well
+      n++;
+    }
+  }
+  if (!n) return mesh;
+  const keep = nt - n;
+  const indices = new Uint32Array(keep * 3);
+  const surfaces = new Uint8Array(keep);
+  const tags = mesh.tags ? new Int32Array(keep) : undefined;
+  let w = 0;
+  for (let t = 0; t < nt; t++) {
+    if (kill[t]) continue;
+    indices.set(mesh.indices.subarray(t * 3, t * 3 + 3), w * 3);
+    surfaces[w] = mesh.surfaces[t];
+    if (tags) tags[w] = mesh.tags![t];
+    w++;
+  }
+  return { positions: mesh.positions, indices, surfaces, tags };
+}

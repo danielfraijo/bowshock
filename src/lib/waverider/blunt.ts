@@ -28,6 +28,8 @@ const S_CAP = 4;
 const CHORD_FRAC = 0.12;
 /** The tangent length may change by at most this much per unit LE length (smooth radius law). */
 const S_LIP = 0.5;
+/** Longest LE edge over shortest arc facet the fillet strips may have. */
+const LE_ASPECT = 400;
 
 export type LeBlend = "circular" | "g2";
 
@@ -71,6 +73,40 @@ function pointAtLength(pts: Vec3[], sWant: number): { p: Vec3; k: number } {
     acc += d;
   }
   return { p: pts[pts.length - 1], k: pts.length - 1 };
+}
+
+/**
+ * Re-place the points of a row on the polyline `pts` (the part of the row behind the fillet tangent
+ * point) keeping the ORIGINAL relative arclength spacing `fr` (0..1). The grid's own cell grading is
+ * preserved, so the first cell behind the fillet is as wide as the loft intended (no sliver).
+ */
+function resampleFrac(pts: Vec3[], fr: number[]): Vec3[] {
+  const n = fr.length;
+  if (pts.length === 0) return pts;
+  if (pts.length === 1) return Array.from({ length: n }, () => pts[0]);
+  const acc: number[] = [0];
+  for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + vlen(vsub(pts[i], pts[i - 1])));
+  const total = acc[acc.length - 1];
+  if (total < 1e-15) return Array.from({ length: n }, () => pts[0]);
+  const out: Vec3[] = [];
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    const sPos = clamp(fr[i], 0, 1) * total;
+    while (k < acc.length - 2 && acc[k + 1] < sPos) k++;
+    const span = acc[k + 1] - acc[k];
+    const t = span > 1e-15 ? (sPos - acc[k]) / span : 0;
+    out.push(vlerp(pts[k], pts[k + 1], clamp(t, 0, 1)));
+  }
+  out[0] = pts[0];
+  out[n - 1] = pts[pts.length - 1];
+  return out;
+}
+
+function arcFractions(row: Vec3[]): number[] {
+  const acc: number[] = [0];
+  for (let i = 1; i < row.length; i++) acc.push(acc[i - 1] + vlen(vsub(row[i], row[i - 1])));
+  const tot = acc[acc.length - 1] || 1;
+  return acc.map((v) => v / tot);
 }
 
 function resample(pts: Vec3[], n: number, power = 1.4): Vec3[] {
@@ -367,20 +403,33 @@ export function applyLeadingFillet(
   for (let j = 1; j < nj; j++) frames[j].s = Math.min(frames[j].s, (frames[j - 1].ok ? frames[j - 1].s : 0) + S_LIP * step(j));
   for (let j = nj - 2; j >= 0; j--) frames[j].s = Math.min(frames[j].s, (frames[j + 1].ok ? frames[j + 1].s : 0) + S_LIP * step(j + 1));
 
-  if (typeof process !== 'undefined' && process.env.DBG_FILLET) for (let j = 0; j < nj; j++) { const f = frames[j]; console.log('F', j, f.ok, 'P', f.P.map((v) => v.toFixed(4)).join(','), 'T', f.T.map((v) => v.toFixed(3)).join(','), 'h', ((f.h * 180) / Math.PI).toFixed(1), 's', f.s.toFixed(4), 'chordU', chordLen(f.U).toFixed(3)); }
-  // arc point count from the largest turning angle
+  // Arc point count. Angle rule: facets turn at most LE_MAX_SEG (bounds the seam normal jump to half of it).
+  // Aspect rule: the longest LE edge over the shortest arc facet stays <= LE_ASPECT, which can lower the count.
   let maxTurn = 0;
   for (const f of frames) if (f.ok && f.s > 0) maxTurn = Math.max(maxTurn, Math.PI - f.alpha);
-  const nArc = clamp(Math.ceil(maxTurn / LE_MAX_SEG) + 1, 9, 21) | 1;
-
-  const arcs: (Arc | null)[] = frames.map((f, j) => (f.ok && f.s > 1e-9 * L ? buildArc(f, f.s, P[j][1], nArc, blend) : null));
+  const nAngle = clamp(Math.ceil(maxTurn / LE_MAX_SEG) + 1, 7, 21);
   const dyOf = (j: number) => {
     let d = 0;
     if (j > 0) d = Math.max(d, vlen(vsub(P[j], P[j - 1])));
     if (j + 1 < nj) d = Math.max(d, vlen(vsub(P[j], P[j + 1])));
     return d;
   };
-  const live = arcs.map((a, j) => !!a && a.scale > 1e-9 && dyOf(j) <= FILLET_ASPECT * a.scale);
+  const probe = frames.map((f, j) => (f.ok && f.s > 1e-9 * L ? buildArc(f, f.s, P[j][1], nAngle, blend) : null));
+  const arcLen = (a: Arc) => {
+    let l = 0;
+    for (let k = 1; k < a.pts.length; k++) l += vlen(vsub(a.pts[k], a.pts[k - 1]));
+    return l;
+  };
+  const okProbe = probe.map((a, j) => !!a && a.scale > 1e-9 && dyOf(j) <= FILLET_ASPECT * a.scale && dyOf(j) <= (LE_ASPECT * arcLen(a)) / 6);
+  let nFit = nAngle;
+  for (let j = 0; j < nj; j++) {
+    if (!okProbe[j]) continue;
+    const fit = Math.floor((LE_ASPECT * arcLen(probe[j]!)) / Math.max(dyOf(j), 1e-12)) + 1;
+    if (fit < nFit) nFit = fit;
+  }
+  const nArc = clamp(nFit, 7, nAngle) | 1;
+  const arcs: (Arc | null)[] = nArc === nAngle ? probe : frames.map((f, j) => (f.ok && f.s > 1e-9 * L ? buildArc(f, f.s, P[j][1], nArc, blend) : null));
+  const live = arcs.map((a, j) => !!a && okProbe[j] && a.scale > 1e-9 && dyOf(j) <= FILLET_ASPECT * a.scale);
   let nLive = 0;
   for (const v of live) if (v) nLive++;
   if (nLive < 3) return null;
@@ -396,8 +445,8 @@ export function applyLeadingFillet(
       continue;
     }
     const a = arcs[j]!;
-    writeRow(upper, j, resample(a.uRest.map((q) => planar(q, q[1])), Us[j].length, 1.45));
-    writeRow(lower, j, resample(a.lRest.map((q) => planar(q, q[1])), Ls[j].length, 1.45));
+    writeRow(upper, j, resampleFrac(a.uRest.map((q) => planar(q, q[1])), arcFractions(Us[j])));
+    writeRow(lower, j, resampleFrac(a.lRest.map((q) => planar(q, q[1])), arcFractions(Ls[j])));
     setGridPoint(upper, 0, j, a.tu);
     setGridPoint(lower, 0, j, a.tl);
     for (let k = 0; k < nArc; k++) setGridPoint(lead, k, j, a.pts[k]);

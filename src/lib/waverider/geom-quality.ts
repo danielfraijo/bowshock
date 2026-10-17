@@ -20,6 +20,11 @@ export interface TopoMetrics {
   slivers: number;
   /** Longest edge / shortest altitude (>= 2/sqrt3 ~ 1.155 for equilateral). */
   maxAspect: number;
+  /** Same three measures over non-fillet triangles only (the LE fillet strips are anisotropic by construction). */
+  bodyMinAngleDeg: number;
+  bodySlivers: number;
+  /** Longest edge / shortest edge over non-fillet triangles (the metric fidelity.test.ts bounds). */
+  bodyEdgeRatio: number;
   /** Signed volume (positive = outward normals). */
   signedVolume: number;
   /** Max dihedral (normal-to-normal) angle across edges shared by two faces of the same surface id. */
@@ -115,7 +120,7 @@ export function topoMetrics(mesh: TriMesh, opt: TopoOptions = {}): TopoMetrics {
   type E = { n: number; t0: number; t1: number; f: number; b: number; lo: number; hi: number };
   const edges = new Map<number, E>();
   const K = nv + 1;
-  let minAngle = 180;
+  let minAngle = 180, bodyMin = 180, bodySliv = 0, bodyER = 0;
   let slivers = 0;
   let maxAspect = 1;
   let degenerate = 0;
@@ -126,6 +131,13 @@ export function topoMetrics(mesh: TriMesh, opt: TopoOptions = {}): TopoMetrics {
     if (!(ta.area > 1e-20 * diag * diag)) {
       degenerate++;
       continue;
+    }
+    if (mesh.surfaces[t] !== SURFACE_ID.leading) {
+      if (ta.minAngle < bodyMin) bodyMin = ta.minAngle;
+      if (ta.minAngle < sliverDeg) bodySliv++;
+      const el = [0, 1, 2].map((k) => Math.hypot(...([0, 1, 2].map((c) => tri(mesh, t)[k][c] - tri(mesh, t)[(k + 1) % 3][c]) as [number, number, number])));
+      const er = Math.max(...el) / Math.max(Math.min(...el), 1e-300);
+      if (er > bodyER) bodyER = er;
     }
     if (ta.minAngle < minAngle) minAngle = ta.minAngle;
     if (ta.minAngle < sliverDeg) slivers++;
@@ -186,6 +198,9 @@ export function topoMetrics(mesh: TriMesh, opt: TopoOptions = {}): TopoMetrics {
     duplicateVerts: dup,
     degenerateTris: degenerate,
     minAngleDeg: nt ? minAngle : 0,
+    bodyMinAngleDeg: nt ? bodyMin : 0,
+    bodySlivers: bodySliv,
+    bodyEdgeRatio: bodyER,
     slivers,
     maxAspect,
     signedVolume: vol,

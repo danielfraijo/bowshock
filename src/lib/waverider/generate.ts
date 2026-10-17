@@ -12,10 +12,10 @@ import {
   solveConeShock,
   thetaFromBetaM,
 } from "./math";
-import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, fairTrailingEdge, gridPoint, makeGrid, matchTrailingEdge, orientOutward, setGridPoint, stitchGrid, weldAft, zipperSharpEdges } from "./mesh";
+import { MeshBuilder, analyzeMesh, compactMesh, enforceMonotoneChord, gridPoint, makeGrid, orientOutward, setGridPoint, stitchGrid, zipperSharpEdges } from "./mesh";
 import { applyCowlLip, applyLeadingFillet, bluntStarNose, effectiveLeRadius, filletTipCap } from "./blunt";
 import { bindCenterline } from "./sym-euler";
-import { orientConsistent, tidyTrailingEdge } from "./topology";
+import { collapseTipRows, orientConsistent, removeDoubleFaces, tidyTrailingEdge } from "./topology";
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -422,6 +422,14 @@ function roundPlanformVertex(g: (t: number) => number, s: number, rho: number): 
   };
 }
 
+/** Target max (row-to-row edge)/(chord gap) of loft cells; rows needing more use fewer chord points. */
+const CELL_ASPECT = 3.5;
+/** First chord gap at the LE is at least (row-to-row edge)/MIN_GAP_DIV. */
+const MIN_GAP_DIV = 5;
+const GAP_BLUR = 3;
+/** Max change in distinct chord points between neighbouring rows. */
+const M_SLOPE = 6;
+
 function lofts(
   params: DesignParams,
   zBase: (y: number) => number,
@@ -444,13 +452,35 @@ function lofts(
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
   const cam = (params.camber || 0) * params.height;
   const teTan = Math.tan((params.teSweepDeg || 0) * DEG);
-  const fracs = ys.map((y, j) => {
+  const rowInfo = ys.map((y, j) => {
     const xl = xle(y);
     const xt = xTrailing(y, L, teTan, xl);
     let edge = 0;
     if (j > 0) edge = Math.max(edge, Math.hypot(xle(ys[j]) - xle(ys[j - 1]), ys[j] - ys[j - 1]));
     if (j + 1 < nj) edge = Math.max(edge, Math.hypot(xle(ys[j + 1]) - xle(ys[j]), ys[j + 1] - ys[j]));
-    return chordFractions(nx, xt - xl, edge / 12);
+    const dyJ = Math.max(j > 0 ? ys[j] - ys[j - 1] : 0, j + 1 < nj ? ys[j + 1] - ys[j] : 0);
+    return { chord: xt - xl, edge, jLen: Math.max(0.55 * edge + 0.45 * dyJ, 1e-12) };
+  });
+  // Rows whose uniform chord gap is far below the row-to-row edge would give needle cells (swept tips).
+  // Such rows use fewer distinct chord points. The grid index still maps onto them monotonically, so the
+  // extra index cells collapse to zero width (welded away) instead of becoming slivers. The distinct-point
+  // count is Lipschitz-limited across rows so neighbouring rows never differ wildly (no twisted cells).
+  const mRow = rowInfo.map((r, j) => (Math.abs(ys[j]) < 2.5 * rhoPlan ? nx : clamp(Math.floor((r.chord * CELL_ASPECT) / r.jLen) + 1, Math.min(5, nx), nx)));
+  for (let pass = 0; pass < 2; pass++) {
+    for (let j = 1; j < nj; j++) mRow[j] = Math.min(mRow[j], mRow[j - 1] + M_SLOPE);
+    for (let j = nj - 2; j >= 0; j--) mRow[j] = Math.min(mRow[j], mRow[j + 1] + M_SLOPE);
+  }
+  // The LE-end gap target varies smoothly across rows (log-domain blur), otherwise neighbouring rows
+  // switch between cosine and geometric grading and the cells between them twist into slivers.
+  let lg = rowInfo.map((r) => Math.log(Math.max(r.edge, 1e-9) / MIN_GAP_DIV));
+  for (let pass = 0; pass < GAP_BLUR; pass++) lg = lg.map((v, j) => (lg[Math.max(j - 1, 0)] + 2 * v + lg[Math.min(j + 1, nj - 1)]) / 4);
+  const fracs = rowInfo.map((r, j) => {
+    const m = mRow[j];
+    const base = chordFractions(m, r.chord, Math.exp(lg[j]));
+    if (m >= nx) return base;
+    const out = new Float64Array(nx);
+    for (let i = 0; i < nx; i++) out[i] = base[Math.round((i * (m - 1)) / (nx - 1))];
+    return out;
   });
   const sample = (i: number, j: number, isLower: boolean): Vec3 => {
     const y = ys[j];
@@ -1166,6 +1196,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     if (!isDuct) zipperSharpEdges(built.upper, built.lower, params.length);
     if (!isDuct) {
       tidyTrailingEdge(built.upper, built.lower, params.length);
+      collapseTipRows(built.upper, built.lower, leading, params.length);
       enforceMonotoneChord(built.upper);
       enforceMonotoneChord(built.lower);
     }
@@ -1202,7 +1233,7 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     }
   }
 
-  mesh = compactMesh(mesh);
+  mesh = removeDoubleFaces(compactMesh(mesh));
   orientOutward(mesh);
   orientConsistent(mesh);
   lockFrame(mesh, grids, shock, params.halfModel);

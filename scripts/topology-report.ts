@@ -34,7 +34,7 @@ if (import.meta.main) {
   const stlDir = args.includes("--stl") ? args[args.indexOf("--stl") + 1] : null;
   if (stlDir) mkdirSync(stlDir, { recursive: true });
   const rows: Record<string, unknown>[] = [];
-  const hdr = "family      case         tris   open nonM incon dupV degen minAng  sliv  aspect  jumpSame jumpLE jumpNose  vol";
+  const hdr = "family      case         tris   open nonM incon dupV degen bMinAng bSliv bEdgeR  jumpSame jumpLE jumpNose  vol";
   console.log(hdr);
   for (const f of FAMILIES) {
     for (const c of CASES) {
@@ -43,7 +43,7 @@ if (import.meta.main) {
       const flow = f === "ramjet" || f === "scramjet";
       rows.push({ family: f, case: c.label, flowThrough: flow, ...m });
       console.log(
-        `${f.padEnd(11)} ${c.label.padEnd(12)} ${String(m.triangles).padStart(5)} ${String(m.openEdges).padStart(5)} ${String(m.nonManifoldEdges).padStart(4)} ${String(m.inconsistentEdges).padStart(5)} ${String(m.duplicateVerts).padStart(4)} ${String(m.degenerateTris).padStart(5)} ${m.minAngleDeg.toFixed(2).padStart(6)} ${String(m.slivers).padStart(5)} ${m.maxAspect.toFixed(1).padStart(7)} ${m.maxJumpSame.toFixed(1).padStart(8)} ${m.maxJumpLE.toFixed(1).padStart(6)} ${m.maxJumpNose.toFixed(1).padStart(8)} ${m.signedVolume.toFixed(3).padStart(7)}`,
+        `${f.padEnd(11)} ${c.label.padEnd(12)} ${String(m.triangles).padStart(5)} ${String(m.openEdges).padStart(5)} ${String(m.nonManifoldEdges).padStart(4)} ${String(m.inconsistentEdges).padStart(5)} ${String(m.duplicateVerts).padStart(4)} ${String(m.degenerateTris).padStart(5)} ${m.bodyMinAngleDeg.toFixed(2).padStart(7)} ${String(m.bodySlivers).padStart(5)} ${m.bodyEdgeRatio.toFixed(1).padStart(7)} ${m.maxJumpSame.toFixed(1).padStart(8)} ${m.maxJumpLE.toFixed(1).padStart(6)} ${m.maxJumpNose.toFixed(1).padStart(8)} ${m.signedVolume.toFixed(3).padStart(7)}`,
       );
       if (stlDir) writeFileSync(`${stlDir}/${f}_${c.label.replace(/\W+/g, "_")}.stl`, Buffer.from(meshToBinaryStl(built.mesh, f)));
     }

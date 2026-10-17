@@ -8,12 +8,14 @@ import { studyVehicle } from "./study";
 import { DEFAULT_PARAMS, type DesignParams, type TriMesh, type WaveriderFamily } from "./types";
 import { runValidation, validationSummary } from "./validate";
 
-function maxAspect(mesh: TriMesh): number {
+/** Longest/shortest edge. `skipFillet` leaves out the LE fillet strips (surface id 3), which are anisotropic by construction. */
+function maxAspect(mesh: TriMesh, skipFillet = false): number {
   const p = mesh.positions;
   const idx = mesh.indices;
   let worst = 1;
   const nt = idx.length / 3;
   for (let t = 0; t < nt; t++) {
+    if (skipFillet && mesh.surfaces[t] === 3) continue;
     const ia = idx[t * 3] * 3;
     const ib = idx[t * 3 + 1] * 3;
     const ic = idx[t * 3 + 2] * 3;
@@ -55,7 +57,7 @@ for (const family of families) {
   };
   const built = buildVehicle(params);
   const q = analyzeMesh(built.mesh);
-  const aspect = maxAspect(built.mesh);
+  const aspect = maxAspect(built.mesh, true);
   const openOk = params.flowThrough ? q.openEdges > 0 : q.openEdges === 0;
   console.log(
     `${family.padEnd(12)} watertight=${q.watertight} open=${q.openEdges} nonMan=${q.nonManifoldEdges} tris=${q.triangles} aspect=${aspect.toFixed(1)} ${openOk ? "OK" : "BAD"}`,
@@ -102,14 +104,15 @@ assert.ok(euler.relErr < 0.08, `euler error ${(euler.relErr * 100).toFixed(1)}%`
 assert.ok(summary.ok, `validation ${summary.pass}/${summary.n}`);
 
 const caret = buildVehicle(DEFAULT_PARAMS);
-const caretAspect = maxAspect(caret.mesh);
+const caretAspect = maxAspect(caret.mesh, true);
 const lead = caret.grids.some((g) => g.name === "leading");
 console.log(
   `caret default aspect=${caretAspect.toFixed(1)} tris=${caret.quality.triangles} open=${caret.quality.openEdges} leading=${lead}`,
 );
 assert.equal(caret.quality.openEdges, 0, "default caret open edges");
 assert.equal(caret.quality.nonManifoldEdges, 0, "default caret non-manifold");
-assert.equal(lead, false, "default caret fillet must not tessellate a sub-span arc");
+assert.equal(lead, true, "default caret keeps its circular LE fillet (README contract)");
+assert.ok(maxAspect(caret.mesh) < 500, `default caret fillet strip aspect ${maxAspect(caret.mesh).toFixed(1)}`);
 assert.ok(caretAspect < 80, `default caret aspect ${caretAspect.toFixed(1)}`);
 
 const lbParams: DesignParams = { ...DEFAULT_PARAMS, family: "liftbody", nx: 36, ny: 24 };
