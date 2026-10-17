@@ -11,7 +11,7 @@
  */
 import { betaFromThetaM } from "./math";
 
-export type RefinementPreset = "coarse" | "medium" | "fine" | "custom";
+export type RefinementPreset = "coarse" | "medium" | "converged" | "fine" | "custom";
 
 export interface SurfaceRefinement {
   /** Streamwise points per loft sheet. */
@@ -20,6 +20,12 @@ export interface SurfaceRefinement {
   ny: number;
   /** 0 = today's stations (cosine-clustered). 1 = strong extra clustering toward the leading edge / nose. */
   leClustering: number;
+  /**
+   * 0 (default / absent) = today's spanwise stations. > 0 = curvature-adaptive spanwise stations with
+   * sharp-corner detection (see curvature.ts): points gather where the planform / section turns quickly
+   * and sit exactly on corners (e.g. the double-delta kink). Same point count, so the cost is unchanged.
+   */
+  curvature?: number;
 }
 
 export interface VolumeRefinement {
@@ -37,6 +43,16 @@ export interface VolumeRefinement {
   shockWidth: number;
   /** Re-cluster toward the computed density jump after a first solve, then re-solve. */
   adaptive: boolean;
+  /**
+   * Opt-in convergence mode (symmetry-plane kernel, TypeScript path): stop when the residual has dropped
+   * below `tol` x its running peak (and the wall pressure has settled); `iters` becomes the hard cap.
+   * 0 / absent = fixed `iters` (the legacy behaviour).
+   */
+  tol?: number;
+  /** 1 (default, shipped first-order HLLC) or 2 (MUSCL, van Albada limiter) - TypeScript path only. */
+  order?: 1 | 2;
+  /** Coarser grid levels solved first and injected (0 = off; needs tol > 0). */
+  sequence?: number;
 }
 
 export interface RefinementSettings {
@@ -54,7 +70,7 @@ export const LEGACY = {
 } as const;
 
 export const REFINEMENT_LIMITS = {
-  surface: { nx: [12, 160], ny: [10, 120], leClustering: [0, 1], maxPoints: 12000 },
+  surface: { nx: [12, 160], ny: [10, 120], leClustering: [0, 1], curvature: [0, 1], maxPoints: 12000 },
   volume: {
     nStream: [24, 400],
     nCross: [8, 160],
@@ -62,6 +78,8 @@ export const REFINEMENT_LIMITS = {
     wallClustering: [0, 12],
     shockClustering: [0, 30],
     shockWidth: [0.02, 0.3],
+    tol: [1e-6, 0.1],
+    sequence: [0, 3],
     /** Hard cap on cells of one 2-D grid. Memory is ~140 B/cell, so this is far inside browser limits. */
     maxCells: 60000,
     /** Hard cap on cell-updates (cells x iterations): bounds wall-clock time (~10-15 s at the measured TypeScript rates). */
@@ -87,15 +105,17 @@ export const MAX_SMOOTH_STRETCH = 2;
 const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> = {
   coarse: {
     preset: "coarse",
-    surface: { nx: 24, ny: 16, leClustering: 0 },
+    surface: { nx: 24, ny: 16, leClustering: 0, curvature: 0 },
     volume: {
       nStream: 48,
       nCross: 16,
-      iters: 400,
+      iters: 600,
       wallClustering: 0,
       shockClustering: 0,
       shockWidth: DEFAULT_SHOCK_WIDTH,
       adaptive: false,
+      tol: 1e-3,
+      sequence: 0,
     },
   },
   medium: {
@@ -111,17 +131,35 @@ const PRESETS: Record<Exclude<RefinementPreset, "custom">, RefinementSettings> =
       adaptive: false,
     },
   },
-  fine: {
-    preset: "fine",
-    surface: { nx: 96, ny: 32, leClustering: 0.6 },
+  /** Medium cost, converged: the medium grid + clustering run to convergence (hard cap on sweeps). */
+  converged: {
+    preset: "converged",
+    surface: { nx: LEGACY.surface.nx, ny: LEGACY.surface.ny, leClustering: 0.3, curvature: 0.5 },
     volume: {
-      nStream: 96,
-      nCross: 32,
-      iters: 1500,
+      nStream: LEGACY.wedge.ni,
+      nCross: LEGACY.wedge.nj,
+      iters: 2500,
       wallClustering: 2,
       shockClustering: 6,
       shockWidth: DEFAULT_SHOCK_WIDTH,
       adaptive: false,
+      tol: 1e-3,
+      sequence: 2,
+    },
+  },
+  fine: {
+    preset: "fine",
+    surface: { nx: 96, ny: 32, leClustering: 0.6, curvature: 0.5 },
+    volume: {
+      nStream: 96,
+      nCross: 32,
+      iters: 2500,
+      wallClustering: 2,
+      shockClustering: 6,
+      shockWidth: DEFAULT_SHOCK_WIDTH,
+      adaptive: false,
+      tol: 1e-3,
+      sequence: 2,
     },
   },
 };
@@ -170,7 +208,7 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
   const warnings: string[] = [];
   const L = REFINEMENT_LIMITS;
   const id = input?.preset;
-  if (id === "coarse" || id === "medium" || id === "fine") {
+  if (id === "coarse" || id === "medium" || id === "converged" || id === "fine") {
     return { settings: presetSettings(id), warnings, clamped: false };
   }
   if (id !== undefined && id !== "custom")
@@ -190,7 +228,10 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
     integer: boolean,
   ) => {
     let x = num(raw, def);
-    if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    if (raw === Infinity || raw === -Infinity) {
+      // an infinite request is "as much as allowed" / "as little as allowed", not garbage
+      x = raw > 0 ? hi : lo;
+    } else if (typeof raw !== "number" || !Number.isFinite(raw)) {
       if (raw !== undefined) {
         warnings.push(`${label}: not a finite number, using ${def}.`);
         clamped = true;
@@ -223,6 +264,14 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
       0,
       L.surface.leClustering[0],
       L.surface.leClustering[1],
+      false,
+    ),
+    curvature: fit(
+      "curvature adaptation",
+      s.curvature,
+      0,
+      L.surface.curvature[0],
+      L.surface.curvature[1],
       false,
     ),
   };
@@ -286,7 +335,17 @@ export function validateRefinement(input?: RefinementInput | null): ValidatedRef
       false,
     ),
     adaptive: v.adaptive === true,
+    tol:
+      v.tol === undefined || v.tol === 0
+        ? 0
+        : fit("convergence tolerance", v.tol, 1e-3, L.volume.tol[0], L.volume.tol[1], false),
+    order: v.order === 2 ? 2 : 1,
+    sequence: fit("grid sequencing levels", v.sequence, 0, L.volume.sequence[0], L.volume.sequence[1], true),
   };
+  if (volume.sequence && !(volume.tol && volume.tol > 0)) {
+    warnings.push("Grid sequencing needs a convergence tolerance; ignored (fixed-iteration run).");
+    volume.sequence = 0;
+  }
   if (volume.nStream * volume.nCross > L.volume.maxCells) {
     const k = Math.sqrt(L.volume.maxCells / (volume.nStream * volume.nCross));
     volume.nStream = Math.max(L.volume.nStream[0], Math.floor(volume.nStream * k));
@@ -352,12 +411,14 @@ export function isBaseline(r?: RefinementSettings | null): boolean {
     v.iters === m.volume.iters &&
     v.wallClustering === 0 &&
     v.shockClustering === 0 &&
-    !v.adaptive
+    !v.adaptive &&
+    !(v.tol && v.tol > 0) &&
+    (v.order ?? 1) === 1
   );
 }
 
 export function isSurfaceBaseline(r?: RefinementSettings | null): boolean {
-  return !r || r.surface.leClustering === 0;
+  return !r || (r.surface.leClustering === 0 && !(r.surface.curvature && r.surface.curvature > 0));
 }
 
 /**

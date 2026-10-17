@@ -105,16 +105,18 @@ describe("validation and clamping", () => {
       volume: { nStream: Infinity, iters: "x" as never },
     });
     assert.equal(v.settings.surface.nx, LEGACY.surface.nx);
-    assert.equal(v.settings.volume.nStream, LEGACY.wedge.ni);
+    // +Infinity means "as much as allowed" (clamped, not garbage); NaN / strings fall back to the default
+    assert.ok(v.settings.volume.nStream <= REFINEMENT_LIMITS.volume.nStream[1]);
+    assert.ok(v.settings.volume.nStream > LEGACY.wedge.ni);
     assert.equal(v.settings.volume.iters, LEGACY.wedge.iters);
-    assert.ok(v.warnings.length >= 3);
+    assert.ok(v.warnings.length >= 2);
   });
 
   it("empty custom input equals medium numbers", () => {
     const v = validateRefinement({ preset: "custom" });
     assert.equal(v.settings.preset, "custom");
-    assert.deepEqual(v.settings.volume, MEDIUM.volume);
-    assert.deepEqual(v.settings.surface, MEDIUM.surface);
+    assert.deepEqual(v.settings.volume, { ...MEDIUM.volume, tol: 0, order: 1, sequence: 0 });
+    assert.deepEqual(v.settings.surface, { ...MEDIUM.surface, curvature: 0 });
     assert.ok(isBaseline(v.settings));
   });
 });
@@ -302,6 +304,17 @@ describe("medium == baseline (captured from 45e7c83 = topology + physics-datapac
         };
         const b = buildVehicle(params);
         const q = analyzeMesh(b.mesh);
+        if (want.manifold === false) {
+          // The only intended change to a default mesh: the base build was NON-manifold here (aft-tip weld,
+          // wedgecone). weldAftRobust repairs it; everything else about the case must stay close.
+          assert.equal(q.manifold, true, `${key} is repaired`);
+          assert.ok(Math.abs(q.triangles - want.triangles) <= 0.03 * want.triangles, `${key} triangles`);
+          const atm0 = atmosphere(params.altKm, params.mach, params.gamma);
+          const a0 = panelAero(b.mesh, params, atm0, Number(alpha), 0, Math.max(b.aero.planformArea, 1e-6), params.length);
+          assert.ok(Math.abs(a0.cl - want.cl) <= 0.03 * Math.abs(want.cl) + 1e-4, `${key} cl ${a0.cl} vs ${want.cl}`);
+          assert.ok(Math.abs(a0.cd - want.cd) <= 0.03 * Math.abs(want.cd) + 1e-4, `${key} cd ${a0.cd} vs ${want.cd}`);
+          continue;
+        }
         assert.equal(q.triangles, want.triangles, key);
         assert.equal(q.vertices, want.vertices, key);
         assert.equal(q.watertight, want.watertight, key);
@@ -488,9 +501,12 @@ describe("grid convergence vs exact oblique shock (M=8)", () => {
     assert.ok(Math.abs(find(8, "medium").pErrPct - 13.518) < 0.01);
     assert.ok(Math.abs(find(30, "medium").pErrPct - 36.23) < 0.01);
   });
-  it("converged residuals are small on the refined grids", () => {
-    for (const th of [8, 30])
-      assert.ok(find(th, "fine").residual < 1e-3, `${th} residual ${find(th, "fine").residual}`);
+  it("fine stops on the convergence test, well before the iteration cap", () => {
+    for (const th of [8, 30]) {
+      const r = eulerWedge(8, th, 1.4, presetSettings("fine").volume);
+      assert.ok(r.iters < presetSettings("fine").volume.iters, `${th} deg used ${r.iters} sweeps`);
+      assert.ok(r.relErr * 100 < 1, `${th} err ${r.relErr * 100}`);
+    }
   });
   it(
     "shock clustering at the medium cell count already beats the uniform medium grid",
