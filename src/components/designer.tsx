@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Check,
@@ -9,6 +9,7 @@ import {
   Layers,
   Octagon,
   RotateCcw,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -53,6 +54,7 @@ import {
 } from "@/lib/waverider/types";
 import { downloadBlob } from "@/lib/utils";
 import { classNote, isClassFamily } from "@/lib/waverider/vehicles";
+import { cadAero, parseCad, type CadAxis, type CadImport } from "@/lib/waverider/import-cad";
 
 type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "data" | "cad" | "datcom" | "iterate";
 
@@ -206,10 +208,19 @@ export function Designer() {
   const [presetOpen, setPresetOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("geom");
   const [dragging, setDragging] = useState(false);
+  const [cad, setCad] = useState<CadImport | null>(null);
+  const [cadAxis, setCadAxis] = useState<CadAxis>("cuspis");
+  const [cadMsg, setCadMsg] = useState<string | null>(null);
+  const cadFile = useRef<HTMLInputElement>(null);
   const pending = useRef<Partial<DesignParams> | null>(null);
   const raf = useRef(0);
+  // A saved project is a parametric design. Loading or resetting one drops the imported shell.
+  const setDesignParams = useCallback((p: DesignParams) => {
+    setCad(null);
+    setParams(p);
+  }, []);
   // [p7-project] project save/load + version history bound to the live designer state
-  const project = useProjectSession({ params, setParams, viewer: opts, setViewer: setOpts, tab, setTab: (t) => setTab(t as Tab), hydrated });
+  const project = useProjectSession({ params, setParams: setDesignParams, viewer: opts, setViewer: setOpts, tab, setTab: (t) => setTab(t as Tab), hydrated });
 
   useEffect(() => {
     const saved = loadSavedParams();
@@ -253,8 +264,27 @@ export function Designer() {
   // [mesh-refinement] safe build (a shape the generator rejects keeps the last good vehicle) + non-blocking study
   const lastGood = useRef<BuiltVehicle | null>(null);
   const builtRes = useMemo(() => safeBuild(params, lastGood.current), [gKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const built = builtRes.built;
-  if (!builtRes.error) lastGood.current = built;
+  const parametric = builtRes.built;
+  if (!builtRes.error && !cad) lastGood.current = parametric;
+  const built = useMemo(() => {
+    if (!cad) return parametric;
+    return {
+      params: {
+        ...parametric.params,
+        name: cad.name,
+        length: cad.length,
+        span: cad.span,
+        height: cad.height,
+        leRadius: cad.leRadius,
+        leBlunt: true,
+      },
+      mesh: cad.mesh,
+      grids: [],
+      shockGrids: [],
+      quality: cad.quality,
+      aero: cadAero(cad),
+    };
+  }, [cad, parametric]);
   const studyDeps = [
     params.flightMach,
     params.lockFlight,
@@ -272,8 +302,25 @@ export function Designer() {
   ];
   // built.params is frozen at the last *geometry* change; alpha, altitude, Mach, method etc. are not in geomKey,
   // so hand the study the live params or it (and the Data tab) read stale values.
+  // An imported shell keeps its own length, span, and nose radius. Euler is a symmetry-plane
+  // slice of a generated centerline, so an import is solved with the panel method instead.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const studyBuilt = useMemo(() => ({ ...built, params }), [built, ...studyDeps]);
+  const studyBuilt = useMemo(() => {
+    if (!cad) return { ...built, params };
+    return {
+      ...built,
+      params: {
+        ...params,
+        name: cad.name,
+        length: cad.length,
+        span: cad.span,
+        height: cad.height,
+        leRadius: cad.leRadius,
+        leBlunt: true,
+        aeroMethod: params.aeroMethod === "euler" ? "cbaero" : params.aeroMethod,
+      },
+    };
+  }, [built, cad, ...studyDeps]);
   const { study, status: studyStatus } = useStudy(
     studyBuilt,
     studyDeps,
@@ -284,11 +331,13 @@ export function Designer() {
   const a = built.aero;
   const fam = FAMILY_META[params.family];
   const domain = domainOf(params.family);
-  const solveLine = solveCaption(study.aero.method, params.aeroMethod === "euler", studyStatus);
+  const solveMethod = cad && params.aeroMethod === "euler" ? "cbaero" : params.aeroMethod;
+  const solveLine = solveCaption(study.aero.method, solveMethod === "euler", studyStatus);
   const TABS = tabsFor(domain);
 
   function goDomain(d: FlowDomain) {
     if (d === domain) return;
+    setCad(null);
     const pick = d === "external" ? PRESETS.find((p) => p.id === "caret-m8") : PRESETS.find((p) => p.id === "ramjet");
     if (pick) {
       setParams({
@@ -300,6 +349,7 @@ export function Designer() {
   }
 
   function pickFamily(id: WaveriderFamily) {
+    setCad(null);
     const meta = FAMILY_META[id];
     patch({
       family: id,
@@ -312,8 +362,9 @@ export function Designer() {
     setBusy(kind);
     try {
       const cadKinds = new Set(["stl", "stl-ascii", "stl-regions", "step", "step-nurbs", "step-tess", "step-facet", "iges", "plot3d", "obj", "kit"]);
-      const src =
-        cadKinds.has(kind)
+      const src = cad
+        ? studyBuilt
+        : cadKinds.has(kind)
           ? safeBuild({ ...params, nx: Math.max(params.nx, 96), ny: Math.max(params.ny, 72) }, built).built
           : built;
       const aero = cadKinds.has(kind) && src !== built ? (await studyProgressive(src, { quick: true })).study.aero : study.aero; // [mesh-refinement] non-blocking
@@ -377,6 +428,26 @@ export function Designer() {
     }
   }
 
+  async function onImportCad(file: File | undefined) {
+    if (!file) return;
+    if (cadFile.current) cadFile.current.value = "";
+    if (file.size > 25_000_000) {
+      setCadMsg("That file is over 25 MB. Export a coarser STL.");
+      return;
+    }
+    try {
+      const buf = await file.arrayBuffer();
+      const scale = params.unit === "mm" ? 0.001 : params.unit === "in" ? 0.0254 : 1;
+      const imp = parseCad(buf, file.name, { scale, axis: cadAxis });
+      setCad(imp);
+      setCadMsg(null);
+      setTab("aero");
+    } catch (err) {
+      setCad(null);
+      setCadMsg(err instanceof Error ? err.message : "Could not read that file.");
+    }
+  }
+
   return (
     <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-bg text-fg">
       <header className="hud-header flex shrink-0 flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
@@ -388,7 +459,7 @@ export function Designer() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <ProjectsMenu project={project} />
-          <Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => setParams(DEFAULT_PARAMS)}>
+          <Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => setDesignParams(DEFAULT_PARAMS)}>
             <RotateCcw />
             Reset
           </Button>
@@ -450,7 +521,10 @@ export function Designer() {
                   <button
                     key={pr.id}
                     type="button"
-                    onClick={() => setParams({ ...pr.params })}
+                    onClick={() => {
+                      setCad(null);
+                      setParams({ ...pr.params });
+                    }}
                     className="hud-card rounded-md px-3 py-2"
                   >
                     <span className="block text-sm text-fg">{pr.name}</span>
@@ -467,7 +541,7 @@ export function Designer() {
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
               <div className="hud-chip-info flex min-w-0 items-center gap-1 px-2.5 py-1 font-mono text-[11px] text-muted">
                 <span className="hud-led mr-1.5 shrink-0" aria-hidden />
-                <span className="font-display font-semibold tracking-[0.1em] text-accent uppercase">{fam.label}</span>
+                <span className="font-display font-semibold tracking-[0.1em] text-accent uppercase">{cad ? cad.name : fam.label}</span>
                 <span className="mx-1.5 text-subtle">/</span>
                 {domain}
                 <span className="mx-1.5 text-subtle">/</span>
@@ -481,6 +555,18 @@ export function Designer() {
                 {solveLine.text}
               </p>
             </div>
+            {cad ? (
+              <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-muted">
+                <span>
+                  Imported shell · {cad.quality.triangles.toLocaleString()} tris · L {fmt(cad.length, 2)} m · Sref {fmt(cad.sRef, 3)} m²
+                  {cad.quality.watertight ? "" : ` · ${cad.quality.openEdges} open edges`}
+                  {params.aeroMethod === "euler" ? " · panel method (Euler is the generated centerline only)" : ""}
+                </span>
+                <button type="button" className="hud-label hud-plain text-accent" onClick={() => setCad(null)}>
+                  Clear import
+                </button>
+              </p>
+            ) : null}
             {builtRes.error ? (
               <p className="min-w-0 text-[11px] leading-snug text-warn">{builtRes.error} Showing the last valid shape.</p>
             ) : null}
@@ -507,7 +593,7 @@ export function Designer() {
           </div>
           <div className="relative min-h-0 flex-1">
             <PanelBoundary label="3D viewer" resetKey={built}>
-              <WaveriderViewer built={built} study={study} opts={opts} />
+              <WaveriderViewer built={studyBuilt} study={study} opts={opts} />
             </PanelBoundary>
             <ViewportChrome />
           </div>
@@ -918,10 +1004,53 @@ export function Designer() {
 
             {tab === "cad" ? (
               <div>
-                <Stat k="Tip" v="(0, 0, 0)" />
+                <span className="hud-label mb-2 block !text-muted">Import a shell</span>
+                <input
+                  ref={cadFile}
+                  type="file"
+                  accept=".stl,.obj,model/stl,model/obj"
+                  className="hidden"
+                  onChange={(e) => void onImportCad(e.target.files?.[0])}
+                />
+                <Seg
+                  value={cadAxis}
+                  onChange={(axis: CadAxis) => setCadAxis(axis)}
+                  options={[
+                    { id: "cuspis", label: "X aft" },
+                    { id: "y-up", label: "Y up" },
+                    { id: "nose-plus-x", label: "Nose +X" },
+                  ]}
+                />
+                <div className="mt-3">
+                  <span className="hud-label mb-2 block !text-muted">File unit</span>
+                  <Seg
+                    value={params.unit}
+                    onChange={(unit: LengthUnit) => patch({ unit })}
+                    options={[
+                      { id: "m", label: "m" },
+                      { id: "mm", label: "mm" },
+                      { id: "in", label: "in" },
+                    ]}
+                  />
+                </div>
+                <Button className="mt-2 w-full" variant="secondary" onClick={() => cadFile.current?.click()}>
+                  <Upload /> Import STL or OBJ
+                </Button>
+                <p className="mt-2 text-[11px] leading-relaxed text-subtle">
+                  Triangle meshes only. The unit above scales the file into meters and is the unit later exports are written
+                  in. The nose moves to the origin and the span is centered. Mach, alpha, and altitude still drive the panel
+                  book. STEP and IGES are surfaces — export an STL from the CAD tool first.
+                </p>
+                {cadMsg ? <p className="mt-2 text-xs leading-relaxed text-warn">{cadMsg}</p> : null}
+                {cad ? (
+                  <Button className="mt-2 w-full" variant="secondary" onClick={() => setCad(null)}>
+                    Clear import · back to {fam.label}
+                  </Button>
+                ) : null}
+                <Stat k="Nose R" v={`${fmt((cad ? cad.leRadius : params.leRadius) * 1000, 1)} mm`} />
                 <Stat k="BBox min X" v={fmt(q.bbox.min[0], 4)} />
-                <Stat k="Deflection θ" v={`${fmt(a.thetaDeg, 2)}°`} />
-                <Stat k="Shock β" v={`${fmt(a.betaDeg, 2)}°`} />
+                <Stat k="Deflection θ" v={cad ? "—" : `${fmt(a.thetaDeg, 2)}°`} />
+                <Stat k="Shock β" v={cad ? "—" : `${fmt(a.betaDeg, 2)}°`} />
                 <Stat k="Volume" v={`${fmt(q.volume, 4)} m³`} />
                 <Stat k="Planform" v={`${fmt(a.planformArea, 3)} m²`} />
                 <Stat k="Triangles" v={String(q.triangles)} />
@@ -933,18 +1062,6 @@ export function Designer() {
                 <Stat k="Manifold" v={q.manifold ? "yes" : "check"} ok={q.manifold} />
                 <Stat k="Non-manifold edges" v={String(q.nonManifoldEdges)} ok={q.nonManifoldEdges === 0} />
                 <Stat k="Degenerate" v={String(q.skippedDegenerate)} ok={q.skippedDegenerate === 0} />
-                <div className="mt-4">
-                  <span className="hud-label mb-2 block !text-muted">Export unit</span>
-                  <Seg
-                    value={params.unit}
-                    onChange={(unit: LengthUnit) => patch({ unit })}
-                    options={[
-                      { id: "m", label: "m" },
-                      { id: "mm", label: "mm" },
-                      { id: "in", label: "in" },
-                    ]}
-                  />
-                </div>
                 {a.notes.length ? <p className="mt-3 text-xs leading-relaxed text-warn">{a.notes.join(" ")}</p> : null}
                 <div className="mt-4 grid grid-cols-2 gap-2">
                   <Button variant="secondary" size="sm" onClick={() => save("stl")}>

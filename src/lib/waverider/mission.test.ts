@@ -11,6 +11,7 @@ import { DEG, newtonianCpMax } from "./math";
 import { constraintViolation, dominatesPoint, evaluateDesign } from "./mdo";
 import { buildVehicle } from "./generate";
 import { analyzeMesh } from "./mesh";
+import { topoMetrics } from "./geom-quality";
 import { panelAero } from "./panel";
 import { massBudget } from "./tps";
 import { DEFAULT_PARAMS, type DesignParams, type WaveriderFamily } from "./types";
@@ -200,7 +201,11 @@ assert.equal(dominatesPoint([1, 2], 0, [0, 0], 0.2), true, "feasible dominates i
   for (let i = 1; i < xs.length; i++) {
     assert.ok((bins.get(xs[i]) ?? 0) + 1e-6 >= (bins.get(xs[i - 1]) ?? 0), `planform narrowed ${xs[i - 1]}→${xs[i]}`);
   }
-  console.log(`boost-glide planform monotone, tip half-span ${(bins.get(xs[0]) ?? 0).toFixed(4)}`);
+  const tm = topoMetrics(built.mesh);
+  assert.equal(tm.openEdges, 0, "boost-glide open edges");
+  assert.equal(tm.nonManifoldEdges, 0, "boost-glide non-manifold");
+  assert.ok(tm.minAngleDeg > 0.5, `boost-glide nose slivers, min angle ${tm.minAngleDeg.toFixed(3)}°`);
+  console.log(`boost-glide planform monotone, tip half-span ${(bins.get(xs[0]) ?? 0).toFixed(4)} min∠ ${tm.minAngleDeg.toFixed(2)}°`);
 }
 
 {

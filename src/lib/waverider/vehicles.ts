@@ -402,7 +402,7 @@ function buildBoostglide(p: DesignParams): ClassVehicle {
   const dih = Math.tan(clamp(p.dihedralDeg || 0, -15, 25) * DEG);
   const notes = [
     `Boost-glide loft. Planform ${p.planform}, span ${p.span.toFixed(2)} m, height ${p.height.toFixed(2)} m. Direct parametric OML — the inverse-design shock is not enforced.`,
-    "Section is a lee-side sheet with an elliptic belly. Nose-high incidence makes the belly windward at α = 0. Tips pinch. Sref is the projected planform.",
+    "Section is a lee-side sheet with an elliptic belly. A pointed nose is one pole, not a spanwise row. Nose-high incidence makes the belly windward at α = 0. Tips pinch. Sref is the projected planform.",
   ];
   if (p.halfModel) notes.push("Half-model is not applied — the full planform is meshed.");
   if (Math.abs(p.elevonDeg || 0) > 0.05) {
@@ -416,10 +416,14 @@ function buildBoostglide(p: DesignParams): ClassVehicle {
   let prevY = halfSpanAt(0, p);
   for (let i = 0; i < ni; i++) {
     const x = (L * i) / (ni - 1);
-    const yHalf = Math.max(halfSpanAt(x, p), 1e-5);
+    const yRaw = halfSpanAt(x, p);
+    // A pointed planform has zero span at the nose. A spanwise row there is a fan of
+    // slivers (every "quad" has two corners on top of each other). Collapse it to one pole.
+    const pole = yRaw <= 1e-4 * L;
+    const yHalf = pole ? 0 : yRaw;
     if (i > 0) sRef += (prevY + yHalf) * (L / (ni - 1));
     prevY = yHalf;
-    const thick = sectionThick(x, p);
+    const thick = pole ? 0 : sectionThick(x, p);
     const xi = x / L;
     const camb = p.camber * p.height * 4 * xi * (1 - xi);
     // Nose sits high and the sheet slopes down aft. Volume hangs below it,
@@ -431,7 +435,7 @@ function buildBoostglide(p: DesignParams): ClassVehicle {
     for (let j = 0; j < nj; j++) {
       const t = j / (nj - 1);
       const y = -yHalf + 2 * yHalf * t;
-      const eta = clamp(y / yHalf, -1, 1);
+      const eta = yHalf > 1e-8 ? clamp(y / yHalf, -1, 1) : 0;
       const zSheet = incidence + camb + Math.abs(y) * dih;
       const drop = thick * Math.sqrt(Math.max(0, 1 - eta * eta));
       const zU = zSheet + elev;
