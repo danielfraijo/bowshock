@@ -9,6 +9,10 @@ export interface MassProps {
   Iyy: number;
   Izz: number;
   Ixz: number;
+  /** Product ∫xy dm about the CG (same +∫ convention as Ixz). */
+  Ixy?: number;
+  /** Product ∫yz dm about the CG. */
+  Iyz?: number;
   ballistic: number;
   notes: string[];
 }
@@ -68,7 +72,13 @@ export function massProperties(mesh: TriMesh, rho: number, massOverride = 0): Ma
     mass = massOverride;
     notes.push("Mass overridden.");
   }
-  const k = dens * sign / 120;
+  // [accuracy-audit] Tonelli: for the origin tetrahedron ∫x² dV = det/60 · (Σ x_k² + Σ_{k<l} x_k x_l) and
+  // ∫xy dV = det/120 · (2Σ x_k y_k + Σ_{k≠l} x_k y_l). The old 1/120 halved every second moment, so the
+  // parallel-axis shift below went negative for any body away from the origin and Math.abs hid it
+  // (a 2×1×0.5 m box of 1000 kg centred at (1,2,3): Ixx 6448 vs analytic 104.2 kg·m²). The fix was first
+  // drafted in the p5-tps WIP stash. Inertia is scaled to the reported mass so an override keeps the
+  // radius of gyration of the closed shell.
+  const k = ((dens * sign) / 60) * (mass / Math.max(dens * V, 1e-12));
   Ixx = k * Ixx;
   Iyy = k * Iyy;
   Izz = k * Izz;
@@ -79,6 +89,8 @@ export function massProperties(mesh: TriMesh, rho: number, massOverride = 0): Ma
   const IyyCg = Math.abs(Iyy - mass * (Cx * Cx + Cz * Cz));
   const IzzCg = Math.abs(Izz - mass * (Cx * Cx + Cy * Cy));
   const IxzCg = Ixz - mass * Cx * Cz;
+  const IxyCg = Ixy - mass * Cx * Cy;
+  const IyzCg = Iyz - mass * Cy * Cz;
   return {
     mass,
     volume: V,
@@ -88,6 +100,8 @@ export function massProperties(mesh: TriMesh, rho: number, massOverride = 0): Ma
     Iyy: IyyCg,
     Izz: IzzCg,
     Ixz: IxzCg,
+    Ixy: IxyCg,
+    Iyz: IyzCg,
     ballistic: 0,
     notes,
   };
