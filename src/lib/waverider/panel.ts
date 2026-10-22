@@ -383,6 +383,11 @@ export function panelAero(
     let vhx = vhat[0];
     let vhy = vhat[1];
     let vhz = vhat[2];
+    // [accuracy-audit] Local dynamic pressure ratio under body rates. Cp is referenced to the local
+    // ½ρ|V − ω×r|², so the panel force scales by |V − ω×r|²/V². Before, only the flow direction was
+    // perturbed: a Newtonian flat plate then gave Cmq low by cos²α and a spurious Clr = −Cpmax sin²α cosα·b/(3L)
+    // (true Newtonian Clr = 0, since the normal velocity is unchanged by yaw rate).
+    let qLoc = 1;
     if (rates && atm.V > 1) {
       const vx = atm.V * vhat[0] - (rates.q * rz - rates.r * ry);
       const vy = atm.V * vhat[1] - (rates.r * rx - rates.p * rz);
@@ -391,6 +396,7 @@ export function panelAero(
       vhx = vx / vm;
       vhy = vy / vm;
       vhz = vz / vm;
+      qLoc = (vm / atm.V) ** 2;
     }
     const ndv = nnx * vhx + nny * vhy + nnz * vhz;
     const sinth = clamp(-ndv, 0, 1);
@@ -420,9 +426,10 @@ export function panelAero(
       cpi = (1 - wRare) * cpi + wRare * fm;
     }
     cp[t] = cpi;
-    const dFx = -cpi * area * nnx;
-    const dFy = -cpi * area * nny;
-    const dFz = -cpi * area * nnz;
+    const cpq = surf === SURFACE_ID.base || surf === SURFACE_ID.nozzle ? cpi : cpi * qLoc;
+    const dFx = -cpq * area * nnx;
+    const dFy = -cpq * area * nny;
+    const dFz = -cpq * area * nnz;
     Fx += dFx;
     Fy += dFy;
     Fz += dFz;
