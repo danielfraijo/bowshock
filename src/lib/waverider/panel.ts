@@ -204,6 +204,86 @@ export interface RateState {
   r: number;
 }
 
+/** Triangle geometry does not depend on angle of attack. One build serves every derivative and polar point. */
+interface PanelGeom {
+  pos: ArrayLike<number>;
+  ind: ArrayLike<number>;
+  surfaces: ArrayLike<number> | undefined;
+  area: Float64Array;
+  nx: Float64Array;
+  ny: Float64Array;
+  nz: Float64Array;
+  cx: Float64Array;
+  cy: Float64Array;
+  cz: Float64Array;
+  surf: Uint16Array;
+  aWet: number;
+}
+
+const geomCache = new WeakMap<TriMesh, PanelGeom>();
+
+function panelGeom(mesh: TriMesh): PanelGeom {
+  const hit = geomCache.get(mesh);
+  if (hit && hit.pos === mesh.positions && hit.ind === mesh.indices && hit.surfaces === mesh.surfaces) return hit;
+  const pos = mesh.positions;
+  const ind = mesh.indices;
+  const nt = ind.length / 3;
+  const area = new Float64Array(nt);
+  const nx = new Float64Array(nt);
+  const ny = new Float64Array(nt);
+  const nz = new Float64Array(nt);
+  const cx = new Float64Array(nt);
+  const cy = new Float64Array(nt);
+  const cz = new Float64Array(nt);
+  const surf = new Uint16Array(nt);
+  let aWet = 0;
+  for (let t = 0; t < nt; t++) {
+    const o3 = t * 3;
+    const ia = ind[o3] * 3;
+    const ib = ind[o3 + 1] * 3;
+    const ic = ind[o3 + 2] * 3;
+    const x1 = pos[ia];
+    const y1 = pos[ia + 1];
+    const z1 = pos[ia + 2];
+    const x2 = pos[ib];
+    const y2 = pos[ib + 1];
+    const z2 = pos[ib + 2];
+    const x3 = pos[ic];
+    const y3 = pos[ic + 1];
+    const z3 = pos[ic + 2];
+    const abx = x2 - x1;
+    const aby = y2 - y1;
+    const abz = z2 - z1;
+    const acx = x3 - x1;
+    const acy = y3 - y1;
+    const acz = z3 - z1;
+    const crx = aby * acz - abz * acy;
+    const cry = abz * acx - abx * acz;
+    const crz = abx * acy - aby * acx;
+    const mag = Math.hypot(crx, cry, crz);
+    let s = mesh.surfaces[t] ?? 0;
+    if (mag < 1e-16) {
+      surf[t] = s;
+      continue;
+    }
+    const inv = 1 / mag;
+    const nnx = crx * inv;
+    nx[t] = nnx;
+    ny[t] = cry * inv;
+    nz[t] = crz * inv;
+    area[t] = 0.5 * mag;
+    cx[t] = (x1 + x2 + x3) / 3;
+    cy[t] = (y1 + y2 + y3) / 3;
+    cz[t] = (z1 + z2 + z3) / 3;
+    if (nnx > 0.72 && s !== SURFACE_ID.leading && s !== SURFACE_ID.inlet) s = SURFACE_ID.base;
+    surf[t] = s;
+    if (s !== SURFACE_ID.base && s !== SURFACE_ID.nozzle && s !== SURFACE_ID.inlet && s !== SURFACE_ID.symmetry) aWet += area[t];
+  }
+  const g: PanelGeom = { pos, ind, surfaces: mesh.surfaces, area, nx, ny, nz, cx, cy, cz, surf, aWet };
+  geomCache.set(mesh, g);
+  return g;
+}
+
 export function panelAero(
   mesh: TriMesh,
   params: DesignParams,
@@ -213,6 +293,8 @@ export function panelAero(
   sRef: number,
   lRef: number,
   rates?: RateState,
+  /** Derivatives and the polar only need forces. Heating is unchanged on the call that paints the vehicle. */
+  forcesOnly = false,
 ): PanelAero {
   const notes: string[] = [];
   const machIn = params.lockFlight ? params.mach : params.flightMach;
@@ -220,7 +302,7 @@ export function panelAero(
   const g = params.gamma;
   const method = params.aeroMethod;
   if (method === "euler") {
-    const base = panelAero(mesh, { ...params, aeroMethod: "cbaero" }, atm, alphaDeg, betaDeg, sRef, lRef, rates);
+    const base = panelAero(mesh, { ...params, aeroMethod: "cbaero" }, atm, alphaDeg, betaDeg, sRef, lRef, rates, forcesOnly);
     return withSymmetryEuler(mesh, params, atm, base, alphaDeg, betaDeg);
   }
   if (method === "mixed") {
@@ -280,44 +362,21 @@ export function panelAero(
   let aLower = 0;
   let qUpper = 0;
   let aUpper = 0;
-  let aWet = 0;
+  const geom = panelGeom(mesh);
+  const aWet = geom.aWet;
 
-  const pos = mesh.positions;
-  const ind = mesh.indices;
   for (let t = 0; t < nt; t++) {
-    const o3 = t * 3;
-    const ia = ind[o3] * 3;
-    const ib = ind[o3 + 1] * 3;
-    const ic = ind[o3 + 2] * 3;
-    const x1 = pos[ia];
-    const y1 = pos[ia + 1];
-    const z1 = pos[ia + 2];
-    const x2 = pos[ib];
-    const y2 = pos[ib + 1];
-    const z2 = pos[ib + 2];
-    const x3 = pos[ic];
-    const y3 = pos[ic + 1];
-    const z3 = pos[ic + 2];
-    const abx = x2 - x1;
-    const aby = y2 - y1;
-    const abz = z2 - z1;
-    const acx = x3 - x1;
-    const acy = y3 - y1;
-    const acz = z3 - z1;
-    const nx = aby * acz - abz * acy;
-    const ny = abz * acx - abx * acz;
-    const nz = abx * acy - aby * acx;
-    const mag = Math.hypot(nx, ny, nz);
-    if (mag < 1e-16) continue;
-    const area = 0.5 * mag;
-    const inv = 1 / mag;
-    const n: Vec3 = [nx * inv, ny * inv, nz * inv];
-    const cx = (x1 + x2 + x3) / 3;
-    const cy = (y1 + y2 + y3) / 3;
-    const cz = (z1 + z2 + z3) / 3;
+    const area = geom.area[t];
+    if (area === 0) continue;
+    const nnx = geom.nx[t];
+    const nny = geom.ny[t];
+    const nnz = geom.nz[t];
+    const cx = geom.cx[t];
+    const cy = geom.cy[t];
+    const cz = geom.cz[t];
     const rx = cx - cg[0];
-    const ry = cy - cg[1];
-    const rz = cz - cg[2];
+    const ry = cy;
+    const rz = cz;
     let vhx = vhat[0];
     let vhy = vhat[1];
     let vhz = vhat[2];
@@ -330,17 +389,12 @@ export function panelAero(
       vhy = vy / vm;
       vhz = vz / vm;
     }
-    const ndv = n[0] * vhx + n[1] * vhy + n[2] * vhz;
+    const ndv = nnx * vhx + nny * vhy + nnz * vhz;
     const sinth = clamp(-ndv, 0, 1);
-    let surf = mesh.surfaces[t] ?? 0;
-    // Aft-facing TE thickness / nicked base: Love, not a phantom windward panel.
-    if (n[0] > 0.72 && surf !== SURFACE_ID.leading && surf !== SURFACE_ID.inlet) {
-      surf = SURFACE_ID.base;
-    }
+    const surf = geom.surf[t];
     const windward = ndv < 0 && surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle;
     let applyVisc = false;
     impact[t] = -ndv;
-    if (surf !== SURFACE_ID.base && surf !== SURFACE_ID.nozzle && surf !== SURFACE_ID.inlet && surf !== SURFACE_ID.symmetry) aWet += area;
     let cpi: number;
     if (surf === SURFACE_ID.base || surf === SURFACE_ID.nozzle) {
       cpi = -1 / (M * M);
@@ -352,17 +406,9 @@ export function panelAero(
       const w = windwardCp(M, theta, g, cpMax, method, useCone, thMax);
       cpi = w.cp;
       if (!w.attached) nDetached++;
-      // Hayes–Probstein p/p_inv belongs to an attached laminar boundary layer behind a shock. It is not
-      // applied on detached/bluff panels (Newtonian stagnation region), where it inflated sphere CD to 1.9
-      // at M20 (physics-accuracy change, Dina).
       applyVisc = w.attached && method !== "newtonian";
     }
-    // Hayes–Probstein: p/p_inviscid = pVisc. Applied to the absolute pressure ratio, not to Cp
-    // (the old `cpi *= pVisc` scaled the gauge coefficient, so a flat plate at 0° got no rise
-    // and an 8° wedge got +0.31χ̄ of Cp instead of of p/p∞).
     if (windward && applyVisc) {
-      // Cap at the Newtonian/pitot Cp: a wall cannot sit above the post-normal-shock stagnation pressure, and the
-      // p/p_inv correlation is unbounded (χ̄ ≳ 50 at 100 km, M20 gave p/p∞ ≈ 29 → Cp 17 at α = −30°).
       const viscCp = ((1 + cpi * 0.5 * g * M * M) * pVisc - 1) / (0.5 * g * M * M);
       cpi = Math.min(viscCp, Math.max(cpi, cpMax));
     }
@@ -371,9 +417,9 @@ export function panelAero(
       cpi = (1 - wRare) * cpi + wRare * fm;
     }
     cp[t] = cpi;
-    const dFx = -cpi * area * n[0];
-    const dFy = -cpi * area * n[1];
-    const dFz = -cpi * area * n[2];
+    const dFx = -cpi * area * nnx;
+    const dFy = -cpi * area * nny;
+    const dFz = -cpi * area * nnz;
     Fx += dFx;
     Fy += dFy;
     Fz += dFz;
@@ -381,6 +427,7 @@ export function panelAero(
     Mx += ry * dFz - rz * dFy;
     My += rz * dFx - rx * dFz;
     Mz += rx * dFy - ry * dFx;
+    if (forcesOnly) continue;
 
     const xLE = xLeadingOf(params, cy);
     const xRun = Math.max(cx - xLE, Rn);

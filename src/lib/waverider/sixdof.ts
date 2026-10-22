@@ -141,15 +141,17 @@ export function solveSixDof(
     };
   }
 
+  const coef = (a: number, b: number, rate?: { p: number; q: number; r: number }) =>
+    panelAero(mesh, params, atm, a, b, sRef, lRef, rate, true);
   const dA = 1.0;
-  const pu = panelAero(mesh, params, atm, a0 + dA, b0, sRef, lRef);
-  const pd = panelAero(mesh, params, atm, a0 - dA, b0, sRef, lRef);
-  const pu2 = panelAero(mesh, params, atm, a0 + 2 * dA, b0, sRef, lRef);
-  const pd2 = panelAero(mesh, params, atm, a0 - 2 * dA, b0, sRef, lRef);
-  const pb = panelAero(mesh, params, atm, a0, b0 + dA, sRef, lRef);
-  const pb2 = panelAero(mesh, params, atm, a0, b0 + 2 * dA, sRef, lRef);
-  const pbm = panelAero(mesh, params, atm, a0, b0 - dA, sRef, lRef);
-  const pbm2 = panelAero(mesh, params, atm, a0, b0 - 2 * dA, sRef, lRef);
+  const pu = coef(a0 + dA, b0);
+  const pd = coef(a0 - dA, b0);
+  const pu2 = coef(a0 + 2 * dA, b0);
+  const pd2 = coef(a0 - 2 * dA, b0);
+  const pb = coef(a0, b0 + dA);
+  const pb2 = coef(a0, b0 + 2 * dA);
+  const pbm = coef(a0, b0 - dA);
+  const pbm2 = coef(a0, b0 - 2 * dA);
   const hA = dA * DEG;
   const cla = (8 * (pu.cl - pd.cl) - (pu2.cl - pd2.cl)) / (12 * hA);
   const cda = (8 * (pu.cd - pd.cd) - (pu2.cd - pd2.cd)) / (12 * hA);
@@ -167,9 +169,9 @@ export function solveSixDof(
   const qRate = (qHat * 2 * V) / L;
   const pRate = (pHat * 2 * V) / bRef;
   const rRate = (rHat * 2 * V) / bRef;
-  const qPair = panelAero(mesh, params, atm, a0, b0, sRef, lRef, { p: 0, q: qRate, r: 0 });
-  const pPair = panelAero(mesh, params, atm, a0, b0, sRef, lRef, { p: pRate, q: 0, r: 0 });
-  const rPair = panelAero(mesh, params, atm, a0, b0, sRef, lRef, { p: 0, q: 0, r: rRate });
+  const qPair = coef(a0, b0, { p: 0, q: qRate, r: 0 });
+  const pPair = coef(a0, b0, { p: pRate, q: 0, r: 0 });
+  const rPair = coef(a0, b0, { p: 0, q: 0, r: rRate });
   const cmq = (qPair.cm - p0.cm) / qHat;
   const clq = (qPair.cl - p0.cl) / qHat;
   const clp = (pPair.cll - p0.cll) / pHat;
@@ -183,8 +185,8 @@ export function solveSixDof(
   let trim = a0;
   let cmT = p0.cm;
   for (let i = 0; i < 4; i++) {
-    const p = panelAero(mesh, params, atm, trim, b0, sRef, lRef);
-    const pp = panelAero(mesh, params, atm, trim + 0.4, b0, sRef, lRef);
+    const p = coef(trim, b0);
+    const pp = coef(trim + 0.4, b0);
     const dcm = (pp.cm - p.cm) / 0.4;
     if (Math.abs(dcm) < 1e-6) break;
     trim -= p.cm / dcm;
@@ -195,7 +197,7 @@ export function solveSixDof(
 
   const polar: { a: number; cl: number; cd: number; cm: number; ld: number }[] = [];
   for (const a of [-4, -1, 2, 5, 8, 12]) {
-    const p = panelAero(mesh, params, atm, a, 0, sRef, lRef);
+    const p = coef(a, 0);
     polar.push({ a, cl: p.cl, cd: p.cd, cm: p.cm, ld: p.ld });
   }
 

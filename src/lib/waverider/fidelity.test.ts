@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { atmosphere } from "./atmosphere";
 import { expansionAnchor, flatWedgeAnchor } from "./anchors";
 import { eulerWedge } from "./euler2d";
 import { buildVehicle } from "./generate";
 import { betaFromThetaM, fastBeta } from "./math";
 import { analyzeMesh } from "./mesh";
+import { panelAero } from "./panel";
 import { studyVehicle } from "./study";
 import { DEFAULT_PARAMS, type DesignParams, type TriMesh, type WaveriderFamily } from "./types";
 import { runValidation, validationSummary } from "./validate";
@@ -212,5 +214,23 @@ console.log(
 );
 assert.equal(quick.aero.method, "euler");
 assert.ok(quick.aero.notes.some((n) => n.includes("Strip Euler")), "euler note missing");
+
+{
+  const p = { ...DEFAULT_PARAMS, aeroMethod: "cbaero" as const };
+  const atm = atmosphere(p.altKm, p.flightMach, p.gamma);
+  const S = caret.aero.planformArea;
+  const rates = { p: 0.1, q: -0.2, r: 0.05 };
+  const full = panelAero(caret.mesh, p, atm, 4, 1.5, S, p.length, rates);
+  const slim = panelAero(caret.mesh, p, atm, 4, 1.5, S, p.length, rates, true);
+  assert.equal(slim.cl, full.cl);
+  assert.equal(slim.cd, full.cd);
+  assert.equal(slim.cm, full.cm);
+  assert.equal(slim.cn, full.cn);
+  assert.equal(slim.cy, full.cy);
+  assert.equal(slim.cll, full.cll);
+  let dCp = 0;
+  for (let i = 0; i < full.cp.length; i++) dCp = Math.max(dCp, Math.abs(full.cp[i] - slim.cp[i]));
+  assert.equal(dCp, 0, "forces-only Cp drifted");
+}
 
 console.log("fidelity assertions passed");
