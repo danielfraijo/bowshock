@@ -44,6 +44,12 @@ const CONE_FAMILIES = new Set(["cone", "osculating", "elliptic", "viscopt", "sta
 
 interface Face {
   area: number;
+  /**
+   * [accuracy-audit] Vector area Σ A_i n_i of the merged triangles. The pressure force is −Cp·vec, which is what
+   * the per-triangle panel table sums to. −Cp·(ΣA_i)·n̂ over-counts a warped quad by ΣA/|ΣA n| (≈1 % on CA for the
+   * faired lifting-body nose since 268f490, and the datapack design-sum-ca check failed).
+   */
+  vec: Vec3;
   n: Vec3;
   t: Vec3;
   c: Vec3;
@@ -107,12 +113,12 @@ function buildFaces(mesh: TriMesh): FaceCache {
     const tag = mesh.tags ? mesh.tags[t] : -1;
     const dec = decodeTag(tag);
     if (!dec) {
-      loose.push({ area, n, t: tg, c: ctr, surf, grid: -1, i: 0, j: 0, tris: [t] });
+      loose.push({ area, vec: [0.5 * nx, 0.5 * ny, 0.5 * nz], n, t: tg, c: ctr, surf, grid: -1, i: 0, j: 0, tris: [t] });
       continue;
     }
     const prev = byTag.get(tag);
     if (!prev) {
-      byTag.set(tag, { area, n, t: tg, c: ctr, surf, grid: dec.g, i: dec.i, j: dec.j, tris: [t] });
+      byTag.set(tag, { area, vec: [0.5 * nx, 0.5 * ny, 0.5 * nz], n, t: tg, c: ctr, surf, grid: dec.g, i: dec.i, j: dec.j, tris: [t] });
     } else {
       const w = prev.area + area;
       prev.n = norm([
@@ -122,6 +128,7 @@ function buildFaces(mesh: TriMesh): FaceCache {
       ]);
       prev.c = [(prev.c[0] * prev.area + ctr[0] * area) / w, (prev.c[1] * prev.area + ctr[1] * area) / w, (prev.c[2] * prev.area + ctr[2] * area) / w];
       prev.area = w;
+      prev.vec = [prev.vec[0] + 0.5 * nx, prev.vec[1] + 0.5 * ny, prev.vec[2] + 0.5 * nz];
       prev.tris.push(t);
     }
   }
@@ -408,9 +415,9 @@ export function integrateShockExpansion(
     const surfBase = face.surf === SURFACE_ID.base || face.surf === SURFACE_ID.nozzle;
     const cpi = visc && method !== "newtonian" && ndv0 < -0.02 && !surfBase && qInf > 0 ? Math.min(((1 + cpiIn * qInf) * pVisc - 1) / qInf, Math.max(cpiIn, cpMax)) : cpiIn;
     paint(cp, face, cpi);
-    const dFx = -cpi * face.area * face.n[0];
-    const dFy = -cpi * face.area * face.n[1];
-    const dFz = -cpi * face.area * face.n[2];
+    const dFx = -cpi * face.vec[0];
+    const dFy = -cpi * face.vec[1];
+    const dFz = -cpi * face.vec[2];
     Fx += dFx;
     Fy += dFy;
     Fz += dFz;
