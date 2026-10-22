@@ -259,9 +259,12 @@ function revolve(
 function buildCapsule(p: DesignParams): ClassVehicle {
   const L = Math.max(p.length, 0.2);
   const Rb = Math.max(0.05, p.span / 2);
-  const theta = clamp(p.coneDeg || 20, 5, 55) * DEG;
+  // [accuracy-audit] 75° upper limit admits Mars-entry aeroshells (Viking / Pathfinder 70°); was 55°.
+  const theta = clamp(p.coneDeg || 20, 5, 75) * DEG;
   let Rn = p.leRadius > 1e-6 ? p.leRadius : Math.min(0.45 * Rb, 0.28 * L);
-  Rn = clamp(Rn, 1e-3, Math.min(L * 0.9, Rb / Math.max(Math.cos(theta), 0.25)));
+  // [accuracy-audit] The spherical cap ends at x = Rn(1 − sinθ), so that (not Rn itself) must fit inside L. The old
+  // Rn ≤ 0.9 L bound silently shrank blunt aeroshells (Pathfinder Rn 0.66 m on a 0.44 m-deep forebody → 0.40 m).
+  Rn = clamp(Rn, 1e-3, Math.min((L * 0.9) / Math.max(1 - Math.sin(theta), 1e-3), Rb / Math.max(Math.cos(theta), 0.25)));
   const xt = Rn * (1 - Math.sin(theta));
   const rt = Rn * Math.cos(theta);
   const notes = [
