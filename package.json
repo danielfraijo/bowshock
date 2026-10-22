@@ -27,6 +27,7 @@
     "test:physics": "node --import ./scripts/ts-register.mjs src/lib/waverider/fidelity.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/physics.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/datapack.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/shapes.test.ts",
     "test:aerodb-perf": "cargo test --release --manifest-path native/cuspis-panel/Cargo.toml && node --import ./scripts/ts-register.mjs src/lib/waverider/aerodb-perf.test.ts",
     "bench:aerodb": "node --import ./scripts/ts-register.mjs scripts/bench-aerodb.ts",
+    "check:aerodb-browser": "node scripts/aerodb-browser/run.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
     "datapack": "node --import ./scripts/ts-register.mjs scripts/datapack-export.ts",
     "lint": "eslint .",

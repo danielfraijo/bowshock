@@ -157,6 +157,8 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
+  // [aerodb-perf] the aero-database pool worker is an ES module worker (same setting as feat/performance)
+  worker: { format: "es" },
   plugins: [
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.

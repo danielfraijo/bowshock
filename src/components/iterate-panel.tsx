@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Formula, NumberField, Seg, Stat } from "@/components/fields";
 import {
-  AERODB_POINT_CAP,
+  aeroDbPointCap,
   aeroDbToCsv,
   aeroDbToJson,
   aeroDbToSimulink,
@@ -332,7 +332,8 @@ export function IteratePanel({
             <input type="checkbox" checked={spec.dynamicDerivatives} onChange={(e) => setSpec({ ...spec, dynamicDerivatives: e.target.checked })} />
           </label>
           <p className="text-[11px] text-muted">
-            {preview.points} points {preview.points > AERODB_POINT_CAP ? `(over the ${AERODB_POINT_CAP} cap)` : ""} · design Mach {fmt(params.mach, 1)} is forced onto the axis
+            {/* [aerodb-perf] cap follows the engine: 480 on the TS path, higher with the wasm worker pool */}
+            {preview.points} points {preview.points > aeroDbPointCap(spec.method) ? `(over the ${aeroDbPointCap(spec.method)} cap)` : ""} · design Mach {fmt(params.mach, 1)} is forced onto the axis
           </p>
           <button type="button" className="hud-card w-full rounded-md px-3 py-2 text-sm text-fg" onClick={runDb} disabled={!!busy}>
             {busy === "db" ? "Building table…" : "Build aero database"}
