@@ -65,7 +65,7 @@ function synthetic(opts: { tableDerivs: boolean; cm0: (m: number) => number }): 
   return {
     meta: {
       format: "cuspis-aerodb-1", name: "synthetic", family: "caret", method: "newtonian", designMach: 6, altitude_km: 30,
-      sRef_m2: 2, lRef_m: 3, bRef_m: 1.5, cg_m: [1.8, 0, 0],
+      sRef_m2: 2, lRef_m: 3, bRef_m: 1.5, mass_kg: 100, gamma: 1.4, cg_m: [1.8, 0, 0],
       units: { angles: "deg", derivatives: "1/rad", force: "wind axes, CL CD CY", moment: "body axes, Cm Cn Cll, nondim by q·Sref·Lref" },
       frame: "X streamwise (tip at origin, flow +X), Y span, Z up",
       index: "flat i = ((im*nAlpha + ia)*nBeta + ib)*nDelta + id  (delta fastest)",
