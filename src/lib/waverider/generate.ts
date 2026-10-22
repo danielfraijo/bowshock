@@ -19,6 +19,7 @@ import { collapseTipRows, flipPinchEdges, orientConsistent, removeDoubleFaces, t
 import { repairAftIfDefective } from "./mesh-repair"; // [mesh-refinement]
 import { clusterFractionsToLE } from "./refinement"; // [mesh-refinement]
 import { curvatureStations } from "./curvature"; // [mesh-refinement]
+import { liftOml, liftXs } from "./liftbody-oml";
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -650,117 +651,41 @@ function buildBusemann(params: DesignParams) {
   );
 }
 
-function numDeriv(f: (x: number) => number, x: number): number {
-  const h = Math.max(1e-6, 1e-4 * Math.abs(x));
-  return (f(x + h) - f(x - h)) / (2 * h);
-}
-
-/** Hemisphere of radius Rn, then a monotone cubic into the aft OML. Slope is continuous; the cap cannot neck down into a lip. */
-function semiAxis(x: number, Rn: number, xJoin: number, body: (x: number) => number, L: number): number {
-  if (x <= 1e-12) return 0;
-  const circ = (u: number) => Math.sqrt(Math.max(0, 2 * Rn * u - u * u));
-  if (x <= Rn) return circ(x);
-  if (x >= xJoin) return Math.max(circ(Rn), body(x));
-  const dx = Math.max(xJoin - Rn, 1e-9);
-  const p0 = Rn;
-  const p1 = Math.max(body(xJoin), p0);
-  let m1 = numDeriv(body, xJoin) * dx;
-  if (!(m1 > 0)) m1 = 0;
-  const evalH = (mm: number, t: number) => {
-    const t2 = t * t;
-    const t3 = t2 * t;
-    const h00 = 2 * t3 - 3 * t2 + 1;
-    const h10 = t3 - 2 * t2 + t;
-    const h01 = -2 * t3 + 3 * t2;
-    const h11 = t3 - t2;
-    return h00 * p0 + h10 * 0 + h01 * p1 + h11 * mm;
-  };
-  let lo = 0;
-  let hi = Math.max(m1, 0);
-  let use = 0;
-  for (let it = 0; it < 12; it++) {
-    const mid = 0.5 * (lo + hi);
-    let prev = p0;
-    let ok = true;
-    for (let k = 1; k <= 10; k++) {
-      const a = evalH(mid, k / 10);
-      if (a + 1e-7 < prev) ok = false;
-      prev = a;
-    }
-    if (ok) {
-      use = mid;
-      lo = mid;
-    } else hi = mid;
-  }
-  const t = clamp((x - Rn) / dx, 0, 1);
-  return Math.max(0, evalH(use, t));
-}
-
 function buildLiftbody(params: DesignParams) {
   const L = params.length;
-  const s = params.span / 2;
-  const h = params.height;
-  const nx = Math.max(28, params.nx);
-  const ys = liftStations(params.ny, params.halfModel);
+  const nx = Math.max(64, params.nx);
+  const ys = liftStations(Math.max(params.ny, 48), params.halfModel);
   const nj = ys.length;
-  const pow = params.planform === "delta" ? 0.62 : clamp(params.planformPower * 0.62, 0.48, 1.15);
+  const oml = liftOml({
+    length: L,
+    span: params.span,
+    height: params.height,
+    leRadius: Math.max(effectiveLeRadius(params), 0.008 * L),
+    planform: params.planform,
+    planformPower: params.planformPower,
+  });
   const dih = Math.tan((params.dihedralDeg || 0) * DEG);
-  const cam = (params.camber || 0) * h;
+  const cam = (params.camber || 0) * params.height;
   const teTan = Math.tan((params.teSweepDeg || 0) * DEG);
-  const requested = Math.max(effectiveLeRadius(params), 0.008 * L);
-  const bu = 0.58 * h;
-  const bl = 0.42 * h;
-  const Rn = clamp(requested, 0.006 * L, 0.9 * Math.min(s, bu, bl));
-  const fuseA = (x: number) => {
-    const xi = clamp(x / L, 0, 1);
-    return s * Math.pow(Math.max(xi, 1e-6), pow) * (1 - 0.07 * xi * xi);
-  };
-  const fuseU = (x: number) => {
-    const xi = clamp(x / L, 0, 1);
-    return bu * Math.pow(Math.max(xi, 1e-6), 0.55) * (1 - 0.06 * xi);
-  };
-  const fuseL = (x: number) => {
-    const xi = clamp(x / L, 0, 1);
-    return bl * Math.pow(Math.max(xi, 1e-6), 0.55) * (1 - 0.04 * xi);
-  };
-  let xJoin = Math.min(0.62 * L, Rn + Math.max(0.18 * L, 5 * Rn));
-  for (let k = 0; k < 12; k++) {
-    if (fuseA(xJoin) >= Rn && fuseU(xJoin) >= Rn && fuseL(xJoin) >= Rn) break;
-    xJoin = Math.min(0.8 * L, xJoin + 0.04 * L);
-  }
-  const nCap = Math.max(18, Math.round(nx * 0.45));
-  const xs: number[] = [];
-  for (let i = 0; i < nCap; i++) {
-    const phi = (Math.PI / 2) * (i / Math.max(nCap - 1, 1));
-    xs.push(Rn * (1 - Math.cos(phi)));
-  }
-  const nAft = Math.max(12, nx - nCap);
-  for (let i = 1; i <= nAft; i++) {
-    const t = i / nAft;
-    const u = t * t * (3 - 2 * t);
-    xs.push(Rn + (L - Rn) * u);
-  }
-  xs[0] = 0;
-  xs[xs.length - 1] = L;
-  for (let i = 1; i < xs.length; i++) if (xs[i] <= xs[i - 1]) xs[i] = xs[i - 1] + 1e-6 * L;
-  xs[xs.length - 1] = L;
+  const xs = liftXs(oml, nx);
+  const xCap = xs[Math.max(1, Math.round(xs.length * 0.12))] ?? 0.05 * L;
   const ni = xs.length;
   const sample = (i: number, j: number, isLower: boolean): Vec3 => {
     if (i === 0) return [0, 0, 0];
     const x = xs[i];
-    const a = semiAxis(x, Rn, xJoin, fuseA, L);
-    const b = semiAxis(x, Rn, xJoin, isLower ? fuseL : fuseU, L);
+    const a = oml.a(x);
+    const b = (isLower ? oml.lower : oml.upper)(x);
     const yn = ys[j];
     const y = yn * a;
     const zEll = Math.sqrt(Math.max(0, 1 - yn * yn));
     const xi = clamp(x / L, 0, 1);
     const z = (isLower ? -1 : 1) * b * zEll + 4 * cam * xi * (1 - xi) + Math.abs(y) * dih;
-    const xOut = i === ni - 1 ? Math.max(x - Math.abs(y) * teTan, Rn) : x;
+    const xOut = i === ni - 1 ? Math.max(x - Math.abs(y) * teTan, xCap) : x;
     return [xOut, y, z];
   };
   const upper = makeGrid("upper", ni, nj, (i, j) => sample(i, j, false));
   const lower = makeGrid("lower", ni, nj, (i, j) => sample(i, j, true));
-  return { upper, lower, shock: [] as SurfaceGrid[], noseR: Rn, noseReq: requested };
+  return { upper, lower, shock: [] as SurfaceGrid[], noseR: oml.rn, noseReq: oml.requested };
 }
 
 /**
@@ -1274,16 +1199,12 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   const Rn = effectiveLeRadius(params);
   if (Rn > 0 && (params.family === "ramjet" || params.family === "scramjet")) {
     notes.push(`Lip radius R = ${(Rn * 1000).toFixed(1)} mm.`);
-  } else if (Rn > 0 && params.family === "liftbody") {
-    const geo = noseMeta?.noseR;
-    const req = noseMeta?.noseReq;
-    if (geo && req && geo < req * 0.92) {
-      notes.push(
-        `Nose cap is a tangent elliptic ogive, R = ${(geo * 1000).toFixed(1)} mm (requested ${(req * 1000).toFixed(1)} mm does not fit this OML without a lip). Pole is at the origin.`,
-      );
-    } else if (geo) {
-      notes.push(`Nose cap is a tangent elliptic ogive, R = ${(geo * 1000).toFixed(1)} mm, pole welded at the origin.`);
-    }
+  } else if (Rn > 0 && params.family === "liftbody" && noseMeta?.noseR) {
+    const geo = noseMeta.noseR;
+    const req = noseMeta.noseReq ?? geo;
+    notes.push(
+      `Nose is an osculating parabola of radius R = ${(geo * 1000).toFixed(1)} mm (curvature 1/R at the pole), blended monotonically into the elliptic loft. Requested ${(req * 1000).toFixed(1)} mm${geo < req * 0.92 ? " does not fit this OML" : ""}. Pole at the origin.`,
+    );
   } else if (Rn > 0 && grids.some((g) => g.name === "leading" || g.name === "cowl_lip")) {
     notes.push(
       `Leading-edge radius R = ${(Rn * 1000).toFixed(1)} mm, tessellated where the arc is at least 1/12 of the local span step.`,

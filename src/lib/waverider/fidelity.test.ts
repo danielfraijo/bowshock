@@ -164,6 +164,35 @@ assert.ok(Math.abs(tipX) < 1e-6 && Math.abs(tipY) < 1e-4 && Math.abs(tipZ) < 1e-
   }
   console.log(`liftbody centerline max Δ(dz/dx) aft of the pole=${worst.toFixed(3)}`);
   assert.ok(worst < 0.45, `liftbody nose lip Δslope ${worst.toFixed(2)}`);
+  // Osculating parabola of whatever R actually fits this OML. A hemisphere would be flat (slope 0) by x = R.
+  let Rn = 0;
+  for (let i = 1; i < g!.ni; i++) {
+    const x = g!.xyz[(i * g!.nj + mid) * 3];
+    const z = g!.xyz[(i * g!.nj + mid) * 3 + 2];
+    if (x > 1e-5 && z > 1e-5) {
+      Rn = (z * z) / (2 * x);
+      break;
+    }
+  }
+  assert.ok(Rn > 1e-4, "liftbody nose has no finite radius");
+  let osc = 0;
+  let oscN = 0;
+  let up = 0;
+  for (let i = 1; i < g!.ni; i++) {
+    const x = g!.xyz[(i * g!.nj + mid) * 3];
+    const z = g!.xyz[(i * g!.nj + mid) * 3 + 2];
+    if (x < 0.22 * Rn && x > 1e-6) {
+      osc += Math.abs(z * z / (2 * x) - Rn) / Rn;
+      oscN++;
+    }
+  }
+  for (let i = 2; i < slopes.length; i++) {
+    if (slopes[i].x > 0.45 * lbParams.length) break;
+    up = Math.max(up, slopes[i].s - slopes[i - 1].s);
+  }
+  console.log(`liftbody osculating |z²/(2xR) − 1| mean=${oscN ? (osc / oscN).toFixed(3) : "n/a"} R=${Rn.toFixed(4)} re-steepen=${up.toFixed(3)}`);
+  if (oscN) assert.ok(osc / oscN < 0.08, `nose is not an osculating parabola (mean rel ${(osc / oscN).toFixed(3)})`);
+  assert.ok(up < 0.08, `liftbody shoulder re-steepens by ${up.toFixed(3)}`);
 }
 
 let betaErr = 0;

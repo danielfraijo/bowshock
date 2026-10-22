@@ -19,13 +19,15 @@ import {
   type OutputFormat,
 } from "@/lib/waverider/datcom/output";
 import { parseDeck, generateMissileDeck } from "@/lib/waverider/datcom/deck";
-import type { FlightSpec, RunResult, VehicleConfig } from "@/lib/waverider/datcom/types";
+import { areaRuleDrag, searsHaack } from "@/lib/waverider/datcom/gasdyn";
+import { buildBody } from "@/lib/waverider/datcom/geometry";
+import type { FlightSpec, PointResult, RunResult, VehicleConfig } from "@/lib/waverider/datcom/types";
 import type { DesignParams } from "@/lib/waverider/types";
 import { fmt } from "@/lib/waverider/math";
 import { downloadBlob } from "@/lib/utils";
 
 type PlotX = "alpha" | "mach";
-type PlotY = "CN" | "CA" | "Cm" | "CL" | "CD" | "CY" | "Cl" | "Cn" | "LD";
+type PlotY = "CN" | "CA" | "Cm" | "CL" | "CD" | "CY" | "Cl" | "Cn" | "LD" | "XCP" | "Cmq";
 
 const YOPTS: { id: PlotY; label: string }[] = [
   { id: "CN", label: "CN" },
@@ -37,7 +39,15 @@ const YOPTS: { id: PlotY; label: string }[] = [
   { id: "Cl", label: "Cl" },
   { id: "Cn", label: "Cn" },
   { id: "LD", label: "L/D" },
+  { id: "XCP", label: "Xcp m" },
+  { id: "Cmq", label: "Cmq" },
 ];
+
+function plotValue(p: PointResult, y: PlotY): number {
+  if (y === "XCP") return p.xcp;
+  if (y === "Cmq") return p.derivs.Cmq;
+  return p[y];
+}
 
 function downloadText(name: string, text: string) {
   downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), name);
@@ -90,6 +100,26 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
   const [machFocus, setMachFocus] = useState(0);
   const [outFmt, setOutFmt] = useState<OutputFormat>("missile");
   const [err, setErr] = useState<string | null>(null);
+  const areaRule = useMemo(() => {
+    const body = config.body;
+    if (!body) return 0;
+    try {
+      if (body.elliptic && body.elliptic.length >= 4) {
+        const st = [...body.elliptic].sort((a, b) => a.x - b.x);
+        return areaRuleDrag(
+          st.map((s) => s.x),
+          st.map((s) => Math.PI * Math.abs(s.a * s.b)),
+        );
+      }
+      const prof = buildBody(body);
+      return areaRuleDrag(
+        prof.x,
+        prof.r.map((r) => Math.PI * r * r),
+      );
+    } catch {
+      return 0;
+    }
+  }, [config]);
 
   function loadPreset(id: string) {
     const p = PRESETS.find((x: Preset) => x.id === id);
@@ -113,6 +143,10 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
       fins: params.fins,
       cgFrac: params.cgFrac,
       name: `waverider:${params.family}`,
+      family: params.family,
+      leRadius: params.leRadius,
+      planform: params.planform,
+      planformPower: params.planformPower,
     });
     setPresetId("waverider");
     setConfig(cfg);
@@ -165,12 +199,12 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
     if (plotX === "alpha") {
       const c = result.cases[Math.min(machFocus, result.cases.length - 1)];
       if (!c) return [];
-      return c.points.map((p) => ({ x: p.alpha, y: p[plotY], mach: c.mach }));
+      return c.points.map((p) => ({ x: p.alpha, y: plotValue(p, plotY), mach: c.mach }));
     }
     // vs mach at nearest alpha=0 (or first)
     return result.cases.map((c) => {
       const p = c.points.find((q) => Math.abs(q.alpha) < 1e-6) ?? c.points[0];
-      return { x: c.mach, y: p?.[plotY] ?? 0, alpha: p?.alpha ?? 0 };
+      return { x: c.mach, y: p ? plotValue(p, plotY) : 0, alpha: p?.alpha ?? 0 };
     });
   }, [result, plotX, plotY, machFocus]);
 
@@ -223,7 +257,9 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
         <p className="mt-1.5 text-[11px] leading-snug text-subtle">
           {PRESETS.find((p) => p.id === presetId)?.blurb ??
             (presetId === "waverider"
-              ? "Cone-cylinder proxy of the current Geom tab (qualitative only)."
+              ? params.family === "liftbody"
+                ? "Elliptic lifting-body stations from the current loft, Newtonian body, planform reference."
+                : "Cone-cylinder proxy of the current Geom tab (qualitative only)."
               : presetId === "deck"
                 ? "Loaded from a pasted DATCOM deck."
                 : "")}
@@ -338,6 +374,15 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
             />
             <Stat k="Elapsed" v={`${fmt((result as RunResult & { _ms?: number })._ms ?? 0, 0)} ms`} />
             <Stat k="Confidence" v={result.cases[0]?.points[0]?.validity.confidence ?? "—"} />
+            <Stat
+              k="Sears–Haack D/q"
+              v={`${fmt(searsHaack(result.geometry.maxDiameter / 2, result.geometry.length).dragOverQ, 5)} m²`}
+            />
+            <Stat k="Area-rule D/q" v={areaRule > 0 ? `${fmt(areaRule, 5)} m²` : "—"} />
+            <Stat
+              k="Body D/q α0"
+              v={`${fmt((result.cases[0]?.points.find((p) => Math.abs(p.alpha) < 1e-6)?.components.find((c) => c.name === "body")?.CA ?? 0) * result.geometry.sRef, 5)} m²`}
+            />
           </div>
           <p className="text-[11px] leading-snug text-subtle">{result.cases[0]?.points[0]?.validity.method}</p>
           {(result.warnings.length > 0 || (result.cases[0]?.points[0]?.validity.notes.length ?? 0) > 0) && (
@@ -394,9 +439,9 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
                   <CartesianGrid stroke="currentColor" strokeOpacity={0.12} />
                   <XAxis dataKey="x" tick={{ fontSize: 10 }} stroke="currentColor" strokeOpacity={0.4} />
                   <YAxis tick={{ fontSize: 10 }} stroke="currentColor" strokeOpacity={0.4} width={40} />
-                  <Tooltip contentStyle={{ background: "#111", border: "1px solid #333", fontSize: 11 }} />
+                  <Tooltip contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="y" name={plotY} stroke="currentColor" strokeWidth={1.5} dot={false} />
+                  <Line type="monotone" dataKey="y" name={plotY} stroke="#ff2d2d" strokeWidth={1.5} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

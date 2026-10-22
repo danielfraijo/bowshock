@@ -9,6 +9,80 @@ import { DEG } from "./util.ts";
 
 export const GAMMA_AIR = 1.4;
 
+/**
+ * Sears–Haack minimum wave drag for a given length and maximum radius.
+ * (D/q) = (9π/2) (Amax/L)², and CD on the frontal area is (9π²/2)(R/L)².
+ * Raymer, Aircraft Design, and the Kármán–Moore slender-body result. Supersonic, pointed, optimum area distribution.
+ */
+export function searsHaack(rMax: number, length: number): { dragOverQ: number; cdFrontal: number } {
+  if (!(rMax > 0) || !(length > 0)) return { dragOverQ: 0, cdFrontal: 0 };
+  const area = Math.PI * rMax * rMax;
+  const dragOverQ = ((9 * Math.PI) / 2) * (area / length) ** 2;
+  return { dragOverQ, cdFrontal: dragOverQ / area };
+}
+
+/**
+ * Supersonic area-rule wave drag, Kármán–Moore linear theory.
+ * D/q = −(1/(2π)) ∬ S''(x) S''(ξ) ln|x−ξ| dx dξ
+ * (the form quoted on the Sears–Haack body; q = ½ ρ U²).
+ * Exact for the Sears–Haack area law: (9π/2)(Amax/L)². Not a tangent-cone result,
+ * and not valid for blunt or non-slender noses — those stay on the Taylor–Maccoll path.
+ */
+export function areaRuleDrag(x: number[], area: number[]): number {
+  const n = x.length;
+  if (n < 8) return 0;
+  const d2 = new Array<number>(n).fill(0);
+  for (let i = 1; i < n - 1; i++) {
+    const dx1 = x[i] - x[i - 1];
+    const dx2 = x[i + 1] - x[i];
+    if (dx1 < 1e-14 || dx2 < 1e-14) continue;
+    const s1 = (area[i] - area[i - 1]) / dx1;
+    const s2 = (area[i + 1] - area[i]) / dx2;
+    d2[i] = (s2 - s1) / (0.5 * (dx1 + dx2));
+  }
+  d2[0] = d2[1];
+  d2[n - 1] = d2[n - 2];
+  // Nested form of the symmetric double integral. Inner ∫ ln is analytic per panel
+  // so the diagonal singularity is not sampled.
+  const J = new Array<number>(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    let acc = 0;
+    const xi = x[i];
+    for (let j = 0; j < i; j++) {
+      const a = x[j];
+      const b = x[j + 1];
+      const width = b - a;
+      if (width < 1e-14) continue;
+      const s = 0.5 * (d2[j] + d2[j + 1]);
+      const da = Math.max(xi - a, 1e-18);
+      const db = Math.max(xi - b, 1e-18);
+      acc += s * (da * Math.log(da) - db * Math.log(db) - width);
+    }
+    J[i] = acc;
+  }
+  let outer = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const dx = x[i + 1] - x[i];
+    outer += 0.5 * (d2[i] * J[i] + d2[i + 1] * J[i + 1]) * dx;
+  }
+  const dq = -outer / Math.PI;
+  return Number.isFinite(dq) && dq > 0 ? dq : 0;
+}
+
+/** Stations of a closed Sears–Haack body, cosine-clustered at the pointed tips. */
+export function searsHaackStations(rMax: number, length: number, n = 401): { x: number[]; area: number[] } {
+  const A = Math.PI * rMax * rMax;
+  const x: number[] = [];
+  const area: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const u = 0.5 * (1 - Math.cos((Math.PI * i) / n));
+    const t = 4 * u * (1 - u);
+    x.push(u * length);
+    area.push(i === 0 || i === n ? 0 : A * Math.pow(Math.max(t, 0), 1.5));
+  }
+  return { x, area };
+}
+
 /** Prandtl–Meyer function nu(M) [rad]. NACA 1135 Eq. 175. */
 export function prandtlMeyer(M: number, g = GAMMA_AIR): number {
   if (M <= 1) return 0;

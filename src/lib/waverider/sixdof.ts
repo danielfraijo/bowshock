@@ -312,7 +312,8 @@ export function solveSixDof(
   );
 
   const dt = 0.02;
-  const nStep = 400;
+  // 16 s covers several short-period cycles and a visible arc of the path. The loop is the linear model, not a panel solve.
+  const nStep = 800;
   const alpha0 = (a0 + 2) * DEG;
   let alpha = alpha0;
   let q = 0;
@@ -328,6 +329,9 @@ export function solveSixDof(
   let x = 0;
   const samples: SixDofSample[] = [];
   const Re = 6371000;
+  const rho0 = Math.max(atm.rho, 1e-6);
+  const hRef = h;
+  const Hscale = 7200;
 
   const deriv = (st: {
     alpha: number;
@@ -339,6 +343,7 @@ export function solveSixDof(
     phi: number;
     VV: number;
     gamma: number;
+    h: number;
   }) => {
     const qh = (st.q * L) / (2 * st.VV);
     const ph = (st.p * bRef) / (2 * st.VV);
@@ -350,12 +355,13 @@ export function solveSixDof(
     const Cl = clb * st.beta + clp * ph + clr * rh;
     const Cm = p0.cm + cma * dAlpha + cmq * qh;
     const Cn = cnb * st.beta + cnp * ph + cnr * rh;
-    const qdyn = 0.5 * atm.rho * st.VV * st.VV;
+    const rho = rho0 * Math.exp(-(st.h - hRef) / Hscale);
+    const qdyn = 0.5 * rho * st.VV * st.VV;
     const Lift = qdyn * S * CL;
     const Drag = qdyn * S * CD;
     const Y = qdyn * S * CY;
-    const gLoc = g0 * (Re / (Re + h)) ** 2;
-    const aDot = st.q - Lift / (m * st.VV) + (gLoc * Math.cos(st.gamma)) / st.VV * Math.sin(st.alpha - (st.theta - st.gamma));
+    const gLoc = g0 * (Re / (Re + st.h)) ** 2;
+    const aDot = st.q - Lift / (m * st.VV) + ((gLoc * Math.cos(st.gamma)) / st.VV) * Math.sin(st.alpha - (st.theta - st.gamma));
     const qDot = (qdyn * S * L * Cm) / Iyy;
     const thDot = st.q;
     const bDot = st.p * Math.sin(st.alpha) - st.r * Math.cos(st.alpha) + Y / (m * st.VV);
@@ -363,12 +369,41 @@ export function solveSixDof(
     const rDot = (qdyn * S * bRef * Cn) / Izz;
     const phiDot = st.p + Math.tan(st.theta) * (st.q * Math.sin(st.phi) + st.r * Math.cos(st.phi));
     const vDot = -Drag / m - gLoc * Math.sin(st.gamma);
-    const gDot = st.VV > 20 ? Lift / (m * st.VV) + (st.VV / (Re + h) - gLoc / st.VV) * Math.cos(st.gamma) : 0;
-    return { aDot, qDot, thDot, bDot, pDot, rDot, phiDot, vDot, gDot };
+    const gDot = st.VV > 20 ? Lift / (m * st.VV) + (st.VV / (Re + st.h) - gLoc / st.VV) * Math.cos(st.gamma) : 0;
+    const hDot = st.VV * Math.sin(st.gamma);
+    const xDot = (st.VV * Math.cos(st.gamma) * Re) / (Re + st.h);
+    return { aDot, qDot, thDot, bDot, pDot, rDot, phiDot, vDot, gDot, hDot, xDot };
   };
 
+  type St = {
+    alpha: number;
+    q: number;
+    theta: number;
+    beta: number;
+    p: number;
+    r: number;
+    phi: number;
+    VV: number;
+    gamma: number;
+    h: number;
+    x: number;
+  };
+  const add = (st: St, k: ReturnType<typeof deriv>, s: number): St => ({
+    alpha: st.alpha + s * k.aDot,
+    q: st.q + s * k.qDot,
+    theta: st.theta + s * k.thDot,
+    beta: st.beta + s * k.bDot,
+    p: st.p + s * k.pDot,
+    r: st.r + s * k.rDot,
+    phi: st.phi + s * k.phiDot,
+    VV: st.VV + s * k.vDot,
+    gamma: st.gamma + s * k.gDot,
+    h: st.h + s * k.hDot,
+    x: st.x + s * k.xDot,
+  });
+
   for (let k = 0; k <= nStep; k++) {
-    if (k % 4 === 0) {
+    if (k % 8 === 0) {
       samples.push({
         t: k * dt,
         alphaDeg: alpha * RAD,
@@ -385,55 +420,24 @@ export function solveSixDof(
         xKm: x / 1000,
       });
     }
-    const s0 = { alpha, q, theta, beta, p, r, phi, VV, gamma };
+    const s0: St = { alpha, q, theta, beta, p, r, phi, VV, gamma, h, x };
     const k1 = deriv(s0);
-    const k2 = deriv({
-      alpha: alpha + 0.5 * dt * k1.aDot,
-      q: q + 0.5 * dt * k1.qDot,
-      theta: theta + 0.5 * dt * k1.thDot,
-      beta: beta + 0.5 * dt * k1.bDot,
-      p: p + 0.5 * dt * k1.pDot,
-      r: r + 0.5 * dt * k1.rDot,
-      phi: phi + 0.5 * dt * k1.phiDot,
-      VV: VV + 0.5 * dt * k1.vDot,
-      gamma: gamma + 0.5 * dt * k1.gDot,
-    });
-    const k3 = deriv({
-      alpha: alpha + 0.5 * dt * k2.aDot,
-      q: q + 0.5 * dt * k2.qDot,
-      theta: theta + 0.5 * dt * k2.thDot,
-      beta: beta + 0.5 * dt * k2.bDot,
-      p: p + 0.5 * dt * k2.pDot,
-      r: r + 0.5 * dt * k2.rDot,
-      phi: phi + 0.5 * dt * k2.phiDot,
-      VV: VV + 0.5 * dt * k2.vDot,
-      gamma: gamma + 0.5 * dt * k2.gDot,
-    });
-    const k4 = deriv({
-      alpha: alpha + dt * k3.aDot,
-      q: q + dt * k3.qDot,
-      theta: theta + dt * k3.thDot,
-      beta: beta + dt * k3.bDot,
-      p: p + dt * k3.pDot,
-      r: r + dt * k3.rDot,
-      phi: phi + dt * k3.phiDot,
-      VV: VV + dt * k3.vDot,
-      gamma: gamma + dt * k3.gDot,
-    });
-    alpha += (dt / 6) * (k1.aDot + 2 * k2.aDot + 2 * k3.aDot + k4.aDot);
-    q += (dt / 6) * (k1.qDot + 2 * k2.qDot + 2 * k3.qDot + k4.qDot);
-    theta += (dt / 6) * (k1.thDot + 2 * k2.thDot + 2 * k3.thDot + k4.thDot);
-    beta += (dt / 6) * (k1.bDot + 2 * k2.bDot + 2 * k3.bDot + k4.bDot);
-    p += (dt / 6) * (k1.pDot + 2 * k2.pDot + 2 * k3.pDot + k4.pDot);
-    r += (dt / 6) * (k1.rDot + 2 * k2.rDot + 2 * k3.rDot + k4.rDot);
-    phi += (dt / 6) * (k1.phiDot + 2 * k2.phiDot + 2 * k3.phiDot + k4.phiDot);
-    VV += (dt / 6) * (k1.vDot + 2 * k2.vDot + 2 * k3.vDot + k4.vDot);
-    gamma += (dt / 6) * (k1.gDot + 2 * k2.gDot + 2 * k3.gDot + k4.gDot);
-    const dh = VV * Math.sin(gamma);
-    const dx = (VV * Math.cos(gamma) * Re) / (Re + h);
-    h += dt * dh;
-    x += dt * dx;
-    psi += dt * (q * Math.sin(phi) + r * Math.cos(phi)) / Math.max(Math.cos(theta), 0.2);
+    const k2 = deriv(add(s0, k1, 0.5 * dt));
+    const k3 = deriv(add(s0, k2, 0.5 * dt));
+    const k4 = deriv(add(s0, k3, dt));
+    const step = (a: number, b: number, c: number, d: number) => (dt / 6) * (a + 2 * b + 2 * c + d);
+    alpha += step(k1.aDot, k2.aDot, k3.aDot, k4.aDot);
+    q += step(k1.qDot, k2.qDot, k3.qDot, k4.qDot);
+    theta += step(k1.thDot, k2.thDot, k3.thDot, k4.thDot);
+    beta += step(k1.bDot, k2.bDot, k3.bDot, k4.bDot);
+    p += step(k1.pDot, k2.pDot, k3.pDot, k4.pDot);
+    r += step(k1.rDot, k2.rDot, k3.rDot, k4.rDot);
+    phi += step(k1.phiDot, k2.phiDot, k3.phiDot, k4.phiDot);
+    VV += step(k1.vDot, k2.vDot, k3.vDot, k4.vDot);
+    gamma += step(k1.gDot, k2.gDot, k3.gDot, k4.gDot);
+    h += step(k1.hDot, k2.hDot, k3.hDot, k4.hDot);
+    x += step(k1.xDot, k2.xDot, k3.xDot, k4.xDot);
+    psi += dt * ((q * Math.sin(phi) + r * Math.cos(phi)) / Math.max(Math.cos(theta), 0.2));
     alpha = clamp(alpha, -20 * DEG, 25 * DEG);
     beta = clamp(beta, -20 * DEG, 20 * DEG);
     q = clamp(q, -2, 2);
@@ -441,9 +445,10 @@ export function solveSixDof(
     r = clamp(r, -2, 2);
     VV = clamp(VV, 80, 12000);
     h = clamp(h, 0, 95000);
+    if (h <= 0) break;
   }
 
-  notes.push(`RK4 ${nStep} steps × dt=${dt}s from α₀+2° pulse. Classic 4th-order, local truncation O(dt⁵).`);
+  notes.push(`RK4 ${nStep} steps × dt=${dt}s from α₀+2°. Position (h, x) is in the same RK4 step. Density follows ρ e^{−Δh/H}, H = 7.2 km.`);
 
   return {
     derivs,

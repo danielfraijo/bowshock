@@ -9,6 +9,7 @@
 import type { FinSet, FlightSpec, VehicleConfig } from "./types.ts";
 import { DEG } from "./util.ts";
 import { buildBody, radiusAt } from "./geometry.ts";
+import { liftOml, liftXs } from "../liftbody-oml.ts";
 
 export interface Preset {
   id: string;
@@ -211,6 +212,29 @@ export function aircraftWBT(): VehicleConfig {
   };
 }
 
+export function searsHaackMissile(L = 4, rMax = 0.25): VehicleConfig {
+  const n = 64;
+  const stations = [];
+  for (let i = 0; i <= n; i++) {
+    const u = 0.5 * (1 - Math.cos((Math.PI * i) / n));
+    const t = 4 * u * (1 - u);
+    const r = i === 0 || i === n ? 0 : rMax * Math.pow(Math.max(t, 0), 0.75);
+    stations.push({ x: u * L, r });
+  }
+  return {
+    name: "Sears–Haack body",
+    kind: "missile",
+    body: { stations, exitDiameter: 0, baseDrag: false },
+    sets: [],
+    ref: { xcg: 0.5 * L, sRef: Math.PI * rMax * rMax, lRef: 2 * rMax },
+    bodyMethod: "slender",
+    notes: [
+      "Closed Sears–Haack body: minimum wave drag for this length and volume in linearized supersonic flow (Sears 1947, Haack 1941).",
+      "Area-rule D/q should sit on (9π/2)(Amax/L)². Tangent-cone is a different, nonlinear estimate and will not match.",
+    ],
+  };
+}
+
 export const DEFAULT_FLIGHT: FlightSpec = {
   machs: [0.3, 0.6, 0.9, 1.2, 1.5, 2, 3, 4, 5, 6, 8],
   alphas: [-4, -2, 0, 2, 4, 6, 8, 10, 12, 15, 20],
@@ -249,6 +273,13 @@ export const PRESETS: Preset[] = [
     flight: { machs: [2, 3, 4, 5, 6, 8, 10], alphas: [0, 2, 5, 10, 15, 20, 25], altKm: 30 },
   },
   {
+    id: "sears-haack",
+    name: "Sears–Haack",
+    blurb: "Minimum-wave-drag body. Area rule vs the closed-form (9π/2)(Amax/L)².",
+    config: searsHaackMissile(),
+    flight: { machs: [1.2, 1.5, 2, 3, 4], alphas: [0, 2, 4, 6], altKm: 15 },
+  },
+  {
     id: "aircraft",
     name: "Wing-body-tail",
     blurb: "Generic aircraft WBT configuration (Missile DATCOM-style methods).",
@@ -278,6 +309,10 @@ export function fromWaveriderDesign(p: {
   fins?: number;
   cgFrac?: number;
   name?: string;
+  family?: string;
+  leRadius?: number;
+  planform?: string;
+  planformPower?: number;
 }): VehicleConfig {
   const L = p.length;
   const D = Math.max(p.height, 0.05);
@@ -285,7 +320,6 @@ export function fromWaveriderDesign(p: {
   const noseLen = Math.min(L * 0.35, D / 2 / Math.tan(Math.max(cone, 1 * DEG)));
   const sets: FinSet[] = [];
   {
-    // elevon / trailing-edge panel pair representing the aft planform
     sets.push({
       name: "elevons",
       role: "htail",
@@ -317,6 +351,35 @@ export function fromWaveriderDesign(p: {
       section: "hex",
       cfoc: 0,
     });
+  }
+  if (p.family === "liftbody") {
+    const oml = liftOml({
+      length: L,
+      span: p.span,
+      height: D,
+      leRadius: p.leRadius ?? Math.max(0.008 * L, 0.02),
+      planform: p.planform ?? "power",
+      planformPower: p.planformPower ?? 0.75,
+    });
+    const xs = liftXs(oml, 72);
+    const elliptic = [];
+    for (const x of xs) {
+      if (x <= 1e-8) continue;
+      const b = 0.5 * (oml.upper(x) + oml.lower(x));
+      elliptic.push({ x, a: Math.max(oml.a(x), 1e-4), b: Math.max(b, 1e-4) });
+    }
+    return {
+      name: p.name ?? "lifting body",
+      kind: "missile",
+      body: { elliptic, exitDiameter: 0 },
+      sets,
+      ref: { xcg: (p.cgFrac ?? 0.62) * L, sRef: Math.max(p.span * L * 0.45, 1e-4), lRef: L },
+      bodyMethod: "newtonian",
+      notes: [
+        `Lifting-body ELLBOD uses the CAD loft (${elliptic.length} stations). Nose curvature R = ${(oml.rn * 1000).toFixed(1)} mm, osculating parabola, slope monotone — not a spherical cap.`,
+        "Sref is the planform, Lref is the length. Hypersonic body loads use modified Newtonian. Not an HL-20 wind-tunnel deck.",
+      ],
+    };
   }
   return {
     name: p.name ?? "from waverider design",

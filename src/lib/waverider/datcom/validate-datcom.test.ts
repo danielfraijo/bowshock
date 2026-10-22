@@ -17,12 +17,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DEG, RAD, ellipticE } from "./util.ts";
-import { ackeretClAlpha, cpMaxNewton, flatPlateCn, pitotRatio, prandtlMeyer } from "./gasdyn.ts";
+import { ackeretClAlpha, areaRuleDrag, cpMaxNewton, flatPlateCn, pitotRatio, prandtlMeyer, searsHaack, searsHaackStations } from "./gasdyn.ts";
 import { buildBody, bodyIntegrals, finGeom, noseRadius, sectionSlopeIntegral } from "./geometry.ts";
 import { slenderKW, stripKW, interferenceFactors } from "./interference.ts";
 import { bodyAxial, bodyNormal, crossflowCd } from "./body.ts";
 import { criticalMachEstimate, finAxial, flapEffectiveness, subsonicCLa, supersonicCLa } from "./fin.ts";
-import { flowConditions, skinFrictionCf } from "./flow.ts";
+import { flowConditions, skinFrictionCf, cfOptions } from "./flow.ts";
 import { runCases } from "./model.ts";
 import { basicFinner, cruciformMissile, hypersonicConeCylinderFlare, aircraftWBT, fromWaveriderDesign } from "./presets.ts";
 import { formatCSV, formatMissile, formatUSAF, toSixDofTable } from "./output.ts";
@@ -50,15 +50,59 @@ describe("gasdyn analytical limits", () => {
     const lin = ackeretClAlpha(M) * a;
     near(cn, lin, 0.02 * Math.abs(lin) + 1e-4, "SE vs Ackeret");
   });
-  it("Newtonian Cp,max at M→∞ approaches (gamma+1)^2/(gamma) / (gamma) wait: (γ+1)²/(4γ) * 2? Lees: Cpmax→ (γ+1)²/(4γ) *2/γ? Actually Cp_max → 1.84 for γ=1.4", () => {
-    // Classical result: lim M→∞ Cp_max = (γ+1)² / (4γ) * 2?  p02/q = [ (γ+1)^2/(4γ) ]^{γ/(γ-1)} * ((γ+1)/(γ-1))^{1/(γ-1)} * 2/(γ) … numerically ~1.839 for γ=1.4
+  it("Newtonian Cp,max at M→∞ approaches the Lees limit 1.839", () => {
+    // Classical result: lim M→∞ Cp_max ≈ 1.839 for γ=1.4
     near(cpMaxNewton(100), 1.839, 0.01, "Cpmax hypersonic");
+  });
+  it("Sears–Haack CD on frontal area is (9 π² / 2) (R/L)²", () => {
+    const R = 0.25;
+    const L = 4;
+    const sh = searsHaack(R, L);
+    const cd = ((9 * Math.PI * Math.PI) / 2) * (R / L) ** 2;
+    near(sh.cdFrontal, cd, 1e-12, "SH CD");
+    const A = Math.PI * R * R;
+    near(sh.dragOverQ, ((9 * Math.PI) / 2) * (A / L) ** 2, 1e-12, "SH D/q");
+    near(sh.dragOverQ / A, sh.cdFrontal, 1e-12, "SH consistent");
+  });
+  it("area-rule integral recovers the Sears–Haack closed form", () => {
+    // Kármán–Moore double integral on the exact Sears–Haack area law.
+    // Slender (L/R = 20) so the tip singularity is the only numerical error.
+    const R = 0.2;
+    const L = 4;
+    const st = searsHaackStations(R, L, 801);
+    const got = areaRuleDrag(st.x, st.area);
+    const want = searsHaack(R, L).dragOverQ;
+    near(got, want, 0.03 * want, `area-rule ${got} vs Sears–Haack ${want}`);
   });
 });
 
 describe("geometry", () => {
   it("cone nose radius is linear", () => {
     near(noseRadius("cone", 0.5, 1, 2), 0.5, 1e-12);
+  });
+  it("sharp-cone wave drag equals Taylor–Maccoll Cp on the base (Sims / NACA)", () => {
+    const L = 1;
+    const theta = 10 * DEG;
+    const R = L * Math.tan(theta);
+    const prof = buildBody({
+      parametric: { noseKind: "cone", noseLength: L, noseDiameter: 2 * R, centerLength: 0, aftLength: 0 },
+    });
+    const ints = bodyIntegrals(prof);
+    const flow = flowConditions({ machs: [6], alphas: [0], altKm: 20 }, 0);
+    const ax = bodyAxial({
+      prof,
+      ints,
+      sRef: ints.baseArea,
+      lRef: 2 * R,
+      latRef: 2 * R,
+      xcg: 0.6 * L,
+      flow,
+      method: "slender",
+      cf: cfOptions({ xcg: 0.6 * L, sRef: ints.baseArea, lRef: 2 * R }),
+      baseDrag: false,
+    });
+    const cp = coneSurfaceCp(6, theta, 1.4);
+    near(ax.CAwave, cp, 0.03 * Math.abs(cp) + 1e-4, "cone CA vs TM Cp");
   });
   it("von Karman at mid-station is 1/√2 of base radius (Haack C=0)", () => {
     // r/R = sqrt( (θ - sin 2θ / 2)/π ) with θ=acos(1-2ξ); at ξ=0.5, θ=π/2 → r/R = sqrt( (π/2)/π ) = 1/√2

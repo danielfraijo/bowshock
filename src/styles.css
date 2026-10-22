@@ -108,20 +108,14 @@
     color: var(--color-accent-fg);
   }
 
-  /* Buttons: clipped corners (top-left + bottom-right) + a hairline drawn along the cut. */
+  /* Buttons are rectangles. A clipped corner reads as a sci-fi badge, not a control. */
   button:not([role="switch"]):not([role="tab"]):not(.hud-plain),
   .hud-cut {
     --edge: var(--color-line);
     position: relative;
     letter-spacing: 0.04em;
-    clip-path: polygon(
-      var(--cut) 0,
-      100% 0,
-      100% calc(100% - var(--cut)),
-      calc(100% - var(--cut)) 100%,
-      0 100%,
-      0 var(--cut)
-    );
+    border-radius: 0;
+    clip-path: none;
     transition:
       background-color 120ms var(--ease-hud),
       color 120ms var(--ease-hud),
@@ -129,27 +123,7 @@
   }
   button:not([role="switch"]):not([role="tab"]):not(.hud-plain)::after,
   .hud-cut::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background:
-      linear-gradient(
-          to bottom right,
-          transparent calc(50% - 0.75px),
-          var(--edge) calc(50% - 0.75px),
-          var(--edge) calc(50% + 0.75px),
-          transparent calc(50% + 0.75px)
-        )
-        top left / var(--cut) var(--cut) no-repeat,
-      linear-gradient(
-          to bottom right,
-          transparent calc(50% - 0.75px),
-          var(--edge) calc(50% - 0.75px),
-          var(--edge) calc(50% + 0.75px),
-          transparent calc(50% + 0.75px)
-        )
-        bottom right / var(--cut) var(--cut) no-repeat;
+    content: none;
   }
   button[class~="bg-accent"]:not([role="tab"]) {
     --edge: var(--color-accent);
@@ -402,35 +376,16 @@ body::before {
     text-shadow: none;
   }
 
-  /* panel: hairline border, one cut corner (bottom-right) with its diagonal drawn, corner brackets on top-left */
+  /* panel: flat rectangle, one red rule on the top edge */
   .hud-panel {
     --panel-edge: var(--color-line);
     position: relative;
-    background: linear-gradient(180deg, rgb(var(--accent-rgb) / 0.035), transparent 40%), var(--color-surface-2);
+    background: var(--color-surface-2);
     border: 1px solid var(--panel-edge);
-    clip-path: polygon(
-      0 0,
-      100% 0,
-      100% calc(100% - var(--cut)),
-      calc(100% - var(--cut)) 100%,
-      0 100%
-    );
+    clip-path: none;
   }
   .hud-panel::after {
-    content: "";
-    position: absolute;
-    right: -1px;
-    bottom: -1px;
-    width: var(--cut);
-    height: var(--cut);
-    pointer-events: none;
-    background: linear-gradient(
-      to top left,
-      transparent calc(50% - 0.75px),
-      var(--panel-edge) calc(50% - 0.75px),
-      var(--panel-edge) calc(50% + 0.75px),
-      transparent calc(50% + 0.75px)
-    );
+    content: none;
   }
   details.hud-panel::before {
     display: none;
@@ -438,13 +393,14 @@ body::before {
   .hud-panel::before {
     content: "";
     position: absolute;
-    top: -1px;
-    left: -1px;
-    width: 12px;
-    height: 12px;
+    top: 0;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 2px;
     pointer-events: none;
-    border-top: 2px solid var(--color-accent);
-    border-left: 2px solid var(--color-accent);
+    background: var(--color-accent);
+    border: 0;
   }
   .hud-panel--flat {
     background: var(--color-surface);
@@ -558,7 +514,7 @@ body::before {
     border: 1px solid var(--color-line);
     background: rgb(5 8 11 / 0.82);
     backdrop-filter: blur(3px);
-    clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+    clip-path: none;
   }
   .hud-led {
     display: inline-block;
@@ -633,7 +589,7 @@ body::before {
     padding: 2px;
     background: var(--color-bg);
     box-shadow: inset 0 0 0 1px var(--color-line);
-    clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+    clip-path: none;
   }
   .hud-seg > button {
     font-family: var(--font-display);
@@ -707,7 +663,7 @@ body::before {
     color: var(--color-muted);
     background: transparent;
     box-shadow: inset 0 0 0 1px transparent;
-    clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+    clip-path: none;
   }
   .hud-tab-secondary > [role="tab"]:hover {
     color: var(--color-fg);
@@ -754,10 +710,11 @@ body::before {
   }
   .hud-slider-thumb {
     display: block;
-    width: 12px;
-    height: 22px;
+    width: 2px;
+    height: 18px;
     background: var(--color-accent);
-    clip-path: polygon(0 4px, 4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%);
+    clip-path: none;
+    border-radius: 0;
     filter: drop-shadow(0 0 4px rgb(var(--accent-rgb) / 0.8));
     transition: transform 120ms var(--ease-hud);
   }
@@ -881,7 +838,7 @@ body::before {
       0 0 0 1px var(--color-bg),
       0 8px 28px rgb(0 0 0 / 0.7),
       var(--glow-sm) !important;
-    clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+    clip-path: none;
   }
   [role="tooltip"] {
     padding: 4px 8px;

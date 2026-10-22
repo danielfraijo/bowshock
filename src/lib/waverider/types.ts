@@ -265,8 +265,8 @@ export const FAMILY_META: Record<
   },
   liftbody: {
     label: "Lifting body",
-    blurb: "Elliptic HL-20 / HTV-class. Entry heating study.",
-    generating: "Elliptic loft / power-law planform",
+    blurb: "Elliptic HL-20 class loft. Parabolic nose, no spherical shoulder.",
+    generating: "Paraboloid nose, elliptic section, monotone slope",
     domain: "external",
   },
   ramjet: {
