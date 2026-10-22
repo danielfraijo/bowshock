@@ -22,8 +22,53 @@ import { buildVehicle } from "./generate";
 import { DEG, clamp } from "./math";
 import { panelAero, type RateState } from "./panel";
 import type { AeroMethod, BuiltVehicle, DesignParams, TriMesh } from "./types";
+// [aerodb-perf] wasm batch evaluator + worker pool behind generateAeroDatabase (opt-in through options; default "auto")
+import { evalCase, packPoints, STRIDE_OUT, type BatchCase, type BatchPoint } from "./aerodb-batch";
+import { AeroPool, loopbackPort, sharedAeroPool, type PoolJob } from "./aerodb-pool";
+import { kernelSupports, panelKernel } from "./panel-kernel";
 
+/** Point cap of the single-threaded TypeScript path (unchanged). */
 export const AERODB_POINT_CAP = 480;
+/** [aerodb-perf] Point cap when the cuspis-panel wasm kernel (and, in the browser, the worker pool) carries the grid. */
+export const AERODB_POINT_CAP_FAST = 20000;
+
+/** [aerodb-perf] How the coefficient grid is evaluated. */
+export type AeroDbEngine = "auto" | "pool" | "wasm" | "ts";
+
+/** [aerodb-perf] Options of generateAeroDatabase. Every field is optional; `{ signal, onProgress }` callers are unchanged. */
+export interface AeroDbOptions {
+  signal?: AbortSignal;
+  onProgress?: (p: AeroDbProgress) => void;
+  /**
+   * "auto" (default): worker pool when Web Workers exist, else wasm on the calling thread (time-sliced), else TS.
+   * "pool": worker pool (`pool`, else the shared browser pool, else an in-process loopback pool).
+   * "wasm": wasm on the calling thread. "ts": the original TypeScript loop.
+   * Methods the kernel does not carry ("euler") always use TS.
+   */
+  engine?: AeroDbEngine;
+  /** Grid point cap. Default AERODB_POINT_CAP on the TS path, AERODB_POINT_CAP_FAST otherwise. */
+  pointCap?: number;
+  /** Pool to run on (Node: createNodeAeroPool from aerodb-pool-node.ts). */
+  pool?: AeroPool;
+  /** Points per worker chunk (pool) or per slice (calling thread). */
+  chunkSize?: number;
+}
+
+type ResolvedEngine = "pool" | "wasm" | "ts";
+
+function resolveEngine(method: AeroMethod, opts?: AeroDbOptions): ResolvedEngine {
+  const want = opts?.engine ?? "auto";
+  if (want === "ts" || !kernelSupports(method)) return "ts";
+  if (want === "pool") return "pool";
+  if (want === "wasm") return panelKernel() ? "wasm" : "ts";
+  if (opts?.pool || sharedAeroPool()) return "pool";
+  return panelKernel() ? "wasm" : "ts";
+}
+
+/** [aerodb-perf] Grid point cap that generateAeroDatabase will apply by default for this method here. */
+export function aeroDbPointCap(method: AeroMethod = "cbaero", engine: AeroDbEngine = "auto"): number {
+  return resolveEngine(method, { engine }) === "ts" ? AERODB_POINT_CAP : AERODB_POINT_CAP_FAST;
+}
 
 export interface AeroDbSpec {
   machMin: number;
@@ -68,6 +113,8 @@ export interface AeroDbMeta {
   index: "flat i = ((im*nAlpha + ia)*nBeta + ib)*nDelta + id  (delta fastest)";
   generatedAt: string;
   assumptions: string[];
+  /** [aerodb-perf] Where the coefficient grid ran: "ts", "wasm", or "pool:<n>". */
+  engine?: string;
 }
 
 export interface AeroDbPoint {
@@ -235,8 +282,134 @@ function coeffOf(
 ): Coeff {
   const atm = atmosphere(altKm, mach, params.gamma);
   const flight: DesignParams = { ...params, lockFlight: false, flightMach: mach, aeroMethod: params.aeroMethod };
-  const a = panelAero(mesh, flight, atm, alpha, beta, sRef, Math.max(params.length, 1e-6), rates);
+  // [aerodb-perf] forcesOnly: the table never reads heating; coefficients are identical with or without it.
+  const a = panelAero(mesh, flight, atm, alpha, beta, sRef, Math.max(params.length, 1e-6), rates, true);
   return { cl: a.cl, cd: a.cd, cy: a.cy, cm: a.cm, cn: a.cn, cll: a.cll, ca: a.ca, ld: a.ld };
+}
+
+function coeffAt(out: Float64Array, k: number): Coeff {
+  const o = k * STRIDE_OUT;
+  return { cl: out[o], cd: out[o + 1], cy: out[o + 2], cm: out[o + 3], cn: out[o + 4], cll: out[o + 5], ca: out[o + 6], ld: out[o + 7] };
+}
+
+/** Body-rate perturbations of the dynamic derivatives (same values as the TS loop below). */
+function dynamicRates(spec: AeroDbSpec, base: DesignParams, mach: number): RateState[] {
+  const atm = atmosphere(spec.altKm, mach, base.gamma);
+  const V = Math.max(50, atm.V);
+  const L = Math.max(base.length, 1e-6);
+  const bRef = Math.max(base.span, 1e-6);
+  return [
+    { p: 0, q: (0.02 * 2 * V) / L, r: 0 },
+    { p: (0.02 * 2 * V) / bRef, q: 0, r: 0 },
+    { p: 0, q: 0, r: (0.02 * 2 * V) / bRef },
+  ];
+}
+
+interface FastResult {
+  grid: Coeff[];
+  /** per Mach: [q, p, r] perturbed coefficients */
+  dyn: Coeff[][];
+  engine: string;
+}
+
+/**
+ * [aerodb-perf] Evaluate the whole coefficient grid (and the dynamic-derivative perturbations) in the
+ * cuspis-panel kernel: one case per deflection mesh, all points batched, on the pool or time-sliced here.
+ */
+async function evaluateFast(
+  engine: "pool" | "wasm",
+  base: DesignParams,
+  method: AeroMethod,
+  spec: AeroDbSpec,
+  axes: AeroDatabase["axes"],
+  meshFor: (delta: number) => { mesh: TriMesh; sRef: number },
+  opts: AeroDbOptions | undefined,
+  progress: (done: number, label: string) => void,
+): Promise<FastResult> {
+  const signal = opts?.signal;
+  const abort = () => {
+    if (signal?.aborted) throw new DOMException("Aero database cancelled", "AbortError");
+  };
+  const L = Math.max(base.length, 1e-6);
+  const cases: BatchCase[] = [];
+  const pts: BatchPoint[][] = [];
+  for (const delta of axes.delta_deg) {
+    abort();
+    progress(0, `geometry  δ ${delta.toFixed(1)}`);
+    await yieldThread();
+    const pack = meshFor(delta);
+    cases.push({ mesh: pack.mesh, params: { ...base, aeroMethod: method, elevonDeg: delta }, altKm: spec.altKm, sRef: pack.sRef, lRef: L });
+    pts.push([]);
+  }
+  const gridAt: [number, number][] = [];
+  for (const mach of axes.mach) {
+    for (const alpha of axes.alpha_deg) {
+      for (const beta of axes.beta_deg) {
+        for (let id = 0; id < axes.delta_deg.length; id++) {
+          gridAt.push([id, pts[id].length]);
+          pts[id].push({ mach, alpha, beta });
+        }
+      }
+    }
+  }
+  const dynAt: [number, number][] = [];
+  if (spec.dynamicDerivatives) {
+    const alphaA = nearest(axes.alpha_deg, base.alphaDeg);
+    const betaA = nearest(axes.beta_deg, 0);
+    const idA = axes.delta_deg.indexOf(nearest(axes.delta_deg, 0));
+    for (const mach of axes.mach) {
+      dynAt.push([idA, pts[idA].length]);
+      for (const rates of dynamicRates(spec, base, mach)) pts[idA].push({ mach, alpha: alphaA, beta: betaA, rates });
+    }
+  }
+  const jobs: PoolJob[] = cases.map((c, i) => ({ case: c, points: packPoints(pts[i]) }));
+  const total = pts.reduce((s, p) => s + p.length, 0);
+  let outs: Float64Array[] = [];
+  let label = "wasm";
+  let ran = false;
+  if (engine === "pool") {
+    const pool = opts?.pool ?? sharedAeroPool() ?? new AeroPool({ size: 1, spawn: () => loopbackPort() });
+    try {
+      const r = await pool.run(jobs, {
+        signal,
+        chunkSize: opts?.chunkSize,
+        onProgress: (p) => progress(p.done, `wasm pool ×${pool.size}  ${p.done}/${p.total} points`),
+      });
+      outs = r.outs;
+      label = r.engine === "wasm" ? `pool:${pool.size}` : `pool:${pool.size}:${r.engine}`;
+      ran = true;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      // worker failed to start or crashed: finish on this thread
+    }
+  }
+  if (!ran) {
+    let done = 0;
+    let anyTs = false;
+    const slice = Math.max(1, Math.floor(opts?.chunkSize ?? 16));
+    for (const job of jobs) {
+      const n = job.points.length / 7;
+      const out = new Float64Array(n * STRIDE_OUT);
+      for (let s = 0; s < n; s += slice) {
+        abort();
+        const e = Math.min(n, s + slice);
+        const r = evalCase(job.case, job.points.subarray(s * 7, e * 7), "wasm");
+        if (r.engine !== "wasm") anyTs = true;
+        out.set(r.out, s * STRIDE_OUT);
+        done += e - s;
+        progress(done, `wasm  ${done}/${total} points`);
+        await yieldThread();
+      }
+      outs.push(out);
+    }
+    label = anyTs ? "ts" : "wasm";
+  }
+  abort();
+  return {
+    grid: gridAt.map(([j, k]) => coeffAt(outs[j], k)),
+    dyn: dynAt.map(([j, k]) => [coeffAt(outs[j], k), coeffAt(outs[j], k + 1), coeffAt(outs[j], k + 2)]),
+    engine: label,
+  };
 }
 
 function nearest(axis: number[], value: number): number {
@@ -255,18 +428,20 @@ function nearest(axis: number[], value: number): number {
 export async function generateAeroDatabase(
   built: BuiltVehicle,
   spec: AeroDbSpec,
-  opts?: { signal?: AbortSignal; onProgress?: (p: AeroDbProgress) => void },
+  opts?: AeroDbOptions,
 ): Promise<AeroDatabase> {
   const base = built.params;
   const designMach = base.mach;
   const { axes, points: nPoints } = gridCount(spec, designMach, base.alphaDeg);
-  if (nPoints > AERODB_POINT_CAP) {
+  const method: AeroMethod = spec.method || "cbaero";
+  const engine = resolveEngine(method, opts);
+  const cap = opts?.pointCap ?? (engine === "ts" ? AERODB_POINT_CAP : AERODB_POINT_CAP_FAST);
+  if (nPoints > cap) {
     throw new Error(
-      `This grid is ${nPoints} points. The cap is ${AERODB_POINT_CAP} so the browser stays responsive — widen a step or shrink a range.`,
+      `This grid is ${nPoints} points. The cap is ${cap} so the browser stays responsive — widen a step or shrink a range.`,
     );
   }
   if (nPoints < 1) throw new Error("Empty aero grid.");
-  const method: AeroMethod = spec.method || "cbaero";
   const assumptions = [
     "Same geometry at every Mach. Design Mach shapes the vehicle; other Mach numbers are off-design flight conditions.",
     `Coefficient method: ${method}.`,
@@ -305,14 +480,29 @@ export async function generateAeroDatabase(
     await yieldThread();
   };
 
+  // [aerodb-perf] grid + dynamic perturbations in the wasm kernel; null keeps the original TS loop
+  let fast: FastResult | null = null;
+  if (engine !== "ts") {
+    try {
+      fast = await evaluateFast(engine, base, method, spec, axes, meshFor, opts, (d, label) => opts?.onProgress?.({ done: d, total, label }));
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      fast = null;
+    }
+  }
+  const engineLabel = fast ? fast.engine : "ts";
+  if (fast && engineLabel !== "ts") {
+    assumptions.push(`Panel loop ran in the cuspis-panel wasm kernel (${engineLabel}): same model as panel.ts / shockexp.ts, heating skipped, coefficients match TS to 1e-6.`);
+  }
+
   for (const mach of axes.mach) {
     for (const alpha of axes.alpha_deg) {
       for (const beta of axes.beta_deg) {
         for (const delta of axes.delta_deg) {
-          await tick(`M ${mach.toFixed(2)}  α ${alpha.toFixed(1)}  β ${beta.toFixed(1)}  δ ${delta.toFixed(1)}`);
+          if (!fast) await tick(`M ${mach.toFixed(2)}  α ${alpha.toFixed(1)}  β ${beta.toFixed(1)}  δ ${delta.toFixed(1)}`);
           const pack = meshFor(delta);
           const params = { ...base, aeroMethod: method, elevonDeg: delta };
-          const c = coeffOf(pack.mesh, params, spec.altKm, mach, alpha, beta, pack.sRef);
+          const c = fast ? fast.grid[points.length] : coeffOf(pack.mesh, params, spec.altKm, mach, alpha, beta, pack.sRef);
           const onDesign = Math.abs(mach - designMach) <= Math.max(spec.machStep * 0.51, 0.05);
           points.push({
             mach,
@@ -402,7 +592,7 @@ export async function generateAeroDatabase(
     const id = axes.delta_deg.indexOf(deltaA);
     for (let im = 0; im < nM; im++) {
       const mach = axes.mach[im];
-      await tick(`dynamic derivatives  M ${mach.toFixed(2)}`);
+      if (!fast) await tick(`dynamic derivatives  M ${mach.toFixed(2)}`);
       const pack = meshFor(deltaA);
       const params = { ...base, aeroMethod: method, elevonDeg: deltaA };
       const atm = atmosphere(spec.altKm, mach, base.gamma);
@@ -413,9 +603,13 @@ export async function generateAeroDatabase(
       const pHat = 0.02;
       const rHat = 0.02;
       const anchor = at(im, ia, ib, id);
-      const qPair = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: (qHat * 2 * V) / L, r: 0 });
-      const pPair = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: (pHat * 2 * V) / bRef, q: 0, r: 0 });
-      const rPair = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: 0, r: (rHat * 2 * V) / bRef });
+      const [qPair, pPair, rPair] = fast
+        ? fast.dyn[im]
+        : [
+            coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: (qHat * 2 * V) / L, r: 0 }),
+            coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: (pHat * 2 * V) / bRef, q: 0, r: 0 }),
+            coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: 0, r: (rHat * 2 * V) / bRef }),
+          ];
       done += 3;
       const row: AeroDynamicRow = {
         mach,
@@ -534,6 +728,7 @@ export async function generateAeroDatabase(
       index: "flat i = ((im*nAlpha + ia)*nBeta + ib)*nDelta + id  (delta fastest)",
       generatedAt: new Date().toISOString(),
       assumptions,
+      engine: engineLabel,
     },
     axes,
     points,
