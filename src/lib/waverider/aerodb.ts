@@ -46,6 +46,11 @@ export interface AeroDbSpec {
   /** Body-rate derivatives at the anchor (α≈design, β=0, δ≈0) of each Mach. */
   dynamicDerivatives: boolean;
   altKm: number;
+  /** Optional explicit breakpoints. When non-empty they replace min/max/step for that axis. */
+  machList?: number[];
+  alphaList?: number[];
+  betaList?: number[];
+  deltaList?: number[];
 }
 
 export interface AeroDbMeta {
@@ -202,12 +207,29 @@ export function axisBreaks(min: number, max: number, step: number, force: number
   return uniq;
 }
 
+/** Explicit breakpoints, sorted and de-duplicated. `force` values inside the list's span are added, as in `axisBreaks`. */
+export function listBreaks(list: number[], force: number[] = []): number[] {
+  const vals = list.filter(Number.isFinite);
+  if (!vals.length) return [];
+  const lo = Math.min(...vals);
+  const hi = Math.max(...vals);
+  for (const f of force) if (f >= lo - 1e-8 && f <= hi + 1e-8) vals.push(f);
+  const uniq = [...new Set(vals.map((v) => Math.round(v * 1e6) / 1e6))];
+  uniq.sort((a, b) => a - b);
+  return uniq;
+}
+
+function axisOf(list: number[] | undefined, min: number, max: number, step: number, force: number[]): number[] {
+  const fromList = list?.length ? listBreaks(list, force) : [];
+  return fromList.length ? fromList : axisBreaks(min, max, step, force);
+}
+
 export function gridCount(spec: AeroDbSpec, designMach: number, designAlpha: number): { axes: AeroDatabase["axes"]; points: number } {
   const axes = {
-    mach: axisBreaks(spec.machMin, spec.machMax, spec.machStep, [designMach]),
-    alpha_deg: axisBreaks(spec.alphaMin, spec.alphaMax, spec.alphaStep, [designAlpha, 0]),
-    beta_deg: axisBreaks(spec.betaMin, spec.betaMax, spec.betaStep, [0]),
-    delta_deg: axisBreaks(spec.deltaMin, spec.deltaMax, spec.deltaStep, [0]),
+    mach: axisOf(spec.machList, spec.machMin, spec.machMax, spec.machStep, [designMach]),
+    alpha_deg: axisOf(spec.alphaList, spec.alphaMin, spec.alphaMax, spec.alphaStep, [designAlpha, 0]),
+    beta_deg: axisOf(spec.betaList, spec.betaMin, spec.betaMax, spec.betaStep, [0]),
+    delta_deg: axisOf(spec.deltaList, spec.deltaMin, spec.deltaMax, spec.deltaStep, [0]),
   };
   return { axes, points: axes.mach.length * axes.alpha_deg.length * axes.beta_deg.length * axes.delta_deg.length };
 }
@@ -345,7 +367,7 @@ export async function generateAeroDatabase(
           const pack = meshFor(delta);
           const params = { ...base, aeroMethod: method, elevonDeg: delta };
           const c = coeffOf(pack.mesh, params, spec.altKm, mach, alpha, beta, pack.sRef);
-          const onDesign = Math.abs(mach - designMach) <= Math.max(spec.machStep * 0.51, 0.05);
+          const onDesign = Math.abs(mach - designMach) <= (spec.machList?.length ? 0.05 : Math.max(spec.machStep * 0.51, 0.05));
           points.push({
             mach,
             alpha_deg: alpha,

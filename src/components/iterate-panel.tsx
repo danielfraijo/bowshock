@@ -12,6 +12,16 @@ import {
   type AeroDatabase,
   type AeroDbSpec,
 } from "@/lib/waverider/aerodb";
+import {
+  AERODB_COEFS,
+  COEF_LABEL,
+  aeroDbZip,
+  coefVsAlphaByMach,
+  coefVsDeltaByMach,
+  parseAxisList,
+  summarizeAeroDb,
+  type SeriesRow,
+} from "@/lib/waverider/aerodb-summary";
 import { genericDeck, openFoamFiles, python6dofSource, su2Config } from "@/lib/waverider/export-cfd";
 import {
   defaultFlySpec,
@@ -41,6 +51,9 @@ import { fmt } from "@/lib/waverider/math";
 import { downloadBlob } from "@/lib/utils";
 
 type Sub = "db" | "opt" | "fly" | "mass" | "compare";
+type ListAxis = "machList" | "alphaList" | "betaList" | "deltaList";
+
+const MACH_COLORS = ["#ff2d2d", "#f3efe6", "#ff8a5c", "#b9b3a8", "#c94f4f", "#ffd9c7", "#7a4545"];
 
 const HIST_KEY = "cuspis.history.v1";
 const VAR_KEY = "cuspis.variants.v1";
@@ -108,6 +121,9 @@ export function IteratePanel({
   const [dbProg, setDbProg] = useState({ done: 0, total: 0, label: "" });
   const [busy, setBusy] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [axisMode, setAxisMode] = useState<"range" | "list">("range");
+  const [listText, setListText] = useState<Record<ListAxis, string>>({ machList: "", alphaList: "", betaList: "", deltaList: "" });
+  const [listErr, setListErr] = useState<string | null>(null);
 
   const [flySpec, setFlySpec] = useState<FlySpec>(() => defaultFlySpec(params));
   const [fly, setFly] = useState<FlyResult | null>(null);
@@ -130,6 +146,38 @@ export function IteratePanel({
 
   const preview = useMemo(() => gridCount(spec, params.mach, params.alphaDeg), [spec, params.mach, params.alphaDeg]);
   const internal = domainOf(params.family) === "internal";
+  const extra = useMemo(() => (db ? summarizeAeroDb(db, params.alphaDeg) : null), [db, params.alphaDeg]);
+  const ldSeries = useMemo(() => (db ? coefVsAlphaByMach(db, "ld") : null), [db]);
+  const cmDelta = useMemo(() => (db ? coefVsDeltaByMach(db, "cm", params.alphaDeg) : null), [db, params.alphaDeg]);
+
+  const setList = (key: ListAxis, text: string) => {
+    const nextText = { ...listText, [key]: text };
+    setListText(nextText);
+    try {
+      const next = { ...spec };
+      for (const k of Object.keys(nextText) as ListAxis[]) next[k] = parseAxisList(nextText[k]);
+      setSpec(next);
+      setListErr(null);
+    } catch (err) {
+      setListErr(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const pickAxisMode = (mode: "range" | "list") => {
+    setAxisMode(mode);
+    setListErr(null);
+    if (mode === "range") setSpec({ ...spec, machList: [], alphaList: [], betaList: [], deltaList: [] });
+    else {
+      const next = { ...spec };
+      for (const k of Object.keys(listText) as ListAxis[]) {
+        try {
+          next[k] = parseAxisList(listText[k]);
+        } catch {
+          next[k] = [];
+        }
+      }
+      setSpec(next);
+    }
+  };
 
   const stop = () => abortRef.current?.abort();
 
@@ -331,10 +379,32 @@ export function IteratePanel({
             One table covers the design Mach and the off-design Mach numbers on the same shape. Deflection rebuilds the elevon or the fin ridges.
             Static derivatives are central differences of the table, one-sided at the ends. Dynamic derivatives are central body-rate differences at β = 0.
           </p>
-          <AxisRange label="Mach" a={spec.machMin} b={spec.machMax} s={spec.machStep} onA={(machMin) => setSpec({ ...spec, machMin })} onB={(machMax) => setSpec({ ...spec, machMax })} onS={(machStep) => setSpec({ ...spec, machStep })} />
-          <AxisRange label="α deg" a={spec.alphaMin} b={spec.alphaMax} s={spec.alphaStep} onA={(alphaMin) => setSpec({ ...spec, alphaMin })} onB={(alphaMax) => setSpec({ ...spec, alphaMax })} onS={(alphaStep) => setSpec({ ...spec, alphaStep })} />
-          <AxisRange label="β deg" a={spec.betaMin} b={spec.betaMax} s={spec.betaStep} onA={(betaMin) => setSpec({ ...spec, betaMin })} onB={(betaMax) => setSpec({ ...spec, betaMax })} onS={(betaStep) => setSpec({ ...spec, betaStep })} />
-          <AxisRange label="δ deg" a={spec.deltaMin} b={spec.deltaMax} s={spec.deltaStep} onA={(deltaMin) => setSpec({ ...spec, deltaMin })} onB={(deltaMax) => setSpec({ ...spec, deltaMax })} onS={(deltaStep) => setSpec({ ...spec, deltaStep })} />
+          <Seg
+            value={axisMode}
+            onChange={pickAxisMode}
+            options={[
+              { id: "range", label: "Range + step" },
+              { id: "list", label: "List" },
+            ]}
+          />
+          {axisMode === "list" ? (
+            <div className="space-y-2">
+              <AxisList label="Mach" value={listText.machList} placeholder={`blank = ${spec.machMin}…${spec.machMax} step ${spec.machStep}`} onChange={(t) => setList("machList", t)} />
+              <AxisList label="α deg" value={listText.alphaList} placeholder={`blank = ${spec.alphaMin}…${spec.alphaMax} step ${spec.alphaStep}`} onChange={(t) => setList("alphaList", t)} />
+              <AxisList label="β deg" value={listText.betaList} placeholder={`blank = ${spec.betaMin}…${spec.betaMax} step ${spec.betaStep}`} onChange={(t) => setList("betaList", t)} />
+              <AxisList label="δ deg" value={listText.deltaList} placeholder={`blank = ${spec.deltaMin}…${spec.deltaMax} step ${spec.deltaStep}`} onChange={(t) => setList("deltaList", t)} />
+              <p className="text-[11px] leading-relaxed text-subtle">Comma-separated breakpoints. A blank axis keeps its range and step.</p>
+              {listErr ? <p className="text-[11px] text-warn">{listErr}</p> : null}
+            </div>
+          ) : null}
+          {axisMode === "range" ? (
+            <>
+              <AxisRange label="Mach" a={spec.machMin} b={spec.machMax} s={spec.machStep} onA={(machMin) => setSpec({ ...spec, machMin })} onB={(machMax) => setSpec({ ...spec, machMax })} onS={(machStep) => setSpec({ ...spec, machStep })} />
+              <AxisRange label="α deg" a={spec.alphaMin} b={spec.alphaMax} s={spec.alphaStep} onA={(alphaMin) => setSpec({ ...spec, alphaMin })} onB={(alphaMax) => setSpec({ ...spec, alphaMax })} onS={(alphaStep) => setSpec({ ...spec, alphaStep })} />
+              <AxisRange label="β deg" a={spec.betaMin} b={spec.betaMax} s={spec.betaStep} onA={(betaMin) => setSpec({ ...spec, betaMin })} onB={(betaMax) => setSpec({ ...spec, betaMax })} onS={(betaStep) => setSpec({ ...spec, betaStep })} />
+              <AxisRange label="δ deg" a={spec.deltaMin} b={spec.deltaMax} s={spec.deltaStep} onA={(deltaMin) => setSpec({ ...spec, deltaMin })} onB={(deltaMax) => setSpec({ ...spec, deltaMax })} onS={(deltaStep) => setSpec({ ...spec, deltaStep })} />
+            </>
+          ) : null}
           <div>
             <span className="hud-label mb-2 block !text-muted">Method</span>
             <Seg
@@ -359,12 +429,12 @@ export function IteratePanel({
           <p className="text-[11px] text-muted">
             {preview.points} points {preview.points > AERODB_POINT_CAP ? `(over the ${AERODB_POINT_CAP} cap)` : ""} · design Mach {fmt(params.mach, 1)} is forced onto the axis
           </p>
-          <button type="button" className="hud-card w-full rounded-md px-3 py-2 text-sm text-fg" onClick={runDb} disabled={!!busy}>
+          <button type="button" className="hud-card w-full rounded-md px-3 py-2 text-sm text-fg" onClick={runDb} disabled={!!busy || !!listErr}>
             {busy === "db" ? "Building table…" : "Build aero database"}
           </button>
           {db ? (
             <div className="space-y-3">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <Stat k="Points" v={String(db.summary.points)} />
                 <Stat k="On design" v={String(db.summary.onDesign)} />
                 <Stat k="Off design" v={String(db.summary.offDesign)} />
@@ -373,7 +443,7 @@ export function IteratePanel({
                 <Stat k="Cm @ design α" v={fmt(db.summary.cmAtDesign, 4)} />
               </div>
               <p className="text-[11px] leading-relaxed text-subtle">
-                Peak L/D {fmt(db.summary.maxLd, 2)} at M {fmt(db.summary.maxLdAt.mach, 2)}, α {fmt(db.summary.maxLdAt.alpha_deg, 1)}°, δ {fmt(db.summary.maxLdAt.delta_deg, 1)}°.
+                Peak L/D {fmt(db.summary.maxLd, 2)} at M {fmt(db.summary.maxLdAt.mach, 2)}, α {fmt(db.summary.maxLdAt.alpha_deg, 1)}°, β {fmt(db.summary.maxLdAt.beta_deg, 1)}°, δ {fmt(db.summary.maxLdAt.delta_deg, 1)}°.
                 Sref {fmt(db.meta.sRef_m2, 3)} m², Lref {fmt(db.meta.lRef_m, 3)} m, CG x {fmt(db.meta.cg_m[0], 3)} m.
               </p>
               <div className="h-40">
@@ -390,15 +460,80 @@ export function IteratePanel({
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              {extra ? (
+                <div className="space-y-2">
+                  <span className="hud-label block !text-muted">
+                    Trim and static margin · β {fmt(extra.anchor.beta_deg, 1)}°, δ {fmt(extra.anchor.delta_deg, 1)}°
+                  </span>
+                  <table className="w-full font-mono text-[11px] tabular-nums text-muted">
+                    <thead>
+                      <tr className="text-subtle">
+                        <th className="text-left font-normal">M</th>
+                        <th className="text-right font-normal">trim α</th>
+                        <th className="text-right font-normal">SM %L</th>
+                        <th className="text-right font-normal">SM m</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {extra.trim.map((t) => {
+                        const m = extra.margin.find((r) => r.mach === t.mach);
+                        return (
+                          <tr key={t.mach}>
+                            <td className="text-left text-fg">{fmt(t.mach, 2)}</td>
+                            <td className="text-right">{t.alphaTrim === null ? "none in range" : `${fmt(t.alphaTrim, 2)}°`}</td>
+                            <td className={`text-right ${m?.smFrac != null && m.smFrac < 0 ? "text-warn" : ""}`}>
+                              {m?.smFrac == null ? "—" : fmt(m.smFrac * 100, 2)}
+                            </td>
+                            <td className="text-right">{m?.sm_m == null ? "—" : fmt(m.sm_m, 3)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <span className="hud-label block !text-muted">Coefficient ranges</span>
+                  <table className="w-full font-mono text-[11px] tabular-nums text-muted">
+                    <thead>
+                      <tr className="text-subtle">
+                        <th className="text-left font-normal">coef</th>
+                        <th className="text-right font-normal">min</th>
+                        <th className="text-right font-normal">max</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {AERODB_COEFS.map((c) => {
+                        const r = extra.ranges[c];
+                        return (
+                          <tr key={c}>
+                            <td className="text-left text-fg">{COEF_LABEL[c]}</td>
+                            <td className="text-right">{r ? fmt(tidy(r.min), 4) : "—"}</td>
+                            <td className="text-right">{r ? fmt(tidy(r.max), 4) : "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <p className="text-[11px] leading-relaxed text-subtle">
+                    Trim α is the first Cm = 0 crossing along α, linear between breakpoints. SM = −Cmα/CLα at trim α (or the node nearest the design α if untrimmed), as a
+                    fraction of Lref {fmt(db.meta.lRef_m, 3)} m; × Lref is x_np − x_cg. Positive is stable.
+                  </p>
+                </div>
+              ) : null}
+              {ldSeries ? <MachChart title="L/D vs α" xLabel="α deg" series={ldSeries} /> : null}
+              {cmDelta && cmDelta.rows.length > 1 ? (
+                <MachChart title={`Cm vs δ · α ${fmt(cmDelta.alpha_deg, 1)}°`} xLabel="δ deg" series={cmDelta} />
+              ) : (
+                <p className="text-[11px] text-subtle">Cm vs δ needs more than one δ breakpoint.</p>
+              )}
+              <div className="grid grid-cols-4 gap-2">
                 <button type="button" className="hud-card rounded-md px-2 py-2 text-xs" onClick={() => downloadBlob(new Blob([aeroDbToCsv(db)], { type: "text/csv" }), `${params.name}_aerodb.csv`)}>CSV</button>
                 <button type="button" className="hud-card rounded-md px-2 py-2 text-xs" onClick={() => downloadBlob(new Blob([aeroDbToJson(db)], { type: "application/json" }), `${params.name}_aerodb.json`)}>JSON</button>
                 <button type="button" className="hud-card rounded-md px-2 py-2 text-xs" onClick={() => downloadBlob(new Blob([aeroDbToSimulink(db)], { type: "text/plain" }), "cuspis_aero_db.m")}>Simulink</button>
+                <button type="button" className="hud-card rounded-md px-2 py-2 text-xs" onClick={() => downloadBlob(aeroDbZip(db, params.alphaDeg).blob, `${params.name}_aerodb.zip`)}>Zip</button>
               </div>
               <Formula
                 name="What the files contain"
                 expr="CL, CD, CY, Cm, Cn, Cll + CLα, Cmα, Cnβ, CLδ, Cmq, Clp, …"
-                note="CSV has a # metadata header (Sref, Lref, CG, units, method). The .m file reshapes to n-D lookups, delta fastest, for a Simulink n-D Lookup Table. JSON is what cuspis_6dof.py reads."
+                note="CSV has a # metadata header (Sref, Lref, CG, units, method). Zip adds one CSV per coefficient (rows M, α, β; a column per δ) and a README with this summary. The .m file reshapes to n-D lookups, delta fastest, for a Simulink n-D Lookup Table. JSON is what cuspis_6dof.py reads."
               />
             </div>
           ) : null}
@@ -697,6 +832,49 @@ function AxisBox({ k, value, onChange }: { k: string; value: number; onChange: (
         className="h-8 w-full rounded-sm border-0 bg-surface-2 px-1.5 text-right font-mono text-xs tabular-nums text-fg"
       />
     </label>
+  );
+}
+
+/** Round-off (|v| < 1e-9, e.g. CY at β = 0) prints as 0. */
+function tidy(v: number): number {
+  return Math.abs(v) < 1e-9 ? 0 : v;
+}
+
+function AxisList({ label, value, placeholder, onChange }: { label: string; value: string; placeholder: string; onChange: (text: string) => void }) {
+  return (
+    <label className="block">
+      <span className="hud-label mb-1 block !text-muted">{label}</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8 w-full rounded-sm border-0 bg-surface-2 px-1.5 font-mono text-xs tabular-nums text-fg placeholder:text-subtle"
+      />
+    </label>
+  );
+}
+
+function MachChart({ title, xLabel, series }: { title: string; xLabel: string; series: { rows: SeriesRow[]; keys: string[] } }) {
+  return (
+    <div>
+      <span className="hud-label mb-1 block !text-muted">{title}</span>
+      <div className="h-40">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={series.rows} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke="rgba(243,239,230,0.08)" />
+            <XAxis dataKey="x" type="number" domain={["dataMin", "dataMax"]} tick={{ fill: "#b9b3a8", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} width={44} tickFormatter={(v: number) => fmt(v, 2)} />
+            <Tooltip {...chartTip(xLabel)} formatter={(v: number) => fmt(v, 4)} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            {series.keys.map((k, i) => (
+              <Line key={k} type="monotone" dataKey={k} stroke={MACH_COLORS[i % MACH_COLORS.length]} dot={false} name={k} strokeWidth={1.5} connectNulls />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
   );
 }
 
