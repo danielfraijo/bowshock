@@ -359,9 +359,11 @@ export async function flyClosedLoop(
     const thDot = st.q * Math.cos(st.phi) - st.yaw * Math.sin(st.phi);
     const aDot = thDot - gDot;
     const qDot = (qDyn * sRef * Lref * Cm) / Iyy;
-    const bDot = st.roll * Math.sin(st.alpha) - st.yaw * Math.cos(st.alpha) + (qDyn * sRef * CY) / (mass * Math.max(st.V, 1));
-    const pDot = (qDyn * sRef * bRef * Cl) / Ixx;
-    const rDot = (qDyn * sRef * bRef * Cn) / Izz;
+    // [accuracy-audit] Panel frame (β_panel = −β_conventional, Y along +Y): side force opposes sideslip, so −Y/(mV).
+    // Roll / yaw moments are q S Lref C because panelAero normalises Cll and Cn by Sref·Lref (was q S b C).
+    const bDot = st.roll * Math.sin(st.alpha) - st.yaw * Math.cos(st.alpha) - (qDyn * sRef * CY) / (mass * Math.max(st.V, 1));
+    const pDot = (qDyn * sRef * Lref * Cl) / Ixx;
+    const rDot = (qDyn * sRef * Lref * Cn) / Izz;
     const phiDot = st.roll + Math.tan(clamp(st.theta, -1.2, 1.2)) * (st.q * Math.sin(st.phi) + st.yaw * Math.cos(st.phi));
     const vDot = -Drag / mass - g * Math.sin(st.gamma);
     const hDot = st.V * Math.sin(st.gamma);
@@ -422,7 +424,11 @@ export async function flyClosedLoop(
       integ = clamp(integ, -40, 40);
       const derivE = (err - ePrev) / dt;
       ePrev = err;
-      deltaCmd = clamp(spec.kp * err + spec.ki * integ + spec.kd * derivE, -spec.deltaMaxDeg, spec.deltaMaxDeg);
+      // [accuracy-audit] Command δ through the sign of Cmδ. Elevon TE-down (+δ) is nose-down (Cmδ < 0 on the caret,
+      // boost-glide and lifting body), so δ = +PID(α error) was positive feedback: α ran to the ±20–25° clamp.
+      const span = spec.deltaMaxDeg || 8;
+      const cmdSign = Math.sign(lookup(table, k1.Mach, k1.alphaDeg, span).cm - lookup(table, k1.Mach, k1.alphaDeg, -span).cm) || -1;
+      deltaCmd = clamp(cmdSign * (spec.kp * err + spec.ki * integ + spec.kd * derivE), -spec.deltaMaxDeg, spec.deltaMaxDeg);
     }
     const tau = Math.max(0.02, spec.tauAct);
     const rate = spec.rateMaxDeg;

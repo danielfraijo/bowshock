@@ -111,6 +111,145 @@ function modeOf(name: string, wn: number, zeta: number, note: string, extraStabl
   };
 }
 
+/**
+ * Rigid-body state in the panel frame (X aft, Y span, Z up). p, q, r are body rates about +X, +Y, +Z,
+ * β > 0 sends the flow toward +Y (β_panel = −β_conventional). α, θ, γ are the conventional pitch-plane
+ * angles (θ = α + γ in wings-level flight). Lengths m, speeds m/s, angles rad.
+ */
+export interface RigidState {
+  alpha: number;
+  q: number;
+  theta: number;
+  beta: number;
+  p: number;
+  r: number;
+  phi: number;
+  VV: number;
+  gamma: number;
+  h: number;
+}
+
+/**
+ * Coefficients in the panel book: CL, CD wind axes; CY along +Y; Cl, Cm, Cn about +X, +Y, +Z, all three
+ * moments on Sref·Lref (exactly what `panelAero` returns as cll, cm, cn).
+ */
+export interface RigidCoeffs {
+  CL: number;
+  CD: number;
+  CY: number;
+  Cl: number;
+  Cm: number;
+  Cn: number;
+}
+
+export interface RigidBody {
+  S: number;
+  /** Moment reference length for all three axes (panel Lref). */
+  L: number;
+  m: number;
+  Ixx: number;
+  Iyy: number;
+  Izz: number;
+  rho: (h: number) => number;
+  /** Earth radius for inverse-square gravity and the path curvature term. */
+  Re?: number;
+  g0?: number;
+}
+
+export interface RigidRates {
+  aDot: number;
+  qDot: number;
+  thDot: number;
+  bDot: number;
+  pDot: number;
+  rDot: number;
+  phiDot: number;
+  vDot: number;
+  gDot: number;
+  hDot: number;
+  xDot: number;
+}
+
+/**
+ * State equations of the linear 6DOF time history (`solveSixDof`), exported so the audit can check them.
+ * `guidance.ts` keeps its own copy because it also carries the bank-angle (Vinh) terms; the same two fixes are applied there.
+ *
+ * α̇ = q − γ̇ with the spherical point-mass γ̇ used by the 3DOF (lift, curvature V²/(R+h), inverse-square g),
+ * so incidence stays θ − γ. That is main's equation (1812dcc), moved here unchanged.
+ *
+ * [accuracy-audit] Two further fixes:
+ * - Roll / yaw moments are q·S·Lref·C, because `panelAero` normalises Cll and Cn by Sref·Lref. The old
+ *   q·S·bref·C scaled them by b/L.
+ * - β̇ = p sinα − r cosα − Y/(mV) in the panel frame (β_panel = −β_conventional, Y along +Y). The old + sign
+ *   made side force feed sideslip instead of opposing it.
+ * Energy: with CD = 0, ½V² − g0·Re²/(Re + h) is an exact invariant of these equations (lift does no work).
+ */
+export function rigidBodyRates(st: RigidState, c: RigidCoeffs, body: RigidBody): RigidRates {
+  const Re = body.Re ?? 6371000;
+  const g0 = body.g0 ?? 9.80665;
+  const V = Math.max(st.VV, 1e-3);
+  const qdyn = 0.5 * body.rho(st.h) * V * V;
+  const Lift = qdyn * body.S * c.CL;
+  const Drag = qdyn * body.S * c.CD;
+  const Y = qdyn * body.S * c.CY;
+  const gLoc = g0 * (Re / (Re + st.h)) ** 2;
+  const gDot = V > 20 ? Lift / (body.m * V) + (V / (Re + st.h) - gLoc / V) * Math.cos(st.gamma) : 0;
+  const qDot = (qdyn * body.S * body.L * c.Cm) / body.Iyy;
+  const bDot = st.p * Math.sin(st.alpha) - st.r * Math.cos(st.alpha) - Y / (body.m * V);
+  const pDot = (qdyn * body.S * body.L * c.Cl) / body.Ixx;
+  const rDot = (qdyn * body.S * body.L * c.Cn) / body.Izz;
+  const phiDot = st.p + Math.tan(st.theta) * (st.q * Math.sin(st.phi) + st.r * Math.cos(st.phi));
+  const vDot = -Drag / body.m - gLoc * Math.sin(st.gamma);
+  const hDot = V * Math.sin(st.gamma);
+  const xDot = (V * Math.cos(st.gamma) * Re) / (Re + st.h);
+  return { aDot: st.q - gDot, qDot, thDot: st.q, bDot, pDot, rDot, phiDot, vDot, gDot, hDot, xDot };
+}
+
+/** Specific mechanical energy, J/kg, for the inverse-square field used by `rigidBodyRates`. */
+export function specificEnergy(V: number, h: number, Re = 6371000, g0 = 9.80665): number {
+  return 0.5 * V * V - (g0 * Re * Re) / (Re + h);
+}
+
+/** One classical RK4 step of `rigidBodyRates` with the coefficients held over the step (zero-order hold). */
+export function rk4Step<S extends RigidState & { x: number }>(st: S, dt: number, coeffs: (s: RigidState) => RigidCoeffs, body: RigidBody): S {
+  const add = (s: S, k: RigidRates, f: number): S => ({
+    ...s,
+    alpha: s.alpha + f * k.aDot,
+    q: s.q + f * k.qDot,
+    theta: s.theta + f * k.thDot,
+    beta: s.beta + f * k.bDot,
+    p: s.p + f * k.pDot,
+    r: s.r + f * k.rDot,
+    phi: s.phi + f * k.phiDot,
+    VV: s.VV + f * k.vDot,
+    gamma: s.gamma + f * k.gDot,
+    h: s.h + f * k.hDot,
+    x: s.x + f * k.xDot,
+  });
+  const k1 = rigidBodyRates(st, coeffs(st), body);
+  const s2 = add(st, k1, 0.5 * dt);
+  const k2 = rigidBodyRates(s2, coeffs(s2), body);
+  const s3 = add(st, k2, 0.5 * dt);
+  const k3 = rigidBodyRates(s3, coeffs(s3), body);
+  const s4 = add(st, k3, dt);
+  const k4 = rigidBodyRates(s4, coeffs(s4), body);
+  const w = (a: number, b: number, c: number, d: number) => (dt / 6) * (a + 2 * b + 2 * c + d);
+  return {
+    ...st,
+    alpha: st.alpha + w(k1.aDot, k2.aDot, k3.aDot, k4.aDot),
+    q: st.q + w(k1.qDot, k2.qDot, k3.qDot, k4.qDot),
+    theta: st.theta + w(k1.thDot, k2.thDot, k3.thDot, k4.thDot),
+    beta: st.beta + w(k1.bDot, k2.bDot, k3.bDot, k4.bDot),
+    p: st.p + w(k1.pDot, k2.pDot, k3.pDot, k4.pDot),
+    r: st.r + w(k1.rDot, k2.rDot, k3.rDot, k4.rDot),
+    phi: st.phi + w(k1.phiDot, k2.phiDot, k3.phiDot, k4.phiDot),
+    VV: st.VV + w(k1.vDot, k2.vDot, k3.vDot, k4.vDot),
+    gamma: st.gamma + w(k1.gDot, k2.gDot, k3.gDot, k4.gDot),
+    h: st.h + w(k1.hDot, k2.hDot, k3.hDot, k4.hDot),
+    x: st.x + w(k1.xDot, k2.xDot, k3.xDot, k4.xDot),
+  };
+}
+
 /** Etkin / Nelson linear modes + RK4 6DOF time history from panel derivatives. */
 export function solveSixDof(
   mesh: TriMesh,
@@ -187,15 +326,18 @@ export function solveSixDof(
   const sm = cla !== 0 ? -cma / cla : 0;
   let trim = a0;
   let cmT = p0.cm;
-  for (let i = 0; i < 4; i++) {
+  // [accuracy-audit] trimCm is now Cm evaluated AT trimAlpha (it was Cm at the previous Newton iterate).
+  for (let i = 0; i < 6; i++) {
     const p = coef(trim, b0);
+    cmT = p.cm;
+    if (Math.abs(cmT) < 2e-4) break;
     const pp = coef(trim + 0.4, b0);
     const dcm = (pp.cm - p.cm) / 0.4;
     if (Math.abs(dcm) < 1e-6) break;
-    trim -= p.cm / dcm;
-    trim = clamp(trim, -8, 16);
-    cmT = p.cm;
-    if (Math.abs(cmT) < 0.002) break;
+    const next = clamp(trim - p.cm / dcm, -8, 16);
+    if (next === trim) break;
+    trim = next;
+    if (i === 5) cmT = coef(trim, b0).cm;
   }
 
   const polar: { a: number; cl: number; cd: number; cm: number; ld: number }[] = [];
@@ -247,12 +389,15 @@ export function solveSixDof(
   const wnPh = (g0 * Math.sqrt(2)) / V;
   const zetaPh = 1 / (Math.sqrt(2) * ld);
 
-  const Y_b = (qBar * S * cyb) / m;
-  const N_b = (qBar * S * bRef * cnb) / Izz;
-  const N_r = (qBar * S * bRef * cnr * (bRef / (2 * V))) / Izz;
-  const L_p = (qBar * S * bRef * clp * (bRef / (2 * V))) / Ixx;
+  // [accuracy-audit] Panel Cn, Cll are on Sref·Lref, so the dimensional moments use L (was bRef → ×b/L).
+  // Y_b is converted to the conventional β (CYβ_conv = −cyb_panel); the panel-frame signs of Cnβ, Clp, Cnr
+  // already equal the conventional ones (see aerodb.ts derivsToConventional).
+  const Y_b = -(qBar * S * cyb) / m;
+  const N_b = (qBar * S * L * cnb) / Izz;
+  const N_r = (qBar * S * L * cnr * (bRef / (2 * V))) / Izz;
+  const L_p = (qBar * S * L * clp * (bRef / (2 * V))) / Ixx;
   const YbV = Y_b / V;
-  const wnDr = Math.sqrt(Math.max(0, N_b));
+  const wnDr = Math.sqrt(Math.max(0, N_b + YbV * N_r));
   const zetaDr = wnDr > 1e-8 ? -(YbV + N_r) / (2 * wnDr) : 0;
 
   const tauRoll = L_p < -1e-6 ? -1 / L_p : 0;
@@ -278,7 +423,7 @@ export function solveSixDof(
       "Dutch roll",
       wnDr,
       zetaDr,
-      "Lateral-directional oscillation. ω ≈ √Nβ. Needs Cnβ > 0.",
+      "Lateral-directional oscillation. ω² ≈ Nβ + Yβ Nr / V. Needs Cnβ > 0.",
       derivs.directionallyStable,
     ),
     {
@@ -322,15 +467,15 @@ export function solveSixDof(
   const alpha0 = (a0 + 2) * DEG;
   let alpha = alpha0;
   let q = 0;
+  let gamma = params.gammaDeg * DEG;
   // α = θ − γ at release. Pitch is attitude, not incidence.
-  let theta = alpha0 + params.gammaDeg * DEG;
+  let theta = alpha0 + gamma;
   let beta = 0;
   let p = 0;
   let r = 0;
   let phi = 0;
   let psi = 0;
   let VV = V;
-  let gamma = params.gammaDeg * DEG;
   let h = Math.max(500, params.altKm * 1000);
   let x = 0;
   const samples: SixDofSample[] = [];
@@ -339,79 +484,21 @@ export function solveSixDof(
   const hRef = h;
   const Hscale = 7200;
 
-  const deriv = (st: {
-    alpha: number;
-    q: number;
-    theta: number;
-    beta: number;
-    p: number;
-    r: number;
-    phi: number;
-    VV: number;
-    gamma: number;
-    h: number;
-  }) => {
+  const body: RigidBody = { S, L, m, Ixx, Iyy, Izz, rho: (hh) => rho0 * Math.exp(-(hh - hRef) / Hscale), Re, g0 };
+  const coeffs = (st: RigidState): RigidCoeffs => {
     const qh = (st.q * L) / (2 * st.VV);
     const ph = (st.p * bRef) / (2 * st.VV);
     const rh = (st.r * bRef) / (2 * st.VV);
     const dAlpha = st.alpha - a0 * DEG;
-    const CL = p0.cl + cla * dAlpha + clq * qh;
-    const CD = Math.max(0.002, p0.cd + cda * dAlpha);
-    const CY = cyb * st.beta + cyp * ph + cyr * rh;
-    const Cl = clb * st.beta + clp * ph + clr * rh;
-    const Cm = p0.cm + cma * dAlpha + cmq * qh;
-    const Cn = cnb * st.beta + cnp * ph + cnr * rh;
-    const rho = rho0 * Math.exp(-(st.h - hRef) / Hscale);
-    const qdyn = 0.5 * rho * st.VV * st.VV;
-    const Lift = qdyn * S * CL;
-    const Drag = qdyn * S * CD;
-    const Y = qdyn * S * CY;
-    const gLoc = g0 * (Re / (Re + st.h)) ** 2;
-    // α̇ = q − γ̇. γ̇ is the same spherical point-mass used by the 3DOF
-    // (lift, curvature V²/(R+h), inverse-square g). A sin(α − (θ−γ))
-    // gravity term is zero exactly when the attitude is consistent, so it
-    // dropped (g/V − V/r) and α walked off θ − γ.
-    const curv = (st.VV / (Re + st.h) - gLoc / st.VV) * Math.cos(st.gamma);
-    const aDot = st.q - Lift / (m * st.VV) - (st.VV > 20 ? curv : 0);
-    const qDot = (qdyn * S * L * Cm) / Iyy;
-    const thDot = st.q;
-    const bDot = st.p * Math.sin(st.alpha) - st.r * Math.cos(st.alpha) + Y / (m * st.VV);
-    const pDot = (qdyn * S * bRef * Cl) / Ixx;
-    const rDot = (qdyn * S * bRef * Cn) / Izz;
-    const phiDot = st.p + Math.tan(st.theta) * (st.q * Math.sin(st.phi) + st.r * Math.cos(st.phi));
-    const vDot = -Drag / m - gLoc * Math.sin(st.gamma);
-    const gDot = st.VV > 20 ? Lift / (m * st.VV) + (st.VV / (Re + st.h) - gLoc / st.VV) * Math.cos(st.gamma) : 0;
-    const hDot = st.VV * Math.sin(st.gamma);
-    const xDot = (st.VV * Math.cos(st.gamma) * Re) / (Re + st.h);
-    return { aDot, qDot, thDot, bDot, pDot, rDot, phiDot, vDot, gDot, hDot, xDot };
+    return {
+      CL: p0.cl + cla * dAlpha + clq * qh,
+      CD: Math.max(0.002, p0.cd + cda * dAlpha),
+      CY: cyb * st.beta + cyp * ph + cyr * rh,
+      Cl: clb * st.beta + clp * ph + clr * rh,
+      Cm: p0.cm + cma * dAlpha + cmq * qh,
+      Cn: cnb * st.beta + cnp * ph + cnr * rh,
+    };
   };
-
-  type St = {
-    alpha: number;
-    q: number;
-    theta: number;
-    beta: number;
-    p: number;
-    r: number;
-    phi: number;
-    VV: number;
-    gamma: number;
-    h: number;
-    x: number;
-  };
-  const add = (st: St, k: ReturnType<typeof deriv>, s: number): St => ({
-    alpha: st.alpha + s * k.aDot,
-    q: st.q + s * k.qDot,
-    theta: st.theta + s * k.thDot,
-    beta: st.beta + s * k.bDot,
-    p: st.p + s * k.pDot,
-    r: st.r + s * k.rDot,
-    phi: st.phi + s * k.phiDot,
-    VV: st.VV + s * k.vDot,
-    gamma: st.gamma + s * k.gDot,
-    h: st.h + s * k.hDot,
-    x: st.x + s * k.xDot,
-  });
 
   for (let k = 0; k <= nStep; k++) {
     if (k % 8 === 0) {
@@ -431,23 +518,18 @@ export function solveSixDof(
         xKm: x / 1000,
       });
     }
-    const s0: St = { alpha, q, theta, beta, p, r, phi, VV, gamma, h, x };
-    const k1 = deriv(s0);
-    const k2 = deriv(add(s0, k1, 0.5 * dt));
-    const k3 = deriv(add(s0, k2, 0.5 * dt));
-    const k4 = deriv(add(s0, k3, dt));
-    const step = (a: number, b: number, c: number, d: number) => (dt / 6) * (a + 2 * b + 2 * c + d);
-    alpha += step(k1.aDot, k2.aDot, k3.aDot, k4.aDot);
-    q += step(k1.qDot, k2.qDot, k3.qDot, k4.qDot);
-    theta += step(k1.thDot, k2.thDot, k3.thDot, k4.thDot);
-    beta += step(k1.bDot, k2.bDot, k3.bDot, k4.bDot);
-    p += step(k1.pDot, k2.pDot, k3.pDot, k4.pDot);
-    r += step(k1.rDot, k2.rDot, k3.rDot, k4.rDot);
-    phi += step(k1.phiDot, k2.phiDot, k3.phiDot, k4.phiDot);
-    VV += step(k1.vDot, k2.vDot, k3.vDot, k4.vDot);
-    gamma += step(k1.gDot, k2.gDot, k3.gDot, k4.gDot);
-    h += step(k1.hDot, k2.hDot, k3.hDot, k4.hDot);
-    x += step(k1.xDot, k2.xDot, k3.xDot, k4.xDot);
+    const next = rk4Step({ alpha, q, theta, beta, p, r, phi, VV, gamma, h, x }, dt, coeffs, body);
+    alpha = next.alpha;
+    q = next.q;
+    theta = next.theta;
+    beta = next.beta;
+    p = next.p;
+    r = next.r;
+    phi = next.phi;
+    VV = next.VV;
+    gamma = next.gamma;
+    h = next.h;
+    x = next.x;
     psi += dt * ((q * Math.sin(phi) + r * Math.cos(phi)) / Math.max(Math.cos(theta), 0.2));
     alpha = clamp(alpha, -20 * DEG, 25 * DEG);
     beta = clamp(beta, -20 * DEG, 20 * DEG);

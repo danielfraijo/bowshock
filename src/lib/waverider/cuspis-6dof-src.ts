@@ -161,7 +161,11 @@ def integrate(doc, seconds, dt, kp, ki, kd, tau, dmax):
         integ = max(-30.0, min(30.0, integ + err * dt))
         dedt = (err - eprev) / dt
         eprev = err
-        cmd = max(-dmax, min(dmax, kp * err + ki * integ + kd * dedt))
+        # Elevon TE-down (+delta) is nose-down when Cm_delta < 0, so the PID acts through sign(Cm_delta).
+        cm_p = tab.at(V / a, alpha, dmax)[2]
+        cm_m = tab.at(V / a, alpha, -dmax)[2]
+        sgn = (1.0 if cm_p > cm_m else -1.0) if cm_p != cm_m else -1.0
+        cmd = max(-dmax, min(dmax, sgn * (kp * err + ki * integ + kd * dedt)))
         ddelta = (cmd - delta) / max(tau, 1e-3) * dt
         ddelta = max(-40.0 * dt, min(40.0 * dt, ddelta))
         delta = max(-dmax, min(dmax, delta + ddelta))
