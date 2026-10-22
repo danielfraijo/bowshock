@@ -132,19 +132,35 @@ function solveCaption(
   return { text: names[method] ?? method, warn: false };
 }
 
+const FIELD_COPY: Record<ColorMode, { title: string; name: string }> = {
+  surface: { title: "Solid body. Leading edge in red.", name: "Body" },
+  cp: { title: "Pressure coefficient. Blue is low, red is high.", name: "Cp" },
+  heat: { title: "Heat flux, W/cm². Blue is low, red is high.", name: "Heat" },
+  qhat: { title: "Local heat divided by the stagnation value.", name: "q/qs" },
+  pratio: { title: "Surface pressure over freestream pressure.", name: "p/p∞" },
+  temp: { title: "Radiation-equilibrium wall temperature, K.", name: "Tw" },
+  mach: { title: "Mach number at the boundary-layer edge.", name: "Me" },
+  stanton: { title: "Stanton number. Blue is low, red is high.", name: "St" },
+  cf: { title: "Skin-friction coefficient. Blue is low, red is high.", name: "Cf" },
+  impact: { title: "Impact angle as sin θ. Blue is glancing, red is blunt.", name: "sin θ" },
+};
+
 function ScaleLegend({
   study,
   color,
   surfaces,
+  name,
 }: {
   study: StudyResult;
   color: ColorMode;
   surfaces: Uint8Array;
+  name: string;
 }) {
   const scale = fieldScale(study, color, surfaces);
   const fmtScale = (v: number) => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
   return (
-    <div className="flex min-w-0 items-center gap-2" title={scale.unit || color}>
+    <div className="flex min-w-0 items-center gap-2" title={`${name}. Blue is the low end, red is the high end.`}>
+      <span className="hud-label shrink-0 !text-fg">{name}</span>
       <span className="font-mono text-[10px] text-muted">{fmtScale(scale.lo)}</span>
       <div className="h-2 w-28 shrink-0 overflow-hidden rounded-sm bg-bg">
         <span className="jet-ramp-h block h-full w-full" />
@@ -540,7 +556,7 @@ export function Designer() {
           <div className="z-10 flex shrink-0 flex-col gap-1.5 border-b border-line bg-bg/95 px-3 py-2">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
               <div className="hud-chip-info flex min-w-0 items-center gap-1 px-2.5 py-1 font-mono text-[11px] text-muted">
-                <span className="hud-led mr-1.5 shrink-0" aria-hidden />
+                <span className={`hud-led mr-1.5 shrink-0 ${solveLine.warn ? "hud-led--warn" : ""}`} aria-hidden />
                 <span className="font-display font-semibold tracking-[0.1em] text-accent uppercase">{cad ? cad.name : fam.label}</span>
                 <span className="mx-1.5 text-subtle">/</span>
                 {domain}
@@ -570,21 +586,23 @@ export function Designer() {
             {builtRes.error ? (
               <p className="min-w-0 text-[11px] leading-snug text-warn">{builtRes.error} Showing the last valid shape.</p>
             ) : null}
-            <div className="flex gap-1 overflow-x-auto" role="group" aria-label="View modes">
+            <div className="flex items-center gap-1.5 overflow-x-auto" role="group" aria-label="View overlays">
+              <span className="hud-label shrink-0 pr-1 !text-subtle">Overlays</span>
               {(
                 [
-                  ["wireframe", "Wires", opts.wireframe],
-                  ["shock", "Shock", opts.shock],
-                  ["grid", "Grid", opts.grid],
-                  ["origin", "Origin", opts.origin],
+                  ["wireframe", "Wires", "Mesh edges on the body", opts.wireframe],
+                  ["shock", "Shock", "Shock surface", opts.shock],
+                  ["grid", "Grid", "Reference grid under the vehicle", opts.grid],
+                  ["origin", "Origin", "Axes and the freestream arrow", opts.origin],
                 ] as const
-              ).map(([key, label, on]) => (
+              ).map(([key, label, title, on]) => (
                 <button
                   key={key}
                   type="button"
+                  title={title}
                   onClick={() => setOpts((o) => ({ ...o, [key]: !o[key] }))}
                   aria-pressed={on}
-                  className="hud-toggle shrink-0 rounded-sm"
+                  className="hud-toggle hud-toggle--check shrink-0 rounded-sm"
                 >
                   {label}
                 </button>
@@ -598,11 +616,13 @@ export function Designer() {
             <ViewportChrome />
           </div>
           <div className="z-10 flex shrink-0 flex-col gap-2 border-t border-line bg-bg/95 px-3 py-2">
-            <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Surface colour mode">
+            <div className="flex items-center gap-1.5 overflow-x-auto" role="group" aria-label="Surface colour mode">
+              <span className="hud-label shrink-0 pr-1 !text-subtle">Field</span>
               {COLOR_MODES.map((c) => (
                 <button
                   key={c.id}
                   type="button"
+                  title={FIELD_COPY[c.id].title}
                   onClick={() => setOpts((o) => ({ ...o, color: c.id }))}
                   aria-pressed={opts.color === c.id}
                   className="hud-toggle hud-toggle--sm shrink-0 rounded-sm"
@@ -613,12 +633,12 @@ export function Designer() {
             </div>
             <div className="flex items-end justify-between gap-3">
               {opts.color !== "surface" ? (
-                <ScaleLegend study={study} color={opts.color} surfaces={built.mesh.surfaces} />
+                <ScaleLegend study={study} color={opts.color} surfaces={built.mesh.surfaces} name={FIELD_COPY[opts.color].name} />
               ) : (
-                <span className="text-[11px] text-subtle">Surface colour</span>
+                <span className="text-[11px] text-subtle">Solid body · red leading edge</span>
               )}
               <div className="hud-chip-info flex shrink-0 items-end gap-4 px-3 py-1.5">
-                <Readout label="L/D" value={fmt(study.aero.ld, 2)} />
+                <Readout label="L/D" value={fmt(study.aero.ld, 2)} tone="accent" />
                 <Readout size="sm" label="CoP" value={fmt(study.aero.xCp / Math.max(params.length, 1e-8), 2)} unit="L" />
                 {hydrated ? <Readout size="sm" label="Solve" value={fmt(study.elapsedMs, 0)} unit="ms" /> : null}
               </div>
@@ -1122,7 +1142,7 @@ export function Designer() {
       <footer className="hud-statusbar hidden shrink-0 items-center justify-between px-6 py-2 text-[11px] text-muted sm:flex">
         <span className="inline-flex items-center gap-1.5">
           {q.watertight || ((params.family === "ramjet" || params.family === "scramjet") && params.flowThrough) ? (
-            <Check className="size-3 text-accent" />
+            <Check className="size-3 text-fg" />
           ) : (
             <Octagon className="size-3 text-warn" />
           )}
@@ -1132,7 +1152,7 @@ export function Designer() {
               ? "Flow-through duct — inlet & nozzle open"
               : "Open mesh — raise resolution"}
           <span className="mx-2 text-subtle" aria-hidden>·</span>
-          CL {fmt(study.aero.cl, 3)} · L/D {fmt(study.aero.ld, 2)} · q̇s {fmt(study.aero.qStag, 2)} W/cm²
+          CL {fmt(study.aero.cl, 3)} · L/D <span className="text-accent">{fmt(study.aero.ld, 2)}</span> · q̇s {fmt(study.aero.qStag, 2)} W/cm²
           <span className="mx-2 text-subtle" aria-hidden>·</span>
           {fmt(study.mass.mass, 0)} kg
         </span>

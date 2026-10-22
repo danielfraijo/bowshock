@@ -12,8 +12,8 @@
 /*
  * CUSPIS — Palantir density, Roadster black / white / neon red, a quiet matrix accent.
  * The vehicle view stays clear: no glyph rain, scan sweep, or tick rulers on the shape.
- * Neon is for selection, focus, and key numbers. Structure uses a deep red line.
- * Amber is only for warnings. The jet ramp (Heat / Cp) stays a quantitative scale.
+ * Neon is the current choice and the headline L/D. White is a number or a pass.
+ * Amber is a warning or a fail. The jet ramp stays the quantitative field scale.
  */
 @theme {
   --font-sans: "Chakra Petch", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -43,8 +43,8 @@
   --color-accent-dim: #3a0012;
   --color-steel: #ffffff;
 
-  /* semantic */
-  --color-ok: #ff1744;
+  /* white = a number or a pass. Neon is not "good". Amber is not nominal. */
+  --color-ok: #ffffff;
   --color-warn: #ffb020;
   --color-warn-dim: #3a2208;
 
@@ -345,6 +345,9 @@ textarea {
     line-height: 1;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums slashed-zero;
+    color: var(--color-fg);
+  }
+  .hud-readout-value--accent {
     color: var(--color-accent);
   }
   .hud-readout-value--sm {
@@ -463,9 +466,11 @@ textarea {
     display: inline-block;
     width: 6px;
     height: 6px;
-    background: var(--color-accent);
-    box-shadow: 0 0 8px var(--color-accent);
-    animation: hud-pulse 2.4s ease-in-out infinite;
+    background: var(--color-fg);
+  }
+  .hud-led--warn {
+    background: var(--color-warn);
+    box-shadow: 0 0 6px var(--color-warn);
   }
 
   /* ── toggles / chips (aria-pressed) ── */
@@ -495,6 +500,14 @@ textarea {
     height: 2rem;
     padding: 0 0.5rem;
     font-size: 10px;
+  }
+  /* Independent overlays: a bar, not a filled pill. Filled neon means "this one choice". */
+  .hud-toggle.hud-toggle--check[aria-pressed="true"] {
+    color: var(--color-fg);
+    background: transparent;
+    box-shadow:
+      inset 3px 0 0 var(--color-accent),
+      inset 0 0 0 1px var(--color-accent);
   }
 
   /* selectable cards (family list) */

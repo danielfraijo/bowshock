@@ -11,7 +11,7 @@ export function AeroBlock({ study }: { study: StudyResult }) {
   return (
     <div>
       <div className="hud-panel mb-3 grid grid-cols-3 gap-3 px-3 py-3">
-        <Readout label="L/D" value={fmt(a.ld, 2)} />
+        <Readout label="L/D" value={fmt(a.ld, 2)} tone="accent" />
         <Readout label="CL" value={fmt(a.cl, 4)} size="sm" />
         <Readout label="CD" value={fmt(a.cd, 4)} size="sm" />
       </div>
@@ -155,7 +155,7 @@ export function StabBlock({ study }: { study: StudyResult }) {
   return (
     <div>
       <div className="hud-panel mb-3 grid grid-cols-2 gap-3 px-3 py-3">
-        <Readout label="Static margin" value={fmt(s.staticMarginPct, 1)} unit="% L" tone={s.staticMargin > 0 ? "accent" : "warn"} />
+        <Readout label="Static margin" value={fmt(s.staticMarginPct, 1)} unit="% L" tone={s.staticMargin > 0 ? "data" : "warn"} />
         <Readout label="Trim α" value={fmt(s.trimAlpha, 2)} unit="deg" size="sm" />
       </div>
       <Stat k="CLα ( /rad )" v={fmt(s.cla, 3)} />

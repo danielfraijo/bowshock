@@ -7,14 +7,14 @@ export function Readout({
   value,
   unit,
   size = "md",
-  tone = "accent",
+  tone = "data",
   className,
 }: {
   label: string;
   value: React.ReactNode;
   unit?: string;
   size?: "sm" | "md";
-  tone?: "accent" | "warn";
+  tone?: "data" | "accent" | "warn";
   className?: string;
 }) {
   return (
@@ -24,6 +24,7 @@ export function Readout({
         className={cn(
           "hud-readout-value",
           size === "sm" && "hud-readout-value--sm",
+          tone === "accent" && "hud-readout-value--accent",
           tone === "warn" && "hud-readout-value--warn",
         )}
       >
