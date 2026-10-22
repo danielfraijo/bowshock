@@ -110,7 +110,7 @@ assert.equal(dominatesPoint([1, 2], 0, [0, 0], 0.2), true, "feasible dominates i
 {
   const checks = runValidation();
   const mine = checks.filter((c) => c.id.startsWith("aerodb") || c.id.startsWith("tps") || c.id === "actuator-rate");
-  assert.equal(mine.length, 5);
+  assert.equal(mine.length, 6);
   assert.deepEqual(mine.filter((c) => !c.pass).map((c) => c.name), []);
   console.log(`mission checks ${mine.length} pass`);
 }

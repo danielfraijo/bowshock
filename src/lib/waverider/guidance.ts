@@ -199,7 +199,7 @@ export async function flyClosedLoop(
   const sRef = Math.max(built.aero.planformArea, 1e-6);
   const Lref = Math.max(p.length, 1e-6);
   const bRef = Math.max(p.span, 1e-6);
-  const total = uniqM.length * alphas.length * deltas.length + 5;
+  const total = uniqM.length * alphas.length * deltas.length + 8;
   let done = 0;
   const tick = async (label: string) => {
     if (opts?.signal?.aborted) throw new DOMException("Flight cancelled", "AbortError");
@@ -230,7 +230,17 @@ export async function flyClosedLoop(
         await tick(`table M ${uniqM[im].toFixed(1)} α ${alphas[ia]} δ ${deltas[id]}`);
         const v = vehicleAt(deltas[id]);
         const atm = atmosphere(p.altKm, uniqM[im], p.gamma);
-        const aero = panelAero(v.mesh, { ...p, aeroMethod: method, elevonDeg: deltas[id], lockFlight: false, flightMach: uniqM[im] }, atm, alphas[ia], 0, sRef, Lref);
+        const aero = panelAero(
+          v.mesh,
+          { ...p, aeroMethod: method, elevonDeg: deltas[id], lockFlight: false, flightMach: uniqM[im] },
+          atm,
+          alphas[ia],
+          0,
+          sRef,
+          Lref,
+          undefined,
+          true,
+        );
         c[im][ia][id] = { cl: aero.cl, cd: aero.cd, cm: aero.cm };
         done++;
       }
@@ -240,18 +250,20 @@ export async function flyClosedLoop(
   const atm0 = atmosphere(p.altKm, Mdesign, p.gamma);
   const baseMesh = vehicleAt(0);
   const flightP: DesignParams = { ...p, aeroMethod: method, elevonDeg: 0, lockFlight: false, flightMach: Mdesign };
-  const a0 = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref);
-  const bp = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 2, sRef, Lref);
-  const bm = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, -2, sRef, Lref);
+  const bp = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 2, sRef, Lref, undefined, true);
+  const bm = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, -2, sRef, Lref, undefined, true);
   const V0 = Math.max(80, atm0.V);
   const qHat = 0.02;
   const qRate = (qHat * 2 * V0) / Lref;
   const pRate = (qHat * 2 * V0) / bRef;
   const rRate = pRate;
-  const qPair = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: 0, q: qRate, r: 0 });
-  const pPair = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: pRate, q: 0, r: 0 });
-  const rPair = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: 0, q: 0, r: rRate });
-  done += 5;
+  const qP = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: 0, q: qRate, r: 0 }, true);
+  const qM = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: 0, q: -qRate, r: 0 }, true);
+  const pP = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: pRate, q: 0, r: 0 }, true);
+  const pM = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: -pRate, q: 0, r: 0 }, true);
+  const rP = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: 0, q: 0, r: rRate }, true);
+  const rM = panelAero(baseMesh.mesh, flightP, atm0, p.alphaDeg, 0, sRef, Lref, { p: 0, q: 0, r: -rRate }, true);
+  done += 8;
   const hBeta = 4 * DEG;
   const table: Table = {
     mach: uniqM,
@@ -261,10 +273,10 @@ export async function flyClosedLoop(
     cyb: (bp.cy - bm.cy) / hBeta,
     cnb: (bp.cn - bm.cn) / hBeta,
     clb: (bp.cll - bm.cll) / hBeta,
-    clq: (qPair.cl - a0.cl) / qHat,
-    cmq: (qPair.cm - a0.cm) / qHat,
-    clp: (pPair.cll - a0.cll) / qHat,
-    cnr: (rPair.cn - a0.cn) / qHat,
+    clq: (qP.cl - qM.cl) / (2 * qHat),
+    cmq: (qP.cm - qM.cm) / (2 * qHat),
+    clp: (pP.cll - pM.cll) / (2 * qHat),
+    cnr: (rP.cn - rM.cn) / (2 * qHat),
   };
 
   const mass0 = massProperties(built.mesh, p.rhoKgM3 || 160, p.massKg || 0);

@@ -7,11 +7,16 @@ import { atmosphere } from "./atmosphere";
 import type { BuiltVehicle } from "./types";
 import { CUSPIS_6DOF_PY } from "./cuspis-6dof-src";
 
+function deckName(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 64);
+  return cleaned || "vehicle";
+}
+
 export function su2Config(built: BuiltVehicle): string {
   const p = built.params;
   const M = p.lockFlight ? p.mach : p.flightMach;
   const atm = atmosphere(p.altKm, M, p.gamma);
-  const name = p.name || "vehicle";
+  const name = deckName(p.name || "vehicle");
   return `% Cuspis SU2 skeleton — compressible RANS / Euler
 % Mesh this vehicle in Pointwise from ${name}.stl, export ${name}.su2, then run.
 % Freestream from US76 at ${p.altKm} km, Mach ${M}.

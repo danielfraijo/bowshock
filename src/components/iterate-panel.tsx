@@ -36,6 +36,7 @@ import {
 import { inletOperability, type OperabilityRow } from "@/lib/waverider/operability";
 import { applyMassToParams, massBudget, sizeTps, TPS_LIB, type MassBudget, type TpsMaterialId, type TpsSizing } from "@/lib/waverider/tps";
 import { domainOf, type AeroMethod, type BuiltVehicle, type DesignParams } from "@/lib/waverider/types";
+import { sanitizeParams } from "@/lib/waverider/presets";
 import { fmt } from "@/lib/waverider/math";
 import { downloadBlob } from "@/lib/utils";
 
@@ -57,12 +58,28 @@ interface SavedVariant {
   rangeKm: number;
 }
 
-function readList<T>(key: string): T[] {
+const STORE_MAX = 1_500_000;
+
+function dropProto(key: string, value: unknown) {
+  return key === "__proto__" || key === "constructor" || key === "prototype" ? undefined : value;
+}
+
+function readList<T extends { params?: unknown; name?: unknown }>(key: string, limit: number): T[] {
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!raw || raw.length > STORE_MAX) return [];
+    const parsed = JSON.parse(raw, dropProto);
+    if (!Array.isArray(parsed)) return [];
+    const out: T[] = [];
+    for (const row of parsed) {
+      if (!row || typeof row !== "object") continue;
+      const rec = row as T;
+      const params = sanitizeParams(rec.params);
+      const name = typeof rec.name === "string" ? rec.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 64) : params.name;
+      out.push({ ...rec, params, name });
+      if (out.length >= limit) break;
+    }
+    return out;
   } catch {
     return [];
   }
@@ -108,8 +125,8 @@ export function IteratePanel({
   const [tps, setTps] = useState<TpsSizing | null>(null);
   const [budget, setBudget] = useState<MassBudget | null>(null);
   const [ops, setOps] = useState<OperabilityRow[] | null>(null);
-  const [variants, setVariants] = useState<SavedVariant[]>(() => readList<SavedVariant>(VAR_KEY));
-  const [history, setHistory] = useState<{ at: number; name: string; params: DesignParams }[]>(() => readList(HIST_KEY));
+  const [variants, setVariants] = useState<SavedVariant[]>(() => readList<SavedVariant>(VAR_KEY, 8));
+  const [history, setHistory] = useState<{ at: number; name: string; params: DesignParams }[]>(() => readList(HIST_KEY, 12));
 
   const preview = useMemo(() => gridCount(spec, params.mach, params.alphaDeg), [spec, params.mach, params.alphaDeg]);
   const internal = domainOf(params.family) === "internal";
@@ -225,7 +242,7 @@ export function IteratePanel({
     const sized = sizeTps({ qWcm2: ev.metrics.qStag, areaM2: area, timeS: heatTime, material });
     const mp = massProperties(built.mesh, params.rhoKgM3 || 160, 0);
     const b = massBudget({
-      params,
+      params: sanitizeParams(params),
       volume: built.quality.volume,
       length: params.length,
       height: params.height,
@@ -249,7 +266,7 @@ export function IteratePanel({
       id: `${Date.now()}`,
       name: params.name || params.family,
       at: Date.now(),
-      params,
+      params: sanitizeParams(params),
       ld: ev.metrics.ld,
       cd: ev.metrics.cd,
       q: ev.metrics.qStag,
@@ -259,14 +276,22 @@ export function IteratePanel({
     };
     const next = [row, ...variants].slice(0, 8);
     setVariants(next);
-    localStorage.setItem(VAR_KEY, JSON.stringify(next));
+    try {
+      localStorage.setItem(VAR_KEY, JSON.stringify(next));
+    } catch {
+      setDbErr("This browser refused to store the variant.");
+    }
   };
 
   const snapshot = () => {
-    const row = { at: Date.now(), name: params.name || params.family, params };
+    const row = { at: Date.now(), name: params.name || params.family, params: sanitizeParams(params) };
     const next = [row, ...history].slice(0, 12);
     setHistory(next);
-    localStorage.setItem(HIST_KEY, JSON.stringify(next));
+    try {
+      localStorage.setItem(HIST_KEY, JSON.stringify(next));
+    } catch {
+      setDbErr("This browser refused to store the snapshot.");
+    }
   };
 
   const pct = dbProg.total > 0 ? Math.round((100 * dbProg.done) / dbProg.total) : 0;
@@ -304,7 +329,7 @@ export function IteratePanel({
         <div className="space-y-3">
           <p className="text-xs leading-relaxed text-subtle">
             One table covers the design Mach and the off-design Mach numbers on the same shape. Deflection rebuilds the elevon or the fin ridges.
-            Static derivatives are differences of the table. Dynamic derivatives are body-rate perturbations at β = 0.
+            Static derivatives are central differences of the table, one-sided at the ends. Dynamic derivatives are central body-rate differences at β = 0.
           </p>
           <AxisRange label="Mach" a={spec.machMin} b={spec.machMax} s={spec.machStep} onA={(machMin) => setSpec({ ...spec, machMin })} onB={(machMax) => setSpec({ ...spec, machMax })} onS={(machStep) => setSpec({ ...spec, machStep })} />
           <AxisRange label="α deg" a={spec.alphaMin} b={spec.alphaMax} s={spec.alphaStep} onA={(alphaMin) => setSpec({ ...spec, alphaMin })} onB={(alphaMax) => setSpec({ ...spec, alphaMax })} onS={(alphaStep) => setSpec({ ...spec, alphaStep })} />
@@ -434,7 +459,7 @@ export function IteratePanel({
             <div className="space-y-2">
               <p className="text-[11px] text-muted">{opt.evaluations} evaluations · {opt.pareto.length} on the Pareto front</p>
               {opt.pareto.slice(0, 6).map((d, i) => (
-                <button key={i} type="button" className="hud-card w-full rounded-md px-3 py-2 text-left" onClick={() => onParams(d.params)}>
+                <button key={i} type="button" className="hud-card w-full rounded-md px-3 py-2 text-left" onClick={() => onParams(sanitizeParams(d.params))}>
                   <span className="block text-xs text-fg">L/D {fmt(d.metrics.ld, 2)} · q {fmt(d.metrics.qStag, 2)} W/cm² · SM {fmt(d.metrics.staticMargin, 3)}</span>
                   <span className="block text-[11px] text-muted">{d.feasible ? "feasible" : "infeasible"} · load this design</span>
                 </button>
@@ -573,7 +598,7 @@ export function IteratePanel({
               <Stat k="Total mass" v={`${fmt(budget.total, 1)} kg`} />
               <Stat k="Fuel" v={`${fmt(budget.fuel, 1)} kg`} />
               <Stat k="CG x/L" v={fmt(budget.cgFrac, 3)} />
-              <button type="button" className="hud-card mt-2 w-full rounded-md px-3 py-2 text-sm" onClick={() => onParams(applyMassToParams(params, budget))}>
+              <button type="button" className="hud-card mt-2 w-full rounded-md px-3 py-2 text-sm" onClick={() => onParams(sanitizeParams(applyMassToParams(params, budget)))}>
                 Use this mass and CG
               </button>
               {tps.notes.concat(budget.notes).map((n) => (
@@ -594,7 +619,7 @@ export function IteratePanel({
           {variants.length === 0 ? <p className="text-xs text-muted">No saved variants yet.</p> : null}
           {variants.map((v) => (
             <div key={v.id} className="hud-card rounded-md px-3 py-2">
-              <button type="button" className="w-full text-left" onClick={() => onParams(v.params)}>
+              <button type="button" className="w-full text-left" onClick={() => onParams(sanitizeParams(v.params))}>
                 <span className="block text-sm text-fg">{v.name}</span>
                 <span className="block text-[11px] text-muted">
                   L/D {fmt(v.ld, 2)} · CD {fmt(v.cd, 3)} · q {fmt(v.q, 2)} · m {fmt(v.mass, 0)} kg · SM {fmt(v.sm, 3)} · R {fmt(v.rangeKm, 0)} km
@@ -604,7 +629,7 @@ export function IteratePanel({
           ))}
           {history.length ? <p className="hud-label mt-2">History</p> : null}
           {history.map((h) => (
-            <button key={h.at} type="button" className="block w-full text-left text-[11px] text-muted" onClick={() => onParams(h.params)}>
+            <button key={h.at} type="button" className="block w-full text-left text-[11px] text-muted" onClick={() => onParams(sanitizeParams(h.params))}>
               {new Date(h.at).toLocaleString()} — {h.name}
             </button>
           ))}

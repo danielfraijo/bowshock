@@ -5,8 +5,10 @@ export const CUSPIS_6DOF_PY = `#!/usr/bin/env python3
 Reads a cuspis-aerodb-1 JSON (the Iterate tab export) and integrates a
 boost-glide, PID-on-alpha, point-plus-short-period model. It is the same
 idea as the in-browser closed loop, not a bit-exact port: the browser also
-rebuilds the mesh for each deflection, while this script only interpolates
-the table you already exported.
+rebuilds the mesh for each deflection and integrates lateral states, while
+this script interpolates the table at beta = 0. Atmosphere and speed of
+sound are US76, the same model as the browser. Mass comes from mass_kg in
+the file when that field is present.
 
     python cuspis_6dof.py aero.json --seconds 60 --out traj.csv
 
@@ -87,9 +89,37 @@ class Table:
         return field(self.cl), max(1e-4, field(self.cd)), field(self.cm)
 
 
-def isa_rho(h_m):
-    # Exponential screen, scale height 7200 m. The browser uses US76.
-    return 1.225 * math.exp(-max(h_m, 0.0) / 7200.0)
+def us76(h_m, gamma=1.4):
+    """1976 US Standard Atmosphere, same layers and geopotential as the browser."""
+    G0 = 9.80665
+    R = 287.05287
+    RE = 6356766.0
+    layers = (
+        (0.0, 288.15, 101325.0, -0.0065),
+        (11000.0, 216.65, 22632.1, 0.0),
+        (20000.0, 216.65, 5474.89, 0.001),
+        (32000.0, 228.65, 868.019, 0.0028),
+        (47000.0, 270.65, 110.906, 0.0),
+        (51000.0, 270.65, 66.9389, -0.0028),
+        (71000.0, 214.65, 3.95642, -0.002),
+    )
+    h = min(max(h_m, 0.0), 84900.0)
+    H = (RE * h) / (RE + h)
+    layer = layers[0]
+    for row in layers:
+        if H >= row[0]:
+            layer = row
+    hb, Tb, pb, Lr = layer
+    dh = H - hb
+    if abs(Lr) < 1e-9:
+        T = Tb
+        p = pb * math.exp((-G0 * dh) / (R * Tb))
+    else:
+        T = Tb + Lr * dh
+        p = pb * (T / Tb) ** (-G0 / (R * Lr))
+    rho = p / (R * max(T, 1.0))
+    a = math.sqrt(max(gamma, 1.05) * R * max(T, 1.0))
+    return rho, a
 
 
 def integrate(doc, seconds, dt, kp, ki, kd, tau, dmax):
@@ -97,18 +127,18 @@ def integrate(doc, seconds, dt, kp, ki, kd, tau, dmax):
     meta = tab.meta
     S = float(meta["sRef_m2"])
     Lref = float(meta["lRef_m"])
-    mass = 500.0
+    gamma_gas = float(meta.get("gamma") or 1.4)
+    mass = float(meta.get("mass_kg") or 500.0)
     Iyy = max(1.0, mass * Lref * Lref / 12.0)
     g0 = 9.80665
     Re = 6371000.0
     M = float(meta["designMach"])
     h = float(meta["altitude_km"]) * 1000.0
-    a = 300.0
+    _rho0, a = us76(h, gamma_gas)
     V = M * a
     alpha = 4.0
     q = 0.0
     gamma = -1.0 * math.pi / 180.0
-    theta = alpha * math.pi / 180.0 + gamma
     x = 0.0
     delta = 0.0
     integ = 0.0
@@ -117,12 +147,13 @@ def integrate(doc, seconds, dt, kp, ki, kd, tau, dmax):
     rows = []
     n = int(seconds / dt)
     for k in range(n + 1):
-        rho = isa_rho(h)
+        rho, a = us76(h, gamma_gas)
+        mach = V / max(a, 1.0)
         qdyn = 0.5 * rho * V * V
         # alpha of best L/D at this Mach, delta 0
         best, best_ld = tab.alpha[0], -1e9
         for al in tab.alpha:
-            cl, cd, _cm = tab.at(V / a, al, 0.0)
+            cl, cd, _cm = tab.at(mach, al, 0.0)
             ld = cl / cd
             if ld > best_ld:
                 best, best_ld = al, ld
@@ -134,8 +165,8 @@ def integrate(doc, seconds, dt, kp, ki, kd, tau, dmax):
         ddelta = (cmd - delta) / max(tau, 1e-3) * dt
         ddelta = max(-40.0 * dt, min(40.0 * dt, ddelta))
         delta = max(-dmax, min(dmax, delta + ddelta))
-        cl, cd, cm = tab.at(V / a, alpha, delta)
-        mach_key = min(tab.mach, key=lambda m: abs(m - V / a))
+        cl, cd, cm = tab.at(mach, alpha, delta)
+        mach_key = min(tab.mach, key=lambda m: abs(m - mach))
         cmq = tab.cmq.get(mach_key, -0.3)
         qhat = q * Lref / (2.0 * max(V, 1.0))
         cm = cm + cmq * qhat
@@ -148,10 +179,13 @@ def integrate(doc, seconds, dt, kp, ki, kd, tau, dmax):
                 "V_m_s": V, "h_km": h / 1000.0, "x_km": x / 1000.0,
                 "q_kPa": qdyn / 1000.0, "gamma_deg": gamma * 180.0 / math.pi,
             })
-        a_dot = q - Lift / (mass * max(V, 1.0))
+        # Longitudinal subset of the browser loop. theta is not a separate state,
+        # so alpha_dot = q - gamma_dot with gamma_dot from lift, gravity, and curvature.
+        v_safe = max(V, 1.0)
+        g_dot = Lift / (mass * v_safe) + (V / (Re + h) - g / v_safe) * math.cos(gamma)
+        a_dot = q - g_dot
         q_dot = (qdyn * S * Lref * cm) / Iyy
         v_dot = -Drag / mass - g * math.sin(gamma)
-        g_dot = Lift / (mass * max(V, 1.0)) - g * math.cos(gamma) / max(V, 1.0)
         alpha = max(-8.0, min(20.0, alpha + a_dot * dt * 180.0 / math.pi))
         q += q_dot * dt
         gamma += g_dot * dt

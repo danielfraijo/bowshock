@@ -7,11 +7,12 @@
  * `lockFlight` off, so the inverse-design shape stays frozen and every other
  * Mach is an off-design point in the same table.
  *
- * Static derivatives are central differences of that table, per radian.
- * Dynamic derivatives use the same body-rate perturbation as the linear 6DOF
- * (local velocity V − ω × r) and are stored at β = 0, δ nearest 0, α nearest
- * the design angle, once per Mach. Symmetry-plane Euler, when requested, is an
- * extra β = 0, δ = 0 slice — the kernel is a centerline solve, not a 3-D table.
+ * Static derivatives are per radian: central on interior stations, one-sided
+ * on the ends of an axis (a zero at the edge would lie to a lookup table).
+ * Dynamic derivatives are central differences of the same body-rate perturbation
+ * as the linear 6DOF (local velocity V − ω × r), stored at β = 0, δ nearest 0,
+ * α nearest the design angle, once per Mach. Symmetry-plane Euler, when
+ * requested, is an extra β = 0, δ = 0 slice — a centerline solve, not a 3-D table.
  *
  * Angles in the tables are degrees. Derivatives are per radian. Forces are
  * wind-axis (CL, CD, CY). Moments are body-axis, nondimensional on Sref × Lref,
@@ -57,6 +58,9 @@ export interface AeroDbMeta {
   sRef_m2: number;
   lRef_m: number;
   bRef_m: number;
+  /** Smeared structural mass, or the user override. Not the TPS budget. */
+  mass_kg: number;
+  gamma: number;
   cg_m: [number, number, number];
   units: {
     angles: "deg";
@@ -212,6 +216,28 @@ function yieldThread() {
   return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+/** Interior station is a central difference; the two ends are one-sided. Per radian. */
+export function perRad(axisDeg: number[], values: number[], i: number): number {
+  const n = Math.min(axisDeg.length, values.length);
+  const span = stencil(n, i);
+  if (!span) return 0;
+  const width = (axisDeg[span[1]] - axisDeg[span[0]]) * DEG;
+  if (!(Math.abs(width) > 1e-12)) return 0;
+  return (values[span[1]] - values[span[0]]) / width;
+}
+
+function stencil(n: number, i: number): [number, number] | null {
+  if (n < 2 || i < 0 || i >= n) return null;
+  if (i === 0) return [0, 1];
+  if (i === n - 1) return [n - 2, n - 1];
+  return [i - 1, i + 1];
+}
+
+function plainLabel(name: string): string {
+  const cleaned = name.replace(/[\u0000-\u001f\u007f]/g, "").replace(/[%'\\]/g, "").trim().slice(0, 64);
+  return cleaned || "vehicle";
+}
+
 interface Coeff {
   cl: number;
   cd: number;
@@ -235,7 +261,7 @@ function coeffOf(
 ): Coeff {
   const atm = atmosphere(altKm, mach, params.gamma);
   const flight: DesignParams = { ...params, lockFlight: false, flightMach: mach, aeroMethod: params.aeroMethod };
-  const a = panelAero(mesh, flight, atm, alpha, beta, sRef, Math.max(params.length, 1e-6), rates);
+  const a = panelAero(mesh, flight, atm, alpha, beta, sRef, Math.max(params.length, 1e-6), rates, true);
   return { cl: a.cl, cd: a.cd, cy: a.cy, cm: a.cm, cn: a.cn, cll: a.cll, ca: a.ca, ld: a.ld };
 }
 
@@ -271,8 +297,8 @@ export async function generateAeroDatabase(
     "Same geometry at every Mach. Design Mach shapes the vehicle; other Mach numbers are off-design flight conditions.",
     `Coefficient method: ${method}.`,
     "Control deflection rebuilds the OML (elevon rotation, or fin-ridge shear on missile / stack).",
-    "Static derivatives are table differences, per radian. Edges without a two-sided stencil are 0.",
-    "Dynamic derivatives: one body-rate perturbation (q̂, p̂, r̂ = 0.02) at α nearest the design angle, β = 0, δ nearest 0, per Mach.",
+    "Static derivatives are per radian. Interior stations are a central difference; the ends of an axis are one-sided.",
+    "Dynamic derivatives: central difference of a body-rate pair (±q̂, ±p̂, ±r̂ = 0.02) at α nearest the design angle, β = 0, δ nearest 0, per Mach.",
     spec.eulerSymmetry
       ? "Symmetry-plane Euler is an extra β = 0, δ = 0 column. Off the centerline the Euler kernel is not defined."
       : "Symmetry-plane Euler slice was not requested.",
@@ -298,11 +324,17 @@ export async function generateAeroDatabase(
 
   const points: AeroDbPoint[] = [];
   let done = 0;
-  const total = nPoints + (spec.dynamicDerivatives ? axes.mach.length * 3 : 0) + (spec.eulerSymmetry ? axes.mach.length * axes.alpha_deg.length : 0);
+  let sinceYield = 0;
+  const total = nPoints + (spec.dynamicDerivatives ? axes.mach.length * 6 : 0) + (spec.eulerSymmetry ? axes.mach.length * axes.alpha_deg.length : 0);
   const tick = async (label: string) => {
     if (opts?.signal?.aborted) throw new DOMException("Aero database cancelled", "AbortError");
     opts?.onProgress?.({ done, total, label });
-    await yieldThread();
+    sinceYield++;
+    // Heating is off, so a point is cheap. Yielding every point would spend more time in timers than in the panel.
+    if (sinceYield >= 8) {
+      sinceYield = 0;
+      await yieldThread();
+    }
   };
 
   for (const mach of axes.mach) {
@@ -358,31 +390,34 @@ export async function generateAeroDatabase(
       for (let ib = 0; ib < nB; ib++) {
         for (let id = 0; id < nD; id++) {
           const p = at(im, ia, ib, id);
-          if (ia > 0 && ia < nA - 1) {
-            const span = (axes.alpha_deg[ia + 1] - axes.alpha_deg[ia - 1]) * DEG;
-            const hi = at(im, ia + 1, ib, id);
-            const lo = at(im, ia - 1, ib, id);
+          const sa = stencil(nA, ia);
+          if (sa) {
+            const span = (axes.alpha_deg[sa[1]] - axes.alpha_deg[sa[0]]) * DEG;
             if (span !== 0) {
+              const hi = at(im, sa[1], ib, id);
+              const lo = at(im, sa[0], ib, id);
               p.cla = (hi.cl - lo.cl) / span;
               p.cda = (hi.cd - lo.cd) / span;
               p.cma = (hi.cm - lo.cm) / span;
             }
           }
-          if (ib > 0 && ib < nB - 1) {
-            const span = (axes.beta_deg[ib + 1] - axes.beta_deg[ib - 1]) * DEG;
-            const hi = at(im, ia, ib + 1, id);
-            const lo = at(im, ia, ib - 1, id);
+          const sb = stencil(nB, ib);
+          if (sb) {
+            const span = (axes.beta_deg[sb[1]] - axes.beta_deg[sb[0]]) * DEG;
             if (span !== 0) {
+              const hi = at(im, ia, sb[1], id);
+              const lo = at(im, ia, sb[0], id);
               p.cyb = (hi.cy - lo.cy) / span;
               p.cnb = (hi.cn - lo.cn) / span;
               p.clb = (hi.cll - lo.cll) / span;
             }
           }
-          if (id > 0 && id < nD - 1) {
-            const span = (axes.delta_deg[id + 1] - axes.delta_deg[id - 1]) * DEG;
-            const hi = at(im, ia, ib, id + 1);
-            const lo = at(im, ia, ib, id - 1);
+          const sd = stencil(nD, id);
+          if (sd) {
+            const span = (axes.delta_deg[sd[1]] - axes.delta_deg[sd[0]]) * DEG;
             if (span !== 0) {
+              const hi = at(im, ia, ib, sd[1]);
+              const lo = at(im, ia, ib, sd[0]);
               p.cld = (hi.cl - lo.cl) / span;
               p.cmd = (hi.cm - lo.cm) / span;
             }
@@ -413,22 +448,25 @@ export async function generateAeroDatabase(
       const pHat = 0.02;
       const rHat = 0.02;
       const anchor = at(im, ia, ib, id);
-      const qPair = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: (qHat * 2 * V) / L, r: 0 });
-      const pPair = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: (pHat * 2 * V) / bRef, q: 0, r: 0 });
-      const rPair = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: 0, r: (rHat * 2 * V) / bRef });
-      done += 3;
+      const qP = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: (qHat * 2 * V) / L, r: 0 });
+      const qM = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: -(qHat * 2 * V) / L, r: 0 });
+      const pP = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: (pHat * 2 * V) / bRef, q: 0, r: 0 });
+      const pM = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: -(pHat * 2 * V) / bRef, q: 0, r: 0 });
+      const rP = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: 0, r: (rHat * 2 * V) / bRef });
+      const rM = coeffOf(pack.mesh, params, spec.altKm, mach, alphaA, betaA, pack.sRef, { p: 0, q: 0, r: -(rHat * 2 * V) / bRef });
+      done += 6;
       const row: AeroDynamicRow = {
         mach,
         alpha_deg: alphaA,
         delta_deg: deltaA,
-        clq: (qPair.cl - anchor.cl) / qHat,
-        cmq: (qPair.cm - anchor.cm) / qHat,
-        clp: (pPair.cll - anchor.cll) / pHat,
-        cnp: (pPair.cn - anchor.cn) / pHat,
-        cyp: (pPair.cy - anchor.cy) / pHat,
-        cnr: (rPair.cn - anchor.cn) / rHat,
-        clr: (rPair.cll - anchor.cll) / rHat,
-        cyr: (rPair.cy - anchor.cy) / rHat,
+        clq: (qP.cl - qM.cl) / (2 * qHat),
+        cmq: (qP.cm - qM.cm) / (2 * qHat),
+        clp: (pP.cll - pM.cll) / (2 * pHat),
+        cnp: (pP.cn - pM.cn) / (2 * pHat),
+        cyp: (pP.cy - pM.cy) / (2 * pHat),
+        cnr: (rP.cn - rM.cn) / (2 * rHat),
+        clr: (rP.cll - rM.cll) / (2 * rHat),
+        cyr: (rP.cy - rM.cy) / (2 * rHat),
       };
       dynamics.push(row);
       anchor.clq = row.clq;
@@ -512,10 +550,11 @@ export async function generateAeroDatabase(
   }
   const cgx = clamp(base.cgFrac, 0.05, 0.95) * base.length;
   const sRef0 = Math.max(built.aero.planformArea, 1e-6);
+  const massKg = base.massKg > 0 ? base.massKg : Math.max(1, (base.rhoKgM3 || 160) * Math.max(built.quality.volume, 0));
   const db: AeroDatabase = {
     meta: {
       format: "cuspis-aerodb-1",
-      name: base.name || "vehicle",
+      name: plainLabel(base.name || "vehicle"),
       family: base.family,
       method,
       designMach,
@@ -523,6 +562,8 @@ export async function generateAeroDatabase(
       sRef_m2: sRef0,
       lRef_m: base.length,
       bRef_m: base.span,
+      mass_kg: massKg,
+      gamma: base.gamma,
       cg_m: [cgx, 0, 0],
       units: {
         angles: "deg",
@@ -608,6 +649,8 @@ export function aeroDbToCsv(db: AeroDatabase): string {
     `# sref_m2: ${m.sRef_m2}`,
     `# lref_m: ${m.lRef_m}`,
     `# bref_m: ${m.bRef_m}`,
+    `# mass_kg: ${m.mass_kg}`,
+    `# gamma: ${m.gamma}`,
     `# cg_x_m: ${m.cg_m[0]}`,
     `# cg_y_m: ${m.cg_m[1]}`,
     `# cg_z_m: ${m.cg_m[2]}`,
@@ -697,6 +740,8 @@ aero.Bref = ${meta.bRef_m};
 aero.cg = [${meta.cg_m.join(", ")}];
 aero.designMach = ${meta.designMach};
 aero.alt_km = ${meta.altitude_km};
+aero.mass_kg = ${meta.mass_kg};
+aero.gamma = ${meta.gamma};
 aero.method = '${meta.method}';
 aero.mach = [${vec(axes.mach)}];
 aero.alpha_deg = [${vec(axes.alpha_deg)}];

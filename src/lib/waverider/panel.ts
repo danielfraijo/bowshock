@@ -313,13 +313,16 @@ export function panelAero(
   const vhat = flowDir(alpha, beta);
   const cpMax = newtonianCpMax(M, g);
   const nt = mesh.indices.length / 3;
-  const cp = new Float32Array(nt);
-  const heat = new Float32Array(nt);
-  const twEq = new Float32Array(nt);
-  const stanton = new Float32Array(nt);
-  const machE = new Float32Array(nt);
-  const cfArr = new Float32Array(nt);
-  const impact = new Float32Array(nt);
+  // Coefficient sweeps (database, optimizer, 6DOF) do not paint the mesh. Skip the
+  // per-face heat buffers — the stores below become no-ops and the heat branch is skipped.
+  const nStore = forcesOnly ? 0 : nt;
+  const cp = new Float32Array(nStore);
+  const heat = new Float32Array(nStore);
+  const twEq = new Float32Array(nStore);
+  const stanton = new Float32Array(nStore);
+  const machE = new Float32Array(nStore);
+  const cfArr = new Float32Array(nStore);
+  const impact = new Float32Array(nStore);
   const cgX = clamp(params.cgFrac, 0.2, 0.85) * params.length;
   const cg: Vec3 = [cgX, 0, 0];
   let Fx = 0;

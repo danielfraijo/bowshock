@@ -119,7 +119,7 @@ export function evaluateDesign(params: DesignParams): DesignEval {
     const M = params.lockFlight ? params.mach : params.flightMach;
     const atm = atmosphere(params.altKm, M, params.gamma);
     const sRef = Math.max(built.aero.planformArea, 1e-6);
-    const aero = panelAero(built.mesh, flight, atm, params.alphaDeg, params.betaDeg, sRef, params.length);
+    const aero = panelAero(built.mesh, flight, atm, params.alphaDeg, params.betaDeg, sRef, params.length, undefined, true);
     const rho = Math.max(20, params.rhoKgM3 || 160);
     const mass = params.massKg > 0 ? params.massKg : rho * Math.max(built.quality.volume, 0);
     const sm = (aero.xCp - aero.cg[0]) / Math.max(aero.lRef, 1e-6);

@@ -44,7 +44,7 @@ import { publishedChecks } from "./validate-published";
 import { allenEggers } from "./flight-science";
 import { presetSettings } from "./refinement";
 import { stripCase } from "./refinement-study";
-import { axisBreaks } from "./aerodb";
+import { axisBreaks, perRad } from "./aerodb";
 import { actuatorStep } from "./guidance";
 import { sizeTps } from "./tps";
 
@@ -557,6 +557,19 @@ function missionChecks(): Check[] {
       2,
       step,
       "First-order lag, then a hard rate limit, then a deflection stop. τ = 0.01 s, rate = 20°/s, dt = 0.1 s.",
+      1e-9,
+    ),
+  );
+  const edge = perRad([0, 4, 8], [0, 0.2, 0.4], 0);
+  out.push(
+    chk(
+      "aerodb-edge-deriv",
+      "external",
+      "Aero-database edge derivative is one-sided",
+      "dCL/dα = 0.2 / 4° at the first station",
+      0.2 / (4 * DEG),
+      edge,
+      "Ends of a Mach or angle axis use a one-sided difference, not a stored zero. Interior stations stay central.",
       1e-9,
     ),
   );
