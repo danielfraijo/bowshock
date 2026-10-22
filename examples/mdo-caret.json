@@ -1,0 +1,11 @@
+{
+  "$comment": "NSGA-II over two variables. Run: npm run aerodb -- --config examples/mdo-caret.json --out mdo-out",
+  "mode": "mdo",
+  "geometry": { "preset": "caret-m8", "params": { "nx": 20, "ny": 14 } },
+  "mdo": {
+    "variables": [ { "key": "shockDeg", "min": 12, "max": 18 }, { "key": "span", "min": 1.8, "max": 2.6 } ],
+    "objectives": [ { "metric": "ld", "goal": "max", "weight": 1 }, { "metric": "qStag", "goal": "min", "weight": 1 } ],
+    "constraints": [ { "metric": "staticMargin", "op": ">=", "value": 0 } ],
+    "population": 6, "generations": 2, "seed": 7
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "$comment": "Closed-loop boost-glide. Also usable with --mode sweep / sensitivity / eval.",
+  "mode": "fly",
+  "geometry": { "preset": "caret-m8", "params": { "nx": 20, "ny": 14 } },
+  "fly": { "mode": "boost-glide", "law": "pid", "durationS": 30, "dt": 0.05 },
+  "sweep": { "key": "alphaDeg", "values": [0, 2, 4] },
+  "sensitivity": { "keys": ["span", "shockDeg"], "metric": "ld", "frac": 0.05 }
+}

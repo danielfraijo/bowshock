@@ -29,7 +29,12 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test:datcom": "node scripts/datcom-run-tests.mjs",
-    "datcom": "node scripts/datcom-run.mjs"
+    "datcom": "node scripts/datcom-run.mjs",
+    "aerodb": "node --import ./scripts/ts-register.mjs scripts/cuspis-eval.ts",
+    "test:aerodb-headless": "node --import ./scripts/ts-register.mjs src/lib/waverider/headless.test.ts",
+    "test:aerodb-validation": "node --import ./scripts/ts-register.mjs src/lib/waverider/aerodb-validation.test.ts",
+    "test:mission": "node --import ./scripts/ts-register.mjs src/lib/waverider/mission.test.ts",
+    "test:python": "cd python && ${PYTHON:-python3} -m pytest -q"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

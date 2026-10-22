@@ -1,0 +1,16 @@
+{
+  "$comment": "Aero database for the Caret M8 preset. Run: npm run aerodb -- --config examples/aerodb-caret.json --out aerodb-out",
+  "mode": "aerodb",
+  "name": "caret-m8-aerodb",
+  "geometry": { "preset": "caret-m8", "params": { "nx": 28, "ny": 20 } },
+  "aerodb": {
+    "machMin": 6, "machMax": 10, "machStep": 2,
+    "alphaMin": -4, "alphaMax": 8, "alphaStep": 2,
+    "betaMin": -2, "betaMax": 2, "betaStep": 2,
+    "deltaMin": -5, "deltaMax": 5, "deltaStep": 5,
+    "method": "cbaero",
+    "eulerSymmetry": false,
+    "dynamicDerivatives": true,
+    "altKm": 30
+  }
+}
