@@ -19,6 +19,8 @@ import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock
 import { DataPanel } from "@/components/data-panel";
 import { DatcomBlock } from "@/components/datcom-panel";
 import { IteratePanel } from "@/components/iterate-panel";
+import { ProjectsMenu } from "@/components/projects-panel"; // [p7-project]
+import { useProjectSession } from "@/components/use-project"; // [p7-project]
 import { HudTabs } from "@/components/ui/hud-tabs"; // [ui-redesign]
 import { Readout, ViewportChrome } from "@/components/ui/hud"; // [ui-redesign]
 import { computeDataPackAsync } from "@/lib/waverider/datapack";
@@ -206,6 +208,8 @@ export function Designer() {
   const [dragging, setDragging] = useState(false);
   const pending = useRef<Partial<DesignParams> | null>(null);
   const raf = useRef(0);
+  // [p7-project] project save/load + version history bound to the live designer state
+  const project = useProjectSession({ params, setParams, viewer: opts, setViewer: setOpts, tab, setTab: (t) => setTab(t as Tab), hydrated });
 
   useEffect(() => {
     const saved = loadSavedParams();
@@ -383,6 +387,7 @@ export function Designer() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <ProjectsMenu project={project} />
           <Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => setParams(DEFAULT_PARAMS)}>
             <RotateCcw />
             Reset
@@ -901,7 +906,7 @@ export function Designer() {
 
             {tab === "shocks" ? <ShocksBlock study={study} /> : null}
             {tab === "checks" ? <ChecksBlock study={study} /> : null}
-            {tab === "iterate" ? <IteratePanel params={params} built={studyBuilt} onParams={setParams} /> : null}
+            {tab === "iterate" ? <IteratePanel key={project.rev} params={params} built={studyBuilt} onParams={setParams} aeroDb={project.aeroDb} onAeroDb={project.setAeroDb} /> : null}
             {tab === "data" ? <DataPanel params={params} paused={dragging} /> : null}
 
             {tab === "traj" ? (

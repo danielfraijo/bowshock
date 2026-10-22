@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Formula, NumberField, Seg, Stat } from "@/components/fields";
 import {
@@ -109,14 +109,25 @@ export function IteratePanel({
   params,
   built,
   onParams,
+  aeroDb,
+  onAeroDb,
 }: {
   params: DesignParams;
   built: BuiltVehicle;
   onParams: (p: DesignParams) => void;
+  /** [p7-project] project-held aero DB (spec + results); survives tab switches and is saved with the project. */
+  aeroDb?: { spec: AeroDbSpec; database?: AeroDatabase | null } | null;
+  onAeroDb?: (s: { spec: AeroDbSpec; database: AeroDatabase | null }) => void;
 }) {
   const [sub, setSub] = useState<Sub>("db");
-  const [spec, setSpec] = useState<AeroDbSpec>(() => defaultAeroDbSpec(params));
-  const [db, setDb] = useState<AeroDatabase | null>(null);
+  const [spec, setSpec] = useState<AeroDbSpec>(() => aeroDb?.spec ?? defaultAeroDbSpec(params));
+  const [db, setDb] = useState<AeroDatabase | null>(aeroDb?.database ?? null);
+  // [p7-project] report user edits / new runs up to the project (skip the mount so opening the tab is not a change)
+  const initial = useRef({ spec, db });
+  useEffect(() => {
+    if (spec === initial.current.spec && db === initial.current.db) return;
+    onAeroDb?.({ spec, database: db });
+  }, [spec, db]); // eslint-disable-line react-hooks/exhaustive-deps
   const [dbErr, setDbErr] = useState<string | null>(null);
   const [dbProg, setDbProg] = useState({ done: 0, total: 0, label: "" });
   const [busy, setBusy] = useState<string | null>(null);
