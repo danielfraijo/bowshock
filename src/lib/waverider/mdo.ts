@@ -10,8 +10,13 @@
  * The default search is NSGA-II (Deb): non-dominated sorting, crowding distance,
  * constraint-domination. It is gradient-free and happy with a noisy panel
  * code. Objectives are minimized internally; a "max" goal is negated.
- * `nsga2` also runs on any `UnitProblem` (unit cube, cost vector plus
- * violation), which is how the analytic benchmarks in mdo.test.ts drive it.
+ * `OptSpec.algorithm` can instead pick a single-objective method from
+ * mdo-solvers.ts (CMA-ES, DE, Nelder–Mead, pattern search) on the weighted sum
+ * Σ weight·(±metric). DOE (LHS, full factorial) and global sensitivity
+ * (Morris, Sobol/Saltelli) over design variables are below `sensitivity`.
+ * Every method also runs on any `UnitProblem` (unit cube, cost vector plus
+ * violation), which is how the analytic benchmarks in mdo.test.ts drive them.
+ * See docs/optimize.md for assumptions and limits.
  *
  * OpenMDAO / an external script should not scrape the UI. Call
  * `evaluateDesign` from `scripts/cuspis-eval.ts` (Node) and parse the JSON.
@@ -35,8 +40,12 @@ import {
   mulberry32,
   paretoDominates,
 } from "./mdo-core";
+import { cmaes, differentialEvolution, nelderMead, patternSearch } from "./mdo-solvers";
+import { factorialUnit, maximinLhs, morrisScreening, sobolIndices } from "./mdo-sampling";
 
 export * from "./mdo-core";
+export * from "./mdo-solvers";
+export * from "./mdo-sampling";
 
 export const MDO_METRICS = ["ld", "rangeKm", "qStag", "mass", "staticMargin", "volume", "cd", "cm"] as const;
 export type MdoMetric = (typeof MDO_METRICS)[number];
@@ -74,6 +83,9 @@ export interface OptConstraint {
   value: number;
 }
 
+export const OPT_ALGORITHMS = ["nsga2", "cmaes", "de", "nelder-mead", "pattern-search"] as const;
+export type OptAlgorithm = (typeof OPT_ALGORITHMS)[number];
+
 export interface OptSpec {
   variables: OptVariable[];
   objectives: OptObjective[];
@@ -81,6 +93,12 @@ export interface OptSpec {
   population: number;
   generations: number;
   seed: number;
+  /**
+   * Default "nsga2". The single-objective methods minimize Σ weight·(±metric)
+   * with Deb feasibility rules and get a budget of population·(generations+1)
+   * evaluations, the same as NSGA-II.
+   */
+  algorithm?: OptAlgorithm;
 }
 
 export interface DesignEval {
@@ -478,6 +496,14 @@ export interface OptProgress {
   label: string;
 }
 
+const ALGO_NOTES: Record<OptAlgorithm, string> = {
+  nsga2: "NSGA-II, bounded SBX (pc 0.9/pair) and polynomial mutation (1/n per gene). Constraint-domination (Deb).",
+  cmaes: "CMA-ES (IPOP restarts) on Σ weight·(±metric), Deb feasibility ranking. Local-to-regional; one design out.",
+  de: "Differential evolution DE/rand/1/bin with F dither on Σ weight·(±metric), Deb feasibility selection.",
+  "nelder-mead": "Nelder–Mead (adaptive) on Σ weight·(±metric), Deb ranking. Local only; starts at the baseline.",
+  "pattern-search": "Compass pattern search on Σ weight·(±metric), Deb ranking. Local only; poor on active nonlinear constraints.",
+};
+
 export async function runOptimizer(
   base: DesignParams,
   spec: OptSpec,
@@ -486,9 +512,10 @@ export async function runOptimizer(
   const objectives = spec.objectives.length ? spec.objectives : [{ metric: "ld" as const, goal: "max" as const, weight: 1 }];
   const popN = Math.max(4, Math.min(24, Math.round(spec.population || 8)));
   const gens = Math.max(1, Math.min(20, Math.round(spec.generations || 5)));
+  const algorithm: OptAlgorithm = spec.algorithm && OPT_ALGORITHMS.includes(spec.algorithm) ? spec.algorithm : "nsga2";
   const rng = mulberry32(spec.seed || 1);
   const notes = [
-    "NSGA-II, bounded SBX (pc 0.9/pair) and polynomial mutation (1/n per gene). Constraint-domination (Deb).",
+    ALGO_NOTES[algorithm],
     "Each evaluation: buildVehicle + one panel solve. Euler is replaced by CBAERO inside the loop.",
     "Range is equilibrium glide from the current speed down to 45% of that speed. Not a closed-loop trajectory.",
     "Static margin is (x_cp − x_cg) / L. Positive means the center of pressure is aft of the CG.",
@@ -497,6 +524,7 @@ export async function runOptimizer(
   let evaluations = 0;
   const label = () => (generation === 0 ? `initial ${evaluations}/${popN}` : `gen ${generation} eval`);
   const problem = designProblem(base, spec.variables, objectives, spec.constraints, {
+    scalar: algorithm !== "nsga2",
     signal: opts?.signal,
     onEval: (_ev, k) => {
       evaluations = k;
@@ -516,19 +544,45 @@ export async function runOptimizer(
     throw err;
   };
 
-  const r = await nsga2(problem, rng, {
-    popSize: popN,
-    generations: gens,
-    initial: [seedGenes],
-    signal: opts?.signal,
-    onGeneration: (g, pop) => {
-      generation = g;
-      record(g, pop);
-    },
-  }).catch(rethrow);
-  // The archive keeps every feasible non-dominated design seen, not just the survivors of the last generation.
-  const set = r.archive.length ? paretoFilter([...r.archive, ...r.front]) : r.front;
-  return { pareto: set.map((p) => p.data!).sort(byLd), history, evaluations: r.evaluations, notes };
+  if (algorithm === "nsga2") {
+    const r = await nsga2(problem, rng, {
+      popSize: popN,
+      generations: gens,
+      initial: [seedGenes],
+      signal: opts?.signal,
+      onGeneration: (g, pop) => {
+        generation = g;
+        record(g, pop);
+      },
+    }).catch(rethrow);
+    // The archive keeps every feasible non-dominated design seen, not just the survivors of the last generation.
+    const set = r.archive.length ? paretoFilter([...r.archive, ...r.front]) : r.front;
+    return { pareto: set.map((p) => p.data!).sort(byLd), history, evaluations: r.evaluations, notes };
+  }
+
+  const budget = popN * (gens + 1);
+  // Window the single-objective run into "generations" of popN evaluations for the history chart.
+  let window: UnitPoint<DesignEval>[] = [];
+  const onEval = (p: UnitPoint) => {
+    window.push(p as UnitPoint<DesignEval>);
+    if (window.length === popN) {
+      generation++;
+      if (generation <= gens) record(generation, window);
+      window = [];
+    }
+  };
+  const common = { maxEvals: budget, signal: opts?.signal, onEval };
+  const run =
+    algorithm === "cmaes"
+      ? cmaes(problem, rng, { ...common, x0: seedGenes, popSize: Math.max(4, Math.min(popN, 4 + Math.floor(3 * Math.log(problem.dim)) * 2)), restarts: 9 })
+      : algorithm === "de"
+        ? differentialEvolution(problem, rng, { ...common, popSize: Math.max(5, popN), generations: gens, initial: [seedGenes] })
+        : algorithm === "nelder-mead"
+          ? nelderMead(problem, { ...common, x0: seedGenes, restarts: 9 })
+          : patternSearch(problem, { ...common, x0: seedGenes });
+  const r = await run.catch(rethrow);
+  notes.push(`${r.message}; ${r.evaluations} evaluations (budget ${budget}).`);
+  return { pareto: r.best.data ? [r.best.data] : [], history, evaluations: r.evaluations, notes };
 }
 
 export interface SweepRow {
@@ -593,3 +647,151 @@ export async function sensitivity(
   return { baseline: j0, rows };
 }
 
+/* ------------------------------------------------------------------ DOE over design variables */
+
+export interface DoeRow {
+  /** Physical values of the swept variables. */
+  values: Partial<Record<keyof DesignParams, number>>;
+  metrics: MdoMetrics;
+  feasible: boolean;
+  error?: string;
+}
+
+interface DoeOptions {
+  signal?: AbortSignal;
+  onProgress?: (done: number, total: number) => void;
+}
+
+async function runDoe(base: DesignParams, vars: OptVariable[], points: number[][], opts?: DoeOptions): Promise<DoeRow[]> {
+  const rows: DoeRow[] = [];
+  for (let i = 0; i < points.length; i++) {
+    if (opts?.signal?.aborted) throw new DOMException("Sweep cancelled", "AbortError");
+    const params = decode(base, vars, points[i]);
+    const ev = evaluateDesign(params);
+    const values: DoeRow["values"] = {};
+    for (const v of vars) values[v.key] = Number(params[v.key]);
+    rows.push({ values, metrics: ev.metrics, feasible: !ev.error, error: ev.error });
+    opts?.onProgress?.(i + 1, points.length);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return rows;
+}
+
+function rangedVars(variables: OptVariable[]): OptVariable[] {
+  const vars = variables.filter((v) => NUMERIC_KEYS.includes(v.key) && v.max > v.min);
+  if (!vars.length) throw new Error("Pick at least one design variable with a range.");
+  return vars;
+}
+
+/**
+ * Latin hypercube over the variable box (uniform marginals). `candidates` > 1 keeps the maximin-best
+ * of that many seeded designs. Other parameters stay at `base`.
+ */
+export async function lhsSweep(
+  base: DesignParams,
+  variables: OptVariable[],
+  samples: number,
+  opts?: DoeOptions & { seed?: number; candidates?: number },
+): Promise<DoeRow[]> {
+  const vars = rangedVars(variables);
+  const pts = maximinLhs(mulberry32(opts?.seed ?? 1), Math.max(1, Math.round(samples)), vars.length, opts?.candidates ?? 1);
+  return runDoe(base, vars, pts, opts);
+}
+
+/**
+ * Full-factorial grid: `levels` equally spaced values per variable (a number for all, or one per variable).
+ * The first variable varies slowest. Cost is Π levels; capped at 1e6 points.
+ */
+export async function factorialSweep(
+  base: DesignParams,
+  variables: OptVariable[],
+  levels: number | number[],
+  opts?: DoeOptions,
+): Promise<DoeRow[]> {
+  const vars = rangedVars(variables);
+  const lv = vars.map((_, i) => (Array.isArray(levels) ? (levels[i] ?? 3) : levels));
+  return runDoe(base, vars, factorialUnit(lv), opts);
+}
+
+/* ------------------------------------------------------------------ global sensitivity over design variables */
+
+function metricFn(base: DesignParams, vars: OptVariable[], metric: MdoMetric) {
+  return (u: number[]) => {
+    const ev = evaluateDesign(decode(base, vars, u));
+    return ev.error ? NaN : metricValue(ev.metrics, metric);
+  };
+}
+
+export interface MorrisRow {
+  key: string;
+  /** Mean elementary effect over the full variable range. */
+  mu: number;
+  /** Mean |effect| (screening rank). */
+  muStar: number;
+  /** Spread of the effects: nonlinearity or interaction. */
+  sigma: number;
+}
+
+/** Morris screening of one metric over the variable box: r·(d+1) evaluations. Effects are per full range. */
+export async function morrisSensitivity(
+  base: DesignParams,
+  variables: OptVariable[],
+  metric: MdoMetric,
+  opts?: { trajectories?: number; levels?: number; seed?: number; signal?: AbortSignal },
+): Promise<{ rows: MorrisRow[]; evaluations: number }> {
+  const vars = rangedVars(variables);
+  const f = metricFn(base, vars, metric);
+  const r = await morrisScreening(
+    async (u) => {
+      const y = f(u);
+      await new Promise((res) => setTimeout(res, 0));
+      return y;
+    },
+    vars.length,
+    mulberry32(opts?.seed ?? 1),
+    opts,
+  );
+  return { rows: vars.map((v, i) => ({ key: String(v.key), ...r.indices[i] })), evaluations: r.evaluations };
+}
+
+export interface SobolRow {
+  key: string;
+  /** First-order index: share of variance from this variable alone. */
+  S1: number;
+  /** Total index: including all its interactions. */
+  ST: number;
+  S1_ci?: [number, number];
+  ST_ci?: [number, number];
+}
+
+/**
+ * Sobol indices of one metric over the variable box (inputs uniform and independent): N·(d+2) evaluations.
+ * Failed builds are dropped from the estimate (`used` < `samples` reports it).
+ */
+export async function sobolSensitivity(
+  base: DesignParams,
+  variables: OptVariable[],
+  metric: MdoMetric,
+  opts?: { samples?: number; bootstrap?: number; seed?: number; signal?: AbortSignal },
+): Promise<{ rows: SobolRow[]; variance: number; samples: number; used: number; evaluations: number }> {
+  const vars = rangedVars(variables);
+  const f = metricFn(base, vars, metric);
+  let k = 0;
+  const r = await sobolIndices(
+    async (u) => {
+      const y = f(u);
+      if (++k % 8 === 0) await new Promise((res) => setTimeout(res, 0));
+      return y;
+    },
+    vars.length,
+    mulberry32(opts?.seed ?? 1),
+    { samples: opts?.samples ?? 64, bootstrap: opts?.bootstrap, signal: opts?.signal },
+  );
+  return {
+    rows: vars.map((v, i) => ({ key: String(v.key), ...r.indices[i] })),
+    variance: r.variance,
+    samples: r.samples,
+    used: r.used,
+    evaluations: r.evaluations,
+  };
+}
