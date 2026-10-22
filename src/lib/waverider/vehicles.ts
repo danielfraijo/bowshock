@@ -350,33 +350,39 @@ function buildStack(p: DesignParams): ClassVehicle {
   return revolve(p, radiusAt, Math.PI * Rb * Rb, notes, true);
 }
 
-function halfSpanAt(x: number, p: DesignParams): number {
+function sharpHalfSpan(x: number, p: DesignParams): number {
   const L = Math.max(p.length, 0.2);
   const xi = clamp(x / L, 0, 1);
   const b = Math.max(p.span, 0.08) / 2;
   const pow = clamp(p.planformPower || 1, 0.45, 2.4);
-  let y: number;
   switch (p.planform) {
     case "power":
-      y = b * Math.pow(xi, pow);
-      break;
+      return b * Math.pow(xi, pow);
     case "spatular":
-      y = b * (0.32 + 0.68 * Math.pow(xi, 0.6));
-      break;
+      return b * (0.32 + 0.68 * Math.pow(xi, 0.6));
     case "rect":
-      y = b * Math.min(1, xi / 0.16);
-      break;
+      return b * Math.min(1, xi / 0.16);
     case "double": {
       const xk = clamp(p.wedgeFrac || 0.45, 0.25, 0.7);
-      y = xi <= xk ? b * 0.62 * (xi / xk) : b * (0.62 + 0.38 * ((xi - xk) / (1 - xk)));
-      break;
+      return xi <= xk ? b * 0.62 * (xi / xk) : b * (0.62 + 0.38 * ((xi - xk) / (1 - xk)));
     }
     default:
-      y = b * xi;
+      return b * xi;
   }
+}
+
+function halfSpanAt(x: number, p: DesignParams): number {
+  const y = sharpHalfSpan(x, p);
+  const L = Math.max(p.length, 0.2);
   const rn = p.leBlunt === false ? 0 : Math.max(p.leRadius, 0.004 * L);
-  if (rn > 0) y = Math.max(y, rn * Math.sqrt(Math.max(0, 1 - xi / 0.12)));
-  return y;
+  // Circular nose, center on the centerline at x = rn: y = sqrt(2 rn x − x²).
+  // Used only when the sharp planform is already ≥ rn wide at x = rn, so the
+  // arc meets it from inside. Both pieces increase, so span never falls.
+  // The old bulb sqrt(1 − ξ/0.12) narrowed, then the planform widened — a shoulder.
+  if (!(rn > 0) || x <= 0 || x >= rn) return y;
+  if (sharpHalfSpan(rn, p) < rn * 0.999) return y;
+  const yc = Math.sqrt(Math.max(0, 2 * rn * x - x * x));
+  return Math.max(y, yc);
 }
 
 function sectionThick(x: number, p: DesignParams): number {

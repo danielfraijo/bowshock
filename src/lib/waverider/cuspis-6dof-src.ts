@@ -191,7 +191,7 @@ def integrate(doc, seconds, dt, kp, ki, kd, tau, dmax):
         gamma += g_dot * dt
         V = max(0.0, V + v_dot * dt)
         h += V * math.sin(gamma) * dt
-        x += V * math.cos(gamma) * dt
+        x += V * math.cos(gamma) * Re / (Re + max(h, 0.0)) * dt
         t += dt
         if h < 0 or V < 200:
             break

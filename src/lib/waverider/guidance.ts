@@ -5,6 +5,10 @@
  * builds a small CL/CD/Cm table in Mach, α, and elevon, then integrates the
  * same nonlinear state equations (α, q, θ, β, p, r, φ, V, γ, h, x) with:
  *
+ * - spherical-Earth γ̇ and ground range, matching the 3DOF integrator
+ * - α̇ = θ̇ − γ̇, so incidence stays θ − γ (the previous sin() term zeroed gravity)
+ * - RK4 on the vehicle state; the elevon is a zero-order hold across the step
+ *
  * - a guidance law that commands angle of attack,
  * - PID or nonlinear dynamic inversion that commands elevon deflection,
  * - a first-order actuator with a rate limit,
@@ -311,59 +315,105 @@ export async function flyClosedLoop(
     `Nonlinear 6DOF on a ${uniqM.length}×${alphas.length}×${deltas.length} panel table (${method}). β derivatives and rate derivatives are frozen at the design point.`,
     `Guidance: ${spec.mode}. Control: ${spec.law}. Actuator τ = ${spec.tauAct} s, |δ| ≤ ${spec.deltaMaxDeg}°, rate ≤ ${spec.rateMaxDeg}°/s.`,
     spec.sensorSigmaDeg > 0 ? `Angle-of-attack measurement noise σ = ${spec.sensorSigmaDeg}° (seed ${spec.seed}).` : "Sensors are perfect.",
-    "Flat-Earth kinematics with inverse-square gravity and a US76 atmosphere. Not a Monte-Carlo dispersion set.",
+    "Spherical-Earth kinematics (same γ̇ and arc range as the 3DOF), inverse-square gravity, US76. α̇ = θ̇ − γ̇. Not a Monte-Carlo dispersion set.",
   ];
 
   const sampleEvery = Math.max(1, Math.round(0.25 / dt));
 
-  for (let k = 0; k <= nStep; k++) {
-    const atm: Atmosphere = atmosphere(h / 1000, Math.max(0.3, V / Math.max(atm0.a, 1)), p.gamma);
-    const Mach = V / Math.max(atm.a, 1);
-    const qDyn = 0.5 * atm.rho * V * V;
-    const g = g0 * (Re / (Re + h)) ** 2;
-    const alphaDeg = alpha * RAD;
-    const deltaDeg = delta * RAD;
+  interface Dyn {
+    alpha: number;
+    q: number;
+    theta: number;
+    beta: number;
+    roll: number;
+    yaw: number;
+    phi: number;
+    V: number;
+    gamma: number;
+    h: number;
+    x: number;
+  }
+  const deriv = (st: Dyn, deltaRad: number) => {
+    const atm: Atmosphere = atmosphere(Math.max(0, st.h) / 1000, 1, p.gamma);
+    const Mach = st.V / Math.max(atm.a, 1);
+    const qDyn = 0.5 * atm.rho * st.V * st.V;
+    const g = g0 * (Re / (Re + Math.max(st.h, 0))) ** 2;
+    const alphaDeg = st.alpha * RAD;
+    const deltaDeg = deltaRad * RAD;
     const base = lookup(table, Mach, alphaDeg, 0);
     const here = lookup(table, Mach, alphaDeg, deltaDeg);
-    const qh = (q * Lref) / (2 * Math.max(V, 1));
-    const ph = (roll * bRef) / (2 * Math.max(V, 1));
-    const rh = (yaw * bRef) / (2 * Math.max(V, 1));
+    const qh = (st.q * Lref) / (2 * Math.max(st.V, 1));
+    const ph = (st.roll * bRef) / (2 * Math.max(st.V, 1));
+    const rh = (st.yaw * bRef) / (2 * Math.max(st.V, 1));
     const CL = here.cl + table.clq * qh;
     const CD = Math.max(0.002, here.cd);
     const Cm = here.cm + table.cmq * qh;
-    const CY = table.cyb * beta;
-    const Cl = table.clb * beta + table.clp * ph;
-    const Cn = table.cnb * beta + table.cnr * rh;
+    const CY = table.cyb * st.beta;
+    const Cl = table.clb * st.beta + table.clp * ph;
+    const Cn = table.cnb * st.beta + table.cnr * rh;
     const Lift = qDyn * sRef * CL;
     const Drag = qDyn * sRef * CD;
     const nG = Math.hypot(Lift, Drag) / (mass * g0);
-    if (qDyn > maxQ) maxQ = qDyn;
-    if (nG > maxN) maxN = nG;
+    // Vinh: bank tilts lift out of the vertical plane. φ = 0 recovers the 3DOF γ̇.
+    const gDot = st.V > 30 ? (Lift * Math.cos(st.phi)) / (mass * st.V) + (st.V / (Re + Math.max(st.h, 0)) - g / st.V) * Math.cos(st.gamma) : 0;
+    const thDot = st.q * Math.cos(st.phi) - st.yaw * Math.sin(st.phi);
+    const aDot = thDot - gDot;
+    const qDot = (qDyn * sRef * Lref * Cm) / Iyy;
+    const bDot = st.roll * Math.sin(st.alpha) - st.yaw * Math.cos(st.alpha) + (qDyn * sRef * CY) / (mass * Math.max(st.V, 1));
+    const pDot = (qDyn * sRef * bRef * Cl) / Ixx;
+    const rDot = (qDyn * sRef * bRef * Cn) / Izz;
+    const phiDot = st.roll + Math.tan(clamp(st.theta, -1.2, 1.2)) * (st.q * Math.sin(st.phi) + st.yaw * Math.cos(st.phi));
+    const vDot = -Drag / mass - g * Math.sin(st.gamma);
+    const hDot = st.V * Math.sin(st.gamma);
+    const xDot = (st.V * Math.cos(st.gamma) * Re) / (Re + Math.max(st.h, 0));
+    return { aDot, qDot, thDot, bDot, pDot, rDot, phiDot, vDot, gDot, hDot, xDot, qDyn, Mach, nG, alphaDeg, deltaDeg, base };
+  };
+  const add = (st: Dyn, k: ReturnType<typeof deriv>, s: number): Dyn => ({
+    alpha: st.alpha + s * k.aDot,
+    q: st.q + s * k.qDot,
+    theta: st.theta + s * k.thDot,
+    beta: st.beta + s * k.bDot,
+    roll: st.roll + s * k.pDot,
+    yaw: st.yaw + s * k.rDot,
+    phi: st.phi + s * k.phiDot,
+    V: st.V + s * k.vDot,
+    gamma: st.gamma + s * k.gDot,
+    h: st.h + s * k.hDot,
+    x: st.x + s * k.xDot,
+  });
+  const rk = (a: number, b: number, c: number, d: number) => (dt / 6) * (a + 2 * b + 2 * c + d);
+
+  let st: Dyn = { alpha, q, theta, beta, roll, yaw, phi, V, gamma, h, x };
+
+  for (let k = 0; k <= nStep; k++) {
+    const k1 = deriv(st, delta);
+    if (k1.qDyn > maxQ) maxQ = k1.qDyn;
+    if (k1.nG > maxN) maxN = k1.nG;
 
     const qTarget = spec.qTargetKpa * 1000;
-    let alphaCmdDeg = bestLdAlpha(table, Mach);
+    let alphaCmdDeg = bestLdAlpha(table, k1.Mach);
     if (spec.mode === "constant-q") {
-      alphaCmdDeg = clamp(alphaCmdDeg + 8 * ((qDyn - qTarget) / Math.max(qTarget, 1)), -2, 14);
+      alphaCmdDeg = clamp(alphaCmdDeg + 8 * ((k1.qDyn - qTarget) / Math.max(qTarget, 1)), -2, 14);
     } else if (spec.mode === "skip") {
-      if (qDyn > 1.25 * qTarget) alphaCmdDeg = 12;
-      else if (qDyn < 0.55 * qTarget) alphaCmdDeg = 1;
+      if (k1.qDyn > 1.25 * qTarget) alphaCmdDeg = 12;
+      else if (k1.qDyn < 0.55 * qTarget) alphaCmdDeg = 1;
       else alphaCmdDeg = 6;
     } else if (spec.mode === "terminal") {
-      const dx = spec.targetXKm * 1000 - x;
-      const los = Math.atan2(-h, Math.max(dx, 50));
-      alphaCmdDeg = clamp(4 + ((los - gamma) * RAD) * 0.8, -2, 14);
+      const dx = spec.targetXKm * 1000 - st.x;
+      const los = Math.atan2(-st.h, Math.max(dx, 50));
+      alphaCmdDeg = clamp(4 + ((los - st.gamma) * RAD) * 0.8, -2, 14);
     }
-    const alphaMeas = alphaDeg + (spec.sensorSigmaDeg > 0 ? gauss(rng) * spec.sensorSigmaDeg : 0);
+    const alphaMeas = k1.alphaDeg + (spec.sensorSigmaDeg > 0 ? gauss(rng) * spec.sensorSigmaDeg : 0);
     const err = alphaCmdDeg - alphaMeas;
     let deltaCmd = 0;
     if (spec.law === "ndi") {
       const aErr = err * DEG;
       const qCmd = 2.2 * aErr;
-      const qdotCmd = 6 * (qCmd - q);
-      const CmCmd = (Iyy * qdotCmd) / Math.max(qDyn * sRef * Lref, 1);
+      const qdotCmd = 6 * (qCmd - st.q);
+      const CmCmd = (Iyy * qdotCmd) / Math.max(k1.qDyn * sRef * Lref, 1);
       const span = spec.deltaMaxDeg || 8;
-      const cmPlus = lookup(table, Mach, alphaDeg, span).cm;
-      const cm0 = base.cm;
+      const cmPlus = lookup(table, k1.Mach, k1.alphaDeg, span).cm;
+      const cm0 = k1.base.cm;
       const cmd = (cmPlus - cm0) / (span * DEG || 1e-3);
       const dRad = Math.abs(cmd) > 1e-4 ? (CmCmd - cm0) / cmd : 0;
       deltaCmd = clamp(dRad * RAD, -spec.deltaMaxDeg, spec.deltaMaxDeg);
@@ -376,55 +426,59 @@ export async function flyClosedLoop(
     }
     const tau = Math.max(0.02, spec.tauAct);
     const rate = spec.rateMaxDeg;
-    let dDelta = ((deltaCmd - deltaDeg) / tau) * dt;
+    const deltaDegNow = delta * RAD;
+    let dDelta = ((deltaCmd - deltaDegNow) / tau) * dt;
     dDelta = clamp(dDelta, -rate * dt, rate * dt);
-    delta = clamp((deltaDeg + dDelta) * DEG, -spec.deltaMaxDeg * DEG, spec.deltaMaxDeg * DEG);
+    const deltaNext = clamp((deltaDegNow + dDelta) * DEG, -spec.deltaMaxDeg * DEG, spec.deltaMaxDeg * DEG);
 
     if (k % sampleEvery === 0) {
       samples.push({
         t: k * dt,
-        alphaDeg,
-        betaDeg: beta * RAD,
-        deltaDeg,
+        alphaDeg: k1.alphaDeg,
+        betaDeg: st.beta * RAD,
+        deltaDeg: k1.deltaDeg,
         alphaCmd: alphaCmdDeg,
-        qDeg: q * RAD,
-        pDeg: roll * RAD,
-        rDeg: yaw * RAD,
-        thetaDeg: theta * RAD,
-        phiDeg: phi * RAD,
-        gammaDeg: gamma * RAD,
-        V,
-        mach: Mach,
-        hKm: h / 1000,
-        xKm: x / 1000,
-        qKpa: qDyn / 1000,
-        nG,
+        qDeg: st.q * RAD,
+        pDeg: st.roll * RAD,
+        rDeg: st.yaw * RAD,
+        thetaDeg: st.theta * RAD,
+        phiDeg: st.phi * RAD,
+        gammaDeg: st.gamma * RAD,
+        V: st.V,
+        mach: k1.Mach,
+        hKm: st.h / 1000,
+        xKm: st.x / 1000,
+        qKpa: k1.qDyn / 1000,
+        nG: k1.nG,
       });
     }
-    if (h < 0 || V < 180 || !Number.isFinite(V) || !Number.isFinite(alpha)) {
-      notes.push(h < 0 ? "Integration stopped at the surface." : "Integration stopped on a speed or numerical limit.");
+    if (st.h < 0 || st.V < 180 || !Number.isFinite(st.V) || !Number.isFinite(st.alpha)) {
+      notes.push(st.h < 0 ? "Integration stopped at the surface." : "Integration stopped on a speed or numerical limit.");
       break;
     }
 
-    const aDot = q - Lift / (mass * Math.max(V, 1)) + ((g * Math.cos(gamma)) / Math.max(V, 1)) * Math.sin(alpha - (theta - gamma));
-    const qDot = (qDyn * sRef * Lref * Cm) / Iyy;
-    const bDot = roll * Math.sin(alpha) - yaw * Math.cos(alpha) + (qDyn * sRef * CY) / (mass * Math.max(V, 1));
-    const pDot = (qDyn * sRef * bRef * Cl) / Ixx;
-    const rDot = (qDyn * sRef * bRef * Cn) / Izz;
-    const phiDot = roll + Math.tan(clamp(theta, -1.2, 1.2)) * (q * Math.sin(phi) + yaw * Math.cos(phi));
-    const vDot = -Drag / mass - g * Math.sin(gamma);
-    const gDot = V > 30 ? Lift / (mass * V) + (V / (Re + h) - g / V) * Math.cos(gamma) : 0;
-    alpha = clamp(alpha + dt * aDot, -20 * DEG, 25 * DEG);
-    q += dt * qDot;
-    theta += dt * q;
-    beta = clamp(beta + dt * bDot, -15 * DEG, 15 * DEG);
-    roll += dt * pDot;
-    yaw += dt * rDot;
-    phi += dt * phiDot;
-    V = Math.max(0, V + dt * vDot);
-    gamma = clamp(gamma + dt * gDot, -40 * DEG, 30 * DEG);
-    h += dt * V * Math.sin(gamma);
-    x += dt * V * Math.cos(gamma);
+    const k2 = deriv(add(st, k1, 0.5 * dt), delta);
+    const k3 = deriv(add(st, k2, 0.5 * dt), delta);
+    const k4 = deriv(add(st, k3, dt), delta);
+    const aRaw = st.alpha + rk(k1.aDot, k2.aDot, k3.aDot, k4.aDot);
+    const gRaw = st.gamma + rk(k1.gDot, k2.gDot, k3.gDot, k4.gDot);
+    const aLim = clamp(aRaw, -20 * DEG, 25 * DEG);
+    const gLim = clamp(gRaw, -40 * DEG, 30 * DEG);
+    st = {
+      alpha: aLim,
+      q: st.q + rk(k1.qDot, k2.qDot, k3.qDot, k4.qDot),
+      theta: st.theta + rk(k1.thDot, k2.thDot, k3.thDot, k4.thDot),
+      beta: clamp(st.beta + rk(k1.bDot, k2.bDot, k3.bDot, k4.bDot), -15 * DEG, 15 * DEG),
+      roll: st.roll + rk(k1.pDot, k2.pDot, k3.pDot, k4.pDot),
+      yaw: st.yaw + rk(k1.rDot, k2.rDot, k3.rDot, k4.rDot),
+      phi: st.phi + rk(k1.phiDot, k2.phiDot, k3.phiDot, k4.phiDot),
+      V: Math.max(0, st.V + rk(k1.vDot, k2.vDot, k3.vDot, k4.vDot)),
+      gamma: gLim,
+      h: st.h + rk(k1.hDot, k2.hDot, k3.hDot, k4.hDot),
+      x: st.x + rk(k1.xDot, k2.xDot, k3.xDot, k4.xDot),
+    };
+    if (aLim !== aRaw || gLim !== gRaw) st.theta = st.alpha + st.gamma;
+    delta = deltaNext;
   }
 
   opts?.onProgress?.({ done: total, total, label: "done" });

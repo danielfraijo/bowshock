@@ -547,6 +547,19 @@ function missionChecks(): Check[] {
       1e-6,
     ),
   );
+  // ε σ T⁴, σ = 5.670374419e-8 (CODATA), ε = 0.85, T = 1800 K → 505965.24 W/m².
+  out.push(
+    chk(
+      "tps-rerad",
+      "external",
+      "PICA reradiation at 1800 K",
+      "ε σ T⁴ = 0.85 × 5.670374419e-8 × 1800⁴",
+      505965.24,
+      tps.qRadWm2,
+      "Stefan–Boltzmann. The surface can reject this flux before an ablator is added. Not a FIAT temperature.",
+      1e-6,
+    ),
+  );
   const step = actuatorStep(0, 10, 0.1, 0.01, 20, 30);
   out.push(
     chk(

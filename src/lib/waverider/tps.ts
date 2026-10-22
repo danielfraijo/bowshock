@@ -183,10 +183,11 @@ export function massBudget(q: MassQuery): MassBudget {
   const cgX = mx / total;
   const cgZ = mz / total;
   const scale = total / Math.max(struct, 1e-6);
-  const shift = struct > 1 ? (cgX - q.structCgX) ** 2 : 0;
+  const dx = struct > 1 ? cgX - q.structCgX : 0;
+  const dz = cgZ;
   const notes = [
     "Airframe mass is the smeared density × volume already used by the Mass tab. TPS, fuel, and payload are added; they are not inside that density.",
-    `Fuel volume ${volumeFuel.toFixed(3)} m³ at ${q.fuelRho.toFixed(0)} kg/m³. CG shifts with the load; inertias scale with mass and pick up a parallel-axis term from the CG move.`,
+    `Fuel volume ${volumeFuel.toFixed(3)} m³ at ${q.fuelRho.toFixed(0)} kg/m³. CG shifts with the load. Iyy picks up m(Δx²+Δz²), Izz picks up m Δx², Ixx picks up m Δz².`,
     "No FEM. A thermo-structural constraint is the TPS over-temperature flag plus this CG, which the 6DOF and the optimizer can consume.",
   ];
   return {
@@ -198,9 +199,9 @@ export function massBudget(q: MassQuery): MassBudget {
     cgX,
     cgFrac: cgX / L,
     cgZ,
-    ixx: q.ixx * scale,
-    iyy: q.iyy * scale + total * shift,
-    izz: q.izz * scale + total * shift,
+    ixx: q.ixx * scale + total * dz * dz,
+    iyy: q.iyy * scale + total * (dx * dx + dz * dz),
+    izz: q.izz * scale + total * dx * dx,
     volumeFuel,
     notes,
   };

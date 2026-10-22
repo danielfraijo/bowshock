@@ -322,7 +322,8 @@ export function solveSixDof(
   const alpha0 = (a0 + 2) * DEG;
   let alpha = alpha0;
   let q = 0;
-  let theta = alpha0;
+  // α = θ − γ at release. Pitch is attitude, not incidence.
+  let theta = alpha0 + params.gammaDeg * DEG;
   let beta = 0;
   let p = 0;
   let r = 0;
@@ -366,7 +367,12 @@ export function solveSixDof(
     const Drag = qdyn * S * CD;
     const Y = qdyn * S * CY;
     const gLoc = g0 * (Re / (Re + st.h)) ** 2;
-    const aDot = st.q - Lift / (m * st.VV) + ((gLoc * Math.cos(st.gamma)) / st.VV) * Math.sin(st.alpha - (st.theta - st.gamma));
+    // α̇ = q − γ̇. γ̇ is the same spherical point-mass used by the 3DOF
+    // (lift, curvature V²/(R+h), inverse-square g). A sin(α − (θ−γ))
+    // gravity term is zero exactly when the attitude is consistent, so it
+    // dropped (g/V − V/r) and α walked off θ − γ.
+    const curv = (st.VV / (Re + st.h) - gLoc / st.VV) * Math.cos(st.gamma);
+    const aDot = st.q - Lift / (m * st.VV) - (st.VV > 20 ? curv : 0);
     const qDot = (qdyn * S * L * Cm) / Iyy;
     const thDot = st.q;
     const bDot = st.p * Math.sin(st.alpha) - st.r * Math.cos(st.alpha) + Y / (m * st.VV);
@@ -453,7 +459,7 @@ export function solveSixDof(
     if (h <= 0) break;
   }
 
-  notes.push(`RK4 ${nStep} steps × dt=${dt}s from α₀+2°. Position (h, x) is in the same RK4 step. Density follows ρ e^{−Δh/H}, H = 7.2 km.`);
+  notes.push(`RK4 ${nStep} steps × dt=${dt}s from α₀+2°. Position (h, x) is in the same RK4 step. Density follows ρ e^{−Δh/H}, H = 7.2 km. α̇ = q − γ̇ so incidence stays θ − γ.`);
 
   return {
     derivs,
