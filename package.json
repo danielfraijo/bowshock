@@ -26,6 +26,7 @@
     "test:convergence": "node --import ./scripts/ts-register.mjs src/lib/waverider/convergence.test.ts",
     "test:physics": "node --import ./scripts/ts-register.mjs src/lib/waverider/fidelity.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/physics.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/datapack.test.ts && node --import ./scripts/ts-register.mjs src/lib/waverider/shapes.test.ts",
     "datapack": "node --import ./scripts/ts-register.mjs scripts/datapack-export.ts",
+    "test:mdo": "node --import ./scripts/ts-register.mjs src/lib/waverider/mdo.test.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "test:datcom": "node scripts/datcom-run-tests.mjs",

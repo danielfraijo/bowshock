@@ -7,9 +7,11 @@
  * is (x_cp − x_cg) / Lref, positive when the center of pressure is aft.
  * Heating is the panel stagnation flux.
  *
- * The search is NSGA-II (Deb): non-dominated sorting, crowding distance,
+ * The default search is NSGA-II (Deb): non-dominated sorting, crowding distance,
  * constraint-domination. It is gradient-free and happy with a noisy panel
  * code. Objectives are minimized internally; a "max" goal is negated.
+ * `nsga2` also runs on any `UnitProblem` (unit cube, cost vector plus
+ * violation), which is how the analytic benchmarks in mdo.test.ts drive it.
  *
  * OpenMDAO / an external script should not scrape the UI. Call
  * `evaluateDesign` from `scripts/cuspis-eval.ts` (Node) and parse the JSON.
@@ -20,6 +22,21 @@ import { equilibriumGlideRange } from "./flight-science";
 import { buildVehicle } from "./generate";
 import { panelAero } from "./panel";
 import type { AeroMethod, DesignParams } from "./types";
+import {
+  type Rng,
+  type UnitEval,
+  type UnitPoint,
+  type UnitProblem,
+  FEAS_TOL,
+  SearchStop,
+  UnitEvaluator,
+  clamp01,
+  constrainedDominates,
+  mulberry32,
+  paretoDominates,
+} from "./mdo-core";
+
+export * from "./mdo-core";
 
 export const MDO_METRICS = ["ld", "rangeKm", "qStag", "mass", "staticMargin", "volume", "cd", "cm"] as const;
 export type MdoMetric = (typeof MDO_METRICS)[number];
@@ -180,31 +197,9 @@ function costVector(metrics: MdoMetrics, objectives: OptObjective[]): number[] {
   });
 }
 
-function dominates(a: number[], av: number, b: number[], bv: number): boolean {
-  const aFeas = av <= 1e-8;
-  const bFeas = bv <= 1e-8;
-  if (aFeas && !bFeas) return true;
-  if (!aFeas && bFeas) return false;
-  if (!aFeas && !bFeas) return av < bv - 1e-12;
-  let better = false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] > b[i] + 1e-12) return false;
-    if (a[i] < b[i] - 1e-12) better = true;
-  }
-  return better;
-}
-
 /** Constraint-domination (Deb). Costs are minimized. */
 export function dominatesPoint(aCost: number[], aViol: number, bCost: number[], bViol: number): boolean {
-  return dominates(aCost, aViol, bCost, bViol);
-}
-
-interface Ind {
-  genes: number[];
-  eval: DesignEval;
-  cost: number[];
-  rank: number;
-  crowd: number;
+  return constrainedDominates(aCost, aViol, bCost, bViol);
 }
 
 function decode(base: DesignParams, vars: OptVariable[], genes: number[]): DesignParams {
@@ -226,18 +221,15 @@ function encode(base: DesignParams, vars: OptVariable[]): number[] {
   });
 }
 
-function mulberry32(seed: number) {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+/* ------------------------------------------------------------------ NSGA-II (the only one) */
+
+interface Ind<T> {
+  p: UnitPoint<T>;
+  rank: number;
+  crowd: number;
 }
 
-function nonDominated(pop: Ind[]): void {
+function nonDominated<T>(pop: Ind<T>[]): void {
   const n = pop.length;
   const S: number[][] = Array.from({ length: n }, () => []);
   const domCount = new Array(n).fill(0);
@@ -245,8 +237,8 @@ function nonDominated(pop: Ind[]): void {
   for (let p = 0; p < n; p++) {
     for (let q = 0; q < n; q++) {
       if (p === q) continue;
-      if (dominates(pop[p].cost, pop[p].eval.violation, pop[q].cost, pop[q].eval.violation)) S[p].push(q);
-      else if (dominates(pop[q].cost, pop[q].eval.violation, pop[p].cost, pop[p].eval.violation)) domCount[p]++;
+      if (constrainedDominates(pop[p].p.cost, pop[p].p.violation, pop[q].p.cost, pop[q].p.violation)) S[p].push(q);
+      else if (constrainedDominates(pop[q].p.cost, pop[q].p.violation, pop[p].p.cost, pop[p].p.violation)) domCount[p]++;
     }
     if (domCount[p] === 0) {
       pop[p].rank = 0;
@@ -269,44 +261,214 @@ function nonDominated(pop: Ind[]): void {
     fronts[i] = next;
   }
   for (const ind of pop) ind.crowd = 0;
-  const m = pop[0]?.cost.length ?? 1;
+  const m = pop[0]?.p.cost.length ?? 1;
   for (const front of fronts) {
     if (!front || front.length === 0) continue;
     for (let k = 0; k < m; k++) {
-      const ids = [...front].sort((a, b) => pop[a].cost[k] - pop[b].cost[k]);
+      const ids = [...front].sort((a, b) => pop[a].p.cost[k] - pop[b].p.cost[k]);
       pop[ids[0]].crowd = Infinity;
       pop[ids[ids.length - 1]].crowd = Infinity;
-      const lo = pop[ids[0]].cost[k];
-      const hi = pop[ids[ids.length - 1]].cost[k];
+      const lo = pop[ids[0]].p.cost[k];
+      const hi = pop[ids[ids.length - 1]].p.cost[k];
       const span = hi - lo || 1;
       for (let j = 1; j < ids.length - 1; j++) {
-        pop[ids[j]].crowd += (pop[ids[j + 1]].cost[k] - pop[ids[j - 1]].cost[k]) / span;
+        pop[ids[j]].crowd += (pop[ids[j + 1]].p.cost[k] - pop[ids[j - 1]].p.cost[k]) / span;
       }
     }
   }
 }
 
-function better(a: Ind, b: Ind): boolean {
+function better<T>(a: Ind<T>, b: Ind<T>): boolean {
   if (a.rank !== b.rank) return a.rank < b.rank;
   return a.crowd > b.crowd;
 }
 
-function sbx(rng: () => number, a: number, b: number, eta = 12): [number, number] {
-  if (Math.abs(a - b) < 1e-12 || rng() > 0.9) return [a, b];
-  const u = rng();
-  const beta = u <= 0.5 ? (2 * u) ** (1 / (eta + 1)) : (1 / (2 * (1 - u))) ** (1 / (eta + 1));
-  let c1 = 0.5 * ((a + b) - beta * Math.abs(b - a));
-  let c2 = 0.5 * ((a + b) + beta * Math.abs(b - a));
-  c1 = Math.max(0, Math.min(1, c1));
-  c2 = Math.max(0, Math.min(1, c2));
+/**
+ * Bounded simulated binary crossover (Deb & Agrawal 1995; Deb's NSGA-II reference code) on a pair of
+ * unit-cube vectors: crossover with probability pc per pair, each gene with probability 1/2, spread
+ * distribution truncated to the box, children swapped at random per gene.
+ */
+function sbx(rng: Rng, a: number[], b: number[], eta: number, pc: number): [number[], number[]] {
+  const c1 = [...a];
+  const c2 = [...b];
+  if (rng() > pc) return [c1, c2];
+  for (let i = 0; i < a.length; i++) {
+    if (rng() > 0.5) continue;
+    const y1 = Math.min(a[i], b[i]);
+    const y2 = Math.max(a[i], b[i]);
+    if (y2 - y1 < 1e-14) continue;
+    const r = rng();
+    const spread = (beta: number) => {
+      const alpha = 2 - Math.pow(beta, -(eta + 1));
+      return r <= 1 / alpha ? Math.pow(r * alpha, 1 / (eta + 1)) : Math.pow(1 / (2 - r * alpha), 1 / (eta + 1));
+    };
+    let v1 = 0.5 * (y1 + y2 - spread(1 + (2 * y1) / (y2 - y1)) * (y2 - y1));
+    let v2 = 0.5 * (y1 + y2 + spread(1 + (2 * (1 - y2)) / (y2 - y1)) * (y2 - y1));
+    v1 = clamp01(v1);
+    v2 = clamp01(v2);
+    if (rng() < 0.5) [v1, v2] = [v2, v1];
+    c1[i] = v1;
+    c2[i] = v2;
+  }
   return [c1, c2];
 }
 
-function mutate(rng: () => number, g: number, eta = 18): number {
-  if (rng() > 1 / 3) return g;
+/** Polynomial mutation (Deb & Goyal 1996), per gene with probability pm, clipped to [0,1]. */
+function mutate(rng: Rng, g: number, eta: number, pm: number): number {
+  if (rng() >= pm) return g;
   const u = rng();
   const delta = u < 0.5 ? (2 * u) ** (1 / (eta + 1)) - 1 : 1 - (2 * (1 - u)) ** (1 / (eta + 1));
-  return Math.max(0, Math.min(1, g + delta));
+  return clamp01(g + delta);
+}
+
+/** Feasible, non-dominated, de-duplicated subset (sorted by the first cost). */
+export function paretoFilter<T>(points: UnitPoint<T>[]): UnitPoint<T>[] {
+  const feas = points.filter((p) => p.violation <= FEAS_TOL && p.cost.every(Number.isFinite));
+  feas.sort((a, b) => {
+    for (let k = 0; k < a.cost.length; k++) if (a.cost[k] !== b.cost[k]) return a.cost[k] - b.cost[k];
+    return a.id - b.id;
+  });
+  const out: UnitPoint<T>[] = [];
+  const seen = new Set<string>();
+  for (const p of feas) {
+    const key = p.cost.join(",");
+    if (seen.has(key) || out.some((o) => paretoDominates(o.cost, p.cost))) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+export interface Nsga2Options<P = unknown> {
+  popSize?: number;
+  generations?: number;
+  /** SBX probability per pair (default 0.9). */
+  crossoverProb?: number;
+  /** SBX distribution index (default 20). */
+  etaC?: number;
+  /** Mutation distribution index (default 18). */
+  etaM?: number;
+  /** Per-gene mutation probability (default 1/n). */
+  mutationProb?: number;
+  /** Seed members in the unit cube (the rest are uniform random). */
+  initial?: number[][];
+  /** Keep a non-dominated archive of every evaluation (default true). */
+  archive?: boolean;
+  signal?: AbortSignal;
+  /** Called after each survival step with the new population. */
+  onGeneration?: (generation: number, population: UnitPoint<P>[], evaluations: number) => void | Promise<void>;
+}
+
+export interface Nsga2Result<P = unknown> {
+  /** Rank-0 members of the final population. */
+  front: UnitPoint<P>[];
+  /** Feasible non-dominated set over every evaluation (empty if archive = false or nothing was feasible). */
+  archive: UnitPoint<P>[];
+  population: UnitPoint<P>[];
+  evaluations: number;
+  generations: number;
+}
+
+/**
+ * NSGA-II (Deb, Pratap, Agarwal & Meyarivan 2002) on a unit-cube problem: fast non-dominated sort with
+ * constraint-domination, crowding distance, binary crowded tournament, bounded SBX + polynomial mutation,
+ * (μ+λ) elitist survival. runOptimizer is this with the design problem.
+ */
+export async function nsga2<P>(problem: UnitProblem<P>, rng: Rng, o: Nsga2Options<P> = {}): Promise<Nsga2Result<P>> {
+  const n = problem.dim;
+  const N = Math.max(4, o.popSize ?? 100);
+  const G = Math.max(0, o.generations ?? 100);
+  const pc = o.crossoverProb ?? 0.9;
+  const etaC = o.etaC ?? 20;
+  const etaM = o.etaM ?? 18;
+  const pm = o.mutationProb ?? 1 / Math.max(1, n);
+  const ev = new UnitEvaluator(problem, { signal: o.signal });
+  const all: UnitPoint<P>[] = [];
+  const make = async (u: number[]): Promise<Ind<P>> => {
+    const p = await ev.eval(u);
+    if (o.archive !== false) all.push(p);
+    return { p, rank: 0, crowd: 0 };
+  };
+  let pop: Ind<P>[] = [];
+  for (const u0 of o.initial ?? []) if (pop.length < N) pop.push(await make(u0));
+  while (pop.length < N) pop.push(await make(Array.from({ length: n }, () => rng())));
+  for (let g = 0; g < G; g++) {
+    if (o.signal?.aborted) throw new SearchStop("aborted");
+    nonDominated(pop);
+    const children: Ind<P>[] = [];
+    const tour = () => {
+      const i = Math.floor(rng() * pop.length);
+      const j = Math.floor(rng() * pop.length);
+      return better(pop[i], pop[j]) ? pop[i] : pop[j];
+    };
+    while (children.length < N) {
+      const [a, b] = sbx(rng, tour().p.u, tour().p.u, etaC, pc);
+      children.push(await make(a.map((x) => mutate(rng, x, etaM, pm))));
+      if (children.length < N) children.push(await make(b.map((x) => mutate(rng, x, etaM, pm))));
+    }
+    const pool = pop.concat(children);
+    nonDominated(pool);
+    pool.sort((x, y) => x.rank - y.rank || y.crowd - x.crowd);
+    pop = pool.slice(0, N);
+    await o.onGeneration?.(g + 1, pop.map((m) => m.p), ev.evaluations);
+  }
+  nonDominated(pop);
+  return {
+    front: pop.filter((m) => m.rank === 0).map((m) => m.p),
+    archive: o.archive === false ? [] : paretoFilter(all),
+    population: pop.map((m) => m.p),
+    evaluations: ev.evaluations,
+    generations: G,
+  };
+}
+
+/* ------------------------------------------------------------------ design problem */
+
+export interface DesignProblemOptions {
+  /** Single-objective view: cost = [Σ weight·(±metric)] instead of the per-objective vector. */
+  scalar?: boolean;
+  signal?: AbortSignal;
+  /** Called after each evaluation (UI progress). */
+  onEval?: (ev: DesignEval, evaluations: number) => void;
+  /** Yield to the event loop after each evaluation (default true) so the UI and AbortSignal stay live. */
+  yieldEach?: boolean;
+}
+
+/**
+ * The vehicle study as a unit-cube problem: u → decode onto the variable bounds → evaluateDesign →
+ * cost (minimized) + constraint violation. This is the hook for a CLI / OpenMDAO driver that wants to
+ * run any mdo method headless (scripts/cuspis-eval.ts can call it; no CLI is added here).
+ */
+export function designProblem(
+  base: DesignParams,
+  variables: OptVariable[],
+  objectives: OptObjective[],
+  constraints: OptConstraint[],
+  opts: DesignProblemOptions = {},
+): UnitProblem<DesignEval> & { variables: OptVariable[]; decode(u: number[]): DesignParams; encode(p: DesignParams): number[] } {
+  const vars = variables.filter((v) => NUMERIC_KEYS.includes(v.key) && v.max > v.min);
+  if (!vars.length) throw new Error("Pick at least one design variable with a range.");
+  const objs = objectives.length ? objectives : [{ metric: "ld" as const, goal: "max" as const, weight: 1 }];
+  let count = 0;
+  return {
+    dim: vars.length,
+    variables: vars,
+    decode: (u) => decode(base, vars, u),
+    encode: (p) => encode(p, vars),
+    async evaluate(u: number[]): Promise<UnitEval<DesignEval>> {
+      if (opts.signal?.aborted) throw new DOMException("Optimization cancelled", "AbortError");
+      const ev = evaluateDesign(decode(base, vars, u));
+      ev.violation = ev.violation + constraintViolation(ev.metrics, constraints);
+      ev.feasible = ev.violation <= FEAS_TOL && !ev.error;
+      count++;
+      opts.onEval?.(ev, count);
+      if (opts.yieldEach !== false) await new Promise((r) => setTimeout(r, 0));
+      const cost = opts.scalar
+        ? [objs.reduce((s, o) => s + Math.max(1e-6, o.weight) * (o.goal === "max" ? -1 : 1) * metricValue(ev.metrics, o.metric), 0)]
+        : costVector(ev.metrics, objs);
+      return { cost: cost.map((c) => (Number.isFinite(c) ? c : 1e12)), violation: ev.violation, data: ev };
+    },
+  };
 }
 
 export interface OptProgress {
@@ -321,76 +483,52 @@ export async function runOptimizer(
   spec: OptSpec,
   opts?: { signal?: AbortSignal; onProgress?: (p: OptProgress) => void },
 ): Promise<OptResult> {
-  const vars = spec.variables.filter((v) => NUMERIC_KEYS.includes(v.key) && v.max > v.min);
   const objectives = spec.objectives.length ? spec.objectives : [{ metric: "ld" as const, goal: "max" as const, weight: 1 }];
-  if (!vars.length) throw new Error("Pick at least one design variable with a range.");
   const popN = Math.max(4, Math.min(24, Math.round(spec.population || 8)));
   const gens = Math.max(1, Math.min(20, Math.round(spec.generations || 5)));
   const rng = mulberry32(spec.seed || 1);
   const notes = [
-    "NSGA-II, real-coded SBX and polynomial mutation. Constraint-domination (Deb).",
+    "NSGA-II, bounded SBX (pc 0.9/pair) and polynomial mutation (1/n per gene). Constraint-domination (Deb).",
     "Each evaluation: buildVehicle + one panel solve. Euler is replaced by CBAERO inside the loop.",
     "Range is equilibrium glide from the current speed down to 45% of that speed. Not a closed-loop trajectory.",
     "Static margin is (x_cp − x_cg) / L. Positive means the center of pressure is aft of the CG.",
   ];
+  let generation = 0;
   let evaluations = 0;
-  const make = async (genes: number[], label: string): Promise<Ind> => {
-    if (opts?.signal?.aborted) throw new DOMException("Optimization cancelled", "AbortError");
-    const params = decode(base, vars, genes);
-    const ev = evaluateDesign(params);
-    ev.violation = ev.violation + constraintViolation(ev.metrics, spec.constraints);
-    ev.feasible = ev.violation <= 1e-8 && !ev.error;
-    evaluations++;
-    opts?.onProgress?.({ generation: 0, generations: gens, evaluations, label });
-    await new Promise((r) => setTimeout(r, 0));
-    return { genes, eval: ev, cost: costVector(ev.metrics, objectives), rank: 0, crowd: 0 };
+  const label = () => (generation === 0 ? `initial ${evaluations}/${popN}` : `gen ${generation} eval`);
+  const problem = designProblem(base, spec.variables, objectives, spec.constraints, {
+    signal: opts?.signal,
+    onEval: (_ev, k) => {
+      evaluations = k;
+      opts?.onProgress?.({ generation: 0, generations: gens, evaluations, label: evaluations === 1 ? "baseline" : label() });
+    },
+  });
+  const seedGenes = problem.encode(base);
+  const history: OptResult["history"] = [];
+  const record = (g: number, pts: UnitPoint<DesignEval>[]) => {
+    const evs = pts.map((p) => p.data!).filter(Boolean);
+    history.push({ generation: g, bestLd: evs.reduce((m, e) => Math.max(m, e.metrics.ld), 0), feasible: evs.filter((e) => e.feasible).length });
+    opts?.onProgress?.({ generation: g, generations: gens, evaluations, label: `generation ${g}` });
+  };
+  const byLd = (a: DesignEval, b: DesignEval) => b.metrics.ld - a.metrics.ld;
+  const rethrow = (err: unknown) => {
+    if (err instanceof SearchStop && err.reason === "aborted") throw new DOMException("Optimization cancelled", "AbortError");
+    throw err;
   };
 
-  let pop: Ind[] = [];
-  const seedGenes = encode(base, vars);
-  pop.push(await make(seedGenes, "baseline"));
-  while (pop.length < popN) {
-    const genes = vars.map(() => rng());
-    pop.push(await make(genes, `initial ${pop.length + 1}/${popN}`));
-  }
-  const history: OptResult["history"] = [];
-  for (let g = 0; g < gens; g++) {
-    if (opts?.signal?.aborted) throw new DOMException("Optimization cancelled", "AbortError");
-    nonDominated(pop);
-    const children: Ind[] = [];
-    while (children.length < popN) {
-      const tour = () => {
-        const i = Math.floor(rng() * pop.length);
-        const j = Math.floor(rng() * pop.length);
-        return better(pop[i], pop[j]) ? pop[i] : pop[j];
-      };
-      const dad = tour();
-      const mom = tour();
-      const c1: number[] = [];
-      const c2: number[] = [];
-      for (let k = 0; k < vars.length; k++) {
-        const [a, b] = sbx(rng, dad.genes[k], mom.genes[k]);
-        c1.push(mutate(rng, a));
-        c2.push(mutate(rng, b));
-      }
-      children.push(await make(c1, `gen ${g + 1} eval`));
-      if (children.length < popN) children.push(await make(c2, `gen ${g + 1} eval`));
-    }
-    const pool = pop.concat(children);
-    nonDominated(pool);
-    pool.sort((a, b) => (a.rank - b.rank) || (b.crowd - a.crowd));
-    pop = pool.slice(0, popN);
-    const feas = pop.filter((p) => p.eval.feasible);
-    const bestLd = pop.reduce((m, p) => Math.max(m, p.eval.metrics.ld), 0);
-    history.push({ generation: g + 1, bestLd, feasible: feas.length });
-    opts?.onProgress?.({ generation: g + 1, generations: gens, evaluations, label: `generation ${g + 1}` });
-  }
-  nonDominated(pop);
-  const pareto = pop
-    .filter((p) => p.rank === 0)
-    .map((p) => p.eval)
-    .sort((a, b) => b.metrics.ld - a.metrics.ld);
-  return { pareto, history, evaluations, notes };
+  const r = await nsga2(problem, rng, {
+    popSize: popN,
+    generations: gens,
+    initial: [seedGenes],
+    signal: opts?.signal,
+    onGeneration: (g, pop) => {
+      generation = g;
+      record(g, pop);
+    },
+  }).catch(rethrow);
+  // The archive keeps every feasible non-dominated design seen, not just the survivors of the last generation.
+  const set = r.archive.length ? paretoFilter([...r.archive, ...r.front]) : r.front;
+  return { pareto: set.map((p) => p.data!).sort(byLd), history, evaluations: r.evaluations, notes };
 }
 
 export interface SweepRow {
@@ -454,3 +592,4 @@ export async function sensitivity(
   }
   return { baseline: j0, rows };
 }
+
