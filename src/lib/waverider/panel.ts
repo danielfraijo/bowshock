@@ -205,7 +205,7 @@ export interface RateState {
 }
 
 /** Triangle geometry does not depend on angle of attack. One build serves every derivative and polar point. */
-interface PanelGeom {
+export interface PanelGeom {
   pos: ArrayLike<number>;
   ind: ArrayLike<number>;
   surfaces: ArrayLike<number> | undefined;
@@ -222,7 +222,7 @@ interface PanelGeom {
 
 const geomCache = new WeakMap<TriMesh, PanelGeom>();
 
-function panelGeom(mesh: TriMesh): PanelGeom {
+export function panelGeom(mesh: TriMesh): PanelGeom {
   const hit = geomCache.get(mesh);
   if (hit && hit.pos === mesh.positions && hit.ind === mesh.indices && hit.surfaces === mesh.surfaces) return hit;
   const pos = mesh.positions;

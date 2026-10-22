@@ -1,0 +1,16 @@
+[package]
+name = "cuspis-panel"
+version = "0.1.0"
+edition = "2021"
+description = "Batch panel-pressure evaluator for the Bowshock aero database: per-panel Cp (Newtonian, CBAERO-class, tangent-wedge/cone, strip shock-expansion) + force/moment integration. Mirrors src/lib/waverider/panel.ts + shockexp.ts."
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
