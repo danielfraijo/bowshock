@@ -15,7 +15,7 @@ pub mod gas;
 
 use gas::{
     clamp, dahlem_buck_cp, hypot3, inv_prandtl_meyer, jmax, jmin, max_theta, newton_busemann_cp, newtonian_cp_max,
-    oblique_shock, p_over_p0, prandtl_meyer, vacuum_cp, beta_from_theta_m, GasCache, DEG, PI,
+    oblique_p2p1, oblique_shock, p_over_p0, prandtl_meyer, vacuum_cp, beta_from_theta_m, BetaTab, GasCache, DEG, PI,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -497,6 +497,21 @@ fn sq(x: f64) -> f64 {
     x.powi(2)
 }
 
+/// Per-point constants of the panel loop (pure functions of M and γ, hoisted out of the triangle loop).
+struct PanelCtx {
+    m: f64,
+    gamma: f64,
+    cp_max: f64,
+    th_max: f64,
+    /// 0.5 γ M²
+    q: f64,
+    vac: f64,
+    nu_m: f64,
+    nu_max: f64,
+    iso1_pow: f64,
+    beta_tab: Rc<BetaTab>,
+}
+
 /// Raw panel sums before nondimensionalisation.
 #[derive(Default)]
 struct Sums {
@@ -617,37 +632,33 @@ impl Kernel {
         })
     }
 
-    /// panel.ts `tangentWedgeCp`
-    fn tangent_wedge_cp(&mut self, m: f64, theta: f64, gamma: f64, cp_max: f64) -> f64 {
-        if theta <= 1e-5 {
-            return 0.0;
-        }
-        let beta = self.gas.beta_tab(m, gamma).beta(theta);
-        if !beta.is_finite() {
-            return cp_max * sq(theta.sin());
-        }
-        let sh = oblique_shock(m, beta, gamma);
-        let q = 0.5 * gamma * m * m;
-        (sh.p2p1 - 1.0) / q
-    }
-
-    /// panel.ts `windwardCp` → (cp, attached)
-    #[allow(clippy::too_many_arguments)]
-    fn windward_cp(&mut self, m: f64, theta: f64, gamma: f64, cp_max: f64, method: Method, use_cone: bool, th_max: f64) -> (f64, bool) {
+    /// panel.ts `windwardCp` → (cp, attached). `tangentWedgeCp` is inlined: it re-ran fastBeta(M, θ, γ), which
+    /// is the β already in hand, and only reads p2/p1 from obliqueShock.
+    fn windward_cp(&mut self, x: &PanelCtx, theta: f64, method: Method, use_cone: bool) -> (f64, bool) {
+        let (m, gamma, cp_max) = (x.m, x.gamma, x.cp_max);
         let sin2 = sq(theta.sin());
         if method == Method::Newtonian {
             return (cp_max * sin2, true);
         }
-        let beta = self.gas.beta_tab(m, gamma).beta(theta);
+        let beta = x.beta_tab.beta(theta);
         let attached = beta.is_finite();
+        let tangent = |k: &mut Kernel| -> f64 {
+            if use_cone {
+                return k.gas.cone_surface_state(m, theta, gamma).cp;
+            }
+            if theta <= 1e-5 {
+                return 0.0;
+            }
+            (oblique_p2p1(m, beta, gamma) - 1.0) / x.q
+        };
         if method == Method::Cbaero {
             let db = dahlem_buck_cp(theta, cp_max);
             let nb = newton_busemann_cp(theta, cp_max, gamma);
             if !attached {
                 return (0.65 * cp_max * sin2 + 0.35 * nb, false);
             }
-            let exact = if use_cone { self.gas.cone_surface_state(m, theta, gamma).cp } else { self.tangent_wedge_cp(m, theta, gamma, cp_max) };
-            let we = cbaero_attached_weight(theta, th_max);
+            let exact = tangent(self);
+            let we = cbaero_attached_weight(theta, x.th_max);
             let rest = (0.25 * db + 0.2 * nb) / 0.45;
             return (we * exact + (1.0 - we) * rest, true);
         }
@@ -655,26 +666,22 @@ impl Kernel {
             return (cp_max * sin2, false);
         }
         if method == Method::Tangent || method == Method::Mixed {
-            let exact = if use_cone { self.gas.cone_surface_state(m, theta, gamma).cp } else { self.tangent_wedge_cp(m, theta, gamma, cp_max) };
-            return (exact, true);
+            return (tangent(self), true);
         }
         (cp_max * sin2, attached)
     }
 
-    /// panel.ts `leewardCp`
-    fn leeward_cp(&mut self, m: f64, theta: f64, gamma: f64) -> f64 {
-        let nu = prandtl_meyer(m, gamma);
-        let nu2 = nu + theta;
-        let nu_max = prandtl_meyer(20.0, gamma);
-        if nu2 >= nu_max * 0.98 {
-            return vacuum_cp(m, gamma);
+    /// panel.ts `leewardCp` with its per-point constants (ν(M), ν(20), freestream isentropic term) hoisted.
+    fn leeward_cp(&mut self, x: &PanelCtx, theta: f64) -> f64 {
+        let gamma = x.gamma;
+        let nu2 = x.nu_m + theta;
+        if nu2 >= x.nu_max * 0.98 {
+            return x.vac;
         }
         let mm = self.gas.fast_inv_pm(nu2, gamma);
         let iso2 = 1.0 + 0.5 * (gamma - 1.0) * mm * mm;
-        let iso1 = 1.0 + 0.5 * (gamma - 1.0) * m * m;
-        let p2 = iso2.powf(-gamma / (gamma - 1.0)) / iso1.powf(-gamma / (gamma - 1.0));
-        let q = 0.5 * gamma * m * m;
-        clamp((p2 - 1.0) / q, vacuum_cp(m, gamma), 0.2)
+        let p2 = iso2.powf(-gamma / (gamma - 1.0)) / x.iso1_pow;
+        clamp((p2 - 1.0) / x.q, x.vac, 0.2)
     }
 
     /// Forces-only port of panel.ts `panelAero` (methods newtonian / tangent / cbaero).
@@ -688,6 +695,19 @@ impl Kernel {
         let cp_max = newtonian_cp_max(m, gam);
         let cg = [cfg.cg_x, 0.0, 0.0];
         let th_max = if method == Method::Cbaero { max_theta(m, gam).0 } else { 0.0 };
+        let iso1 = 1.0 + 0.5 * (gam - 1.0) * m * m;
+        let ctx = PanelCtx {
+            m,
+            gamma: gam,
+            cp_max,
+            th_max,
+            q: 0.5 * gam * m * m,
+            vac: vacuum_cp(m, gam),
+            nu_m: prandtl_meyer(m, gam),
+            nu_max: prandtl_meyer(20.0, gam),
+            iso1_pow: iso1.powf(-gam / (gam - 1.0)),
+            beta_tab: self.gas.beta_tab(m, gam),
+        };
         let w_rare = pt.w_rare;
         let p_visc = pt.p_visc;
         let rates = pt.has_rates && pt.v > 1.0;
@@ -726,10 +746,10 @@ impl Kernel {
                 cpi = -1.0 / (m * m);
             } else if !windward {
                 let theta = clamp(ndv, 0.0, 1.0).asin();
-                cpi = if method == Method::Newtonian { 0.0 } else { self.leeward_cp(m, theta, gam) };
+                cpi = if method == Method::Newtonian { 0.0 } else { self.leeward_cp(&ctx, theta) };
             } else {
                 let theta = sinth.asin();
-                let (c, att) = self.windward_cp(m, theta, gam, cp_max, method, cfg.use_cone, th_max);
+                let (c, att) = self.windward_cp(&ctx, theta, method, cfg.use_cone);
                 cpi = c;
                 apply_visc = att && method != Method::Newtonian;
             }

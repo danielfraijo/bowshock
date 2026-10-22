@@ -1,0 +1,34 @@
+{
+  "meta": {
+    "sha": "fdc467f",
+    "node": "v20.19.2",
+    "cpus": 8,
+    "cpuModel": "Intel(R) Xeon(R) Processor",
+    "poolSize": 7,
+    "wasmBytes": 94923,
+    "date": "2026-10-22T23:25:19.153Z",
+    "legacyDir": null
+  },
+  "kernel": [
+    {
+      "family": "caret",
+      "method": "cbaero",
+      "triangles": 3398,
+      "tsUsPerPt": 1213.9488715277764,
+      "wasmUsPerPt": 731.7632222222225
+    }
+  ],
+  "generateAeroDatabase": [
+    {
+      "family": "caret",
+      "method": "cbaero",
+      "triangles": 3398,
+      "grid": "480",
+      "points": 480,
+      "wasmMs": 476.6266570000007,
+      "poolMs": 163.24215500000173,
+      "poolColdMs": 4650.514013,
+      "tsMs": 1508.087971
+    }
+  ]
+}

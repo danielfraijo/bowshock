@@ -3,7 +3,47 @@
 //! Every function names its TS counterpart.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
+
+/// FxHash (rustc's hasher): the gas caches are hit once or twice per panel, SipHash showed up in profiles.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    #[inline]
+    fn write_i64(&mut self, v: i64) {
+        self.write_u64(v as u64);
+    }
+    #[inline]
+    fn write_i32(&mut self, v: i32) {
+        self.write_u64(v as u32 as u64);
+    }
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(v as u64);
+    }
+    #[inline]
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64);
+    }
+}
+
+pub type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 pub const PI: f64 = std::f64::consts::PI;
 pub const DEG: f64 = PI / 180.0;
@@ -177,6 +217,14 @@ impl BetaTab {
         let f = u - i as f64;
         self.b[i] * (1.0 - f) + self.b[i + 1] * f
     }
+}
+
+/// obliqueShock(M, beta, gamma).p2p1 alone (same expression; the panel loop needs nothing else).
+#[inline]
+pub fn oblique_p2p1(m: f64, beta: f64, gamma: f64) -> f64 {
+    let mn = m * beta.sin();
+    let mn2 = mn * mn;
+    1.0 + (2.0 * gamma) / (gamma + 1.0) * (mn2 - 1.0)
 }
 
 pub struct Oblique {
@@ -477,8 +525,9 @@ pub fn newton_busemann_cp(theta: f64, cp_max: f64, gamma: f64) -> f64 {
 struct NuTab {
     g: f64,
     nu: Vec<f64>,
-    m0: f64,
-    m1: f64,
+    /// ln(m0), ln(m1): constants of the table (math.ts recomputes them per call; same values)
+    log0: f64,
+    log1: f64,
 }
 
 pub const CONE_NODE: f64 = 0.1 * DEG;
@@ -491,14 +540,14 @@ fn mach_key3(m: f64) -> i64 {
 /// Process-wide gas caches, mirroring the module-level caches in math.ts
 /// (fastBeta table, ν⁻¹ log table, 0.1° Taylor–Maccoll cone nodes).
 pub struct GasCache {
-    beta_tabs: HashMap<(u64, u64), Rc<BetaTab>>,
+    beta_tabs: FxMap<(u64, u64), Rc<BetaTab>>,
     nu_tab: Option<NuTab>,
-    cone_nodes: HashMap<(i64, i64, u64), ConeState>,
+    cone_nodes: FxMap<(i64, i64, u64), ConeState>,
 }
 
 impl GasCache {
     pub fn new() -> GasCache {
-        GasCache { beta_tabs: HashMap::new(), nu_tab: None, cone_nodes: HashMap::new() }
+        GasCache { beta_tabs: FxMap::default(), nu_tab: None, cone_nodes: FxMap::default() }
     }
 
     pub fn beta_tab(&mut self, m: f64, gamma: f64) -> Rc<BetaTab> {
@@ -528,7 +577,7 @@ impl GasCache {
             let m0 = 1.0001f64;
             let m1 = 40.0f64;
             let nu_a: Vec<f64> = (0..n).map(|i| prandtl_meyer(m0 * (m1 / m0).powf(i as f64 / (n - 1) as f64), gamma)).collect();
-            self.nu_tab = Some(NuTab { g: gamma, nu: nu_a, m0, m1 });
+            self.nu_tab = Some(NuTab { g: gamma, nu: nu_a, log0: m0.ln(), log1: m1.ln() });
         }
         let tab = self.nu_tab.as_ref().unwrap();
         let n = tab.nu.len();
@@ -549,8 +598,8 @@ impl GasCache {
         let n0 = tab.nu[lo];
         let n1 = tab.nu[hi];
         let f = if n1 > n0 { (nu - n0) / (n1 - n0) } else { 0.0 };
-        let log0 = tab.m0.ln();
-        let log1 = tab.m1.ln();
+        let log0 = tab.log0;
+        let log1 = tab.log1;
         let a = log0 + ((log1 - log0) * lo as f64) / (n - 1) as f64;
         let b = log0 + ((log1 - log0) * hi as f64) / (n - 1) as f64;
         let seed = (a + (b - a) * f).exp();
