@@ -315,14 +315,17 @@ export function panelAero(
   const nt = mesh.indices.length / 3;
   // Coefficient sweeps (database, optimizer, 6DOF) do not paint the mesh. Skip the
   // per-face heat buffers — the stores below become no-ops and the heat branch is skipped.
+  // [accuracy-audit] Cp and the impact cosine stay full length in forces-only mode. They are pressure-solve outputs,
+  // not heating, and the forces-only contract (fidelity.test) is that Cp matches the full call bit for bit. With
+  // length 0 every forces-only Cp read back as undefined → NaN (55d643f).
   const nStore = forcesOnly ? 0 : nt;
-  const cp = new Float32Array(nStore);
+  const cp = new Float32Array(nt);
   const heat = new Float32Array(nStore);
   const twEq = new Float32Array(nStore);
   const stanton = new Float32Array(nStore);
   const machE = new Float32Array(nStore);
   const cfArr = new Float32Array(nStore);
-  const impact = new Float32Array(nStore);
+  const impact = new Float32Array(nt);
   const cgX = clamp(params.cgFrac, 0.2, 0.85) * params.length;
   const cg: Vec3 = [cgX, 0, 0];
   let Fx = 0;
