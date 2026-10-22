@@ -36,7 +36,7 @@ export function RefinementControls({
   const warn = [...surfaceWarnings(cur)];
   if (params.aeroMethod !== "euler")
     warn.push(
-      "Volume settings apply to the Euler method (Aero tab). Newtonian / tangent / CBAERO ignore them.",
+      "Volume settings apply to the Euler method (Flight tab). Newtonian / tangent / CBAERO ignore them.",
     );
   const named = preset !== "custom" ? presetSettings(preset) : null;
   if (named && (named.surface.nx !== params.nx || named.surface.ny !== params.ny)) {

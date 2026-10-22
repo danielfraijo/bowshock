@@ -149,6 +149,18 @@ export function studyVehicle(built: BuiltVehicle, opts?: { quick?: boolean }): S
         finalH: p.altKm,
         skipped: true,
         rangeEqKm: 0,
+        flatGlideKm: 0,
+        vacuumRangeKm: 0,
+        ballistic: 0,
+        energyKm: 0,
+        eqLoad: 0,
+        allenG: 0,
+        allenAltKm: 0,
+        allenUnderground: false,
+        allenV: 0,
+        allenQ: 0,
+        allenHeatAltKm: 0,
+        allenHeatLoad: 0,
         notes: opts?.quick
           ? ["Trajectory paused while dragging — release to integrate the 3DOF glide."]
           : ["Trajectory is an external-flow tool — switch to External to glide."],

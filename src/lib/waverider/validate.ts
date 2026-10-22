@@ -41,6 +41,9 @@ import { atmosphere } from "./atmosphere";
 import { eulerWedge } from "./euler2d";
 import { extendedChecks } from "./validate-ref";
 import { publishedChecks } from "./validate-published";
+import { allenEggers } from "./flight-science";
+import { presetSettings } from "./refinement";
+import { stripCase } from "./refinement-study";
 
 export interface Check {
   id: string;
@@ -414,6 +417,68 @@ export function runValidation(): Check[] {
       euler.p2p1,
       "same scheme as native/bowshock_kernel.c",
       0.08,
+    ),
+  );
+
+  // The design view runs this shock-clustered symmetry-plane kernel (Rust wasm, same numbers as the TypeScript port).
+  const medVol = presetSettings("medium").volume;
+  for (const [mach, theta] of [
+    [2, 10],
+    [8, 8],
+  ] as const) {
+    const row = stripCase(mach, theta, medVol);
+    out.push(
+      chk(
+        `strip-m${mach}-t${theta}`,
+        "external",
+        `Symmetry-plane Euler Cp, M=${mach} θ=${theta}°`,
+        `shock-clustered HLLC, medium grid, mean Cp on 0.3–0.8 L (shock angle ${row.shockDeg.toFixed(2)}°, exact ${row.exactShockDeg.toFixed(2)}°)`,
+        row.exactCp,
+        row.cp,
+        "Exact oblique shock, Anderson / NACA 1135. Same kernel the design view solves.",
+        0.015,
+      ),
+    );
+  }
+
+  const aeV = 7000;
+  const aeG = (-20 * Math.PI) / 180;
+  const aeExpect = (aeV * aeV * Math.sin(20 * Math.PI / 180)) / (2 * Math.E * 7200 * 9.80665);
+  const ae = allenEggers(aeV, aeG, 5000, 7200, 1.225, 9.80665, 0.05);
+  out.push(
+    chk(
+      "allen-eggers",
+      "external",
+      "Allen–Eggers peak g, 7 km/s at γ = −20°",
+      "V² sin|γ| / (2 e H g), H = 7.2 km",
+      aeExpect,
+      ae.peakG,
+      "NACA TN 4047. Steep ballistic entry, lift and gravity omitted. Not the lifting-glide load.",
+      0.002,
+    ),
+  );
+  out.push(
+    chk(
+      "allen-vstar",
+      "external",
+      "Allen–Eggers speed at peak g",
+      "V* = Ve / √e",
+      aeV / Math.sqrt(Math.E),
+      ae.vPeak,
+      "NACA TN 4047. Same path as the peak-g check.",
+      1e-9,
+    ),
+  );
+  out.push(
+    chk(
+      "allen-heat-alt",
+      "external",
+      "Sutton–Graves peak sits H ln 3 above the g peak",
+      "Δh = H ln 3, heating ρ = ρ*/3",
+      (7200 * Math.log(3)) / 1000,
+      ae.heatAltKm - ae.altKm,
+      "Allen–Eggers density-velocity relation with q ∝ √ρ V³.",
+      1e-6,
     ),
   );
 

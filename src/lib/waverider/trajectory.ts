@@ -1,5 +1,16 @@
 import { DEG, clamp, fayRiddell, knudsen, newtonianCpMax, rarefactionWeight, suttonGraves, tauberSutton } from "./math";
 import { atmosphere } from "./atmosphere";
+import {
+  ballisticCoeff,
+  energyHeight,
+  eqGlideLoad,
+  equilibriumGlideRange,
+  flatGlideRange,
+  vacuumRangeM,
+  allenEggers,
+  RHO_SL,
+  SCALE_H,
+} from "./flight-science";
 import type { DesignParams } from "./types";
 
 export interface PolarPt {
@@ -37,6 +48,30 @@ export interface TrajResult {
   finalH: number;
   skipped: boolean;
   rangeEqKm: number;
+  /** Flat-Earth glide over the same speed pair. The low-speed limit of rangeEqKm. */
+  flatGlideKm: number;
+  /** Kepler coast from the entry speed and flight-path angle, no atmosphere. */
+  vacuumRangeKm: number;
+  /** m / (CD S) at the entry polar. */
+  ballistic: number;
+  /** Entry specific energy, km. */
+  energyKm: number;
+  /** Equilibrium-glide L/W at entry speed. */
+  eqLoad: number;
+  /** Allen–Eggers ballistic peak deceleration, g. 0 when γ is not nose-down. */
+  allenG: number;
+  /** Altitude of that analytic peak, km. */
+  allenAltKm: number;
+  /** Analytic peak would be below the surface. */
+  allenUnderground: boolean;
+  /** Speed at the Allen–Eggers deceleration peak, m/s. Ve/√e. Unreached if underground. */
+  allenV: number;
+  /** Sutton–Graves peak on the Allen–Eggers path, W/cm². Not the lifting 3DOF heat. */
+  allenQ: number;
+  /** Altitude of that convective peak, km. */
+  allenHeatAltKm: number;
+  /** Sutton–Graves load on the Allen–Eggers path down to sea level, J/cm². */
+  allenHeatLoad: number;
   notes: string[];
 }
 
@@ -189,16 +224,25 @@ export function integrateGlide(
   }
   const polar0 = lerpPolar(polar, alpha);
   const ld0 = polar0.cd > 1e-8 ? polar0.cl / polar0.cd : 0;
-  const vCirc = Math.sqrt(g0 * Re);
   const v0 = Math.max(400, (params.lockFlight ? params.mach : params.flightMach) * atm0.a);
-  const num = 1 - (v / vCirc) ** 2;
-  const den = 1 - (v0 / vCirc) ** 2;
-  const rangeEqKm =
-    ld0 > 0.2 && den > 1e-6 && num > 0
-      ? (0.5 * Re * ld0 * Math.log(Math.max(num / den, 1.001))) / 1000
-      : 0;
+  const vf = lastSpeed(samples, v);
+  const rangeEqKm = equilibriumGlideRange(ld0, v0, vf) / 1000;
+  const flatGlideKm = flatGlideRange(ld0, v0, vf) / 1000;
+  const vacuumRangeKm = vacuumRangeM(v0, params.gammaDeg * DEG) / 1000;
+  const ballistic = ballisticCoeff(m, Math.max(polar0.cd, 1e-8), sRef);
+  const energyKm = energyHeight(Math.max(500, params.altKm * 1000), v0) / 1000;
+  const eqLoad = eqGlideLoad(v0);
+  const ae = allenEggers(v0, params.gammaDeg * DEG, ballistic, SCALE_H, RHO_SL, g0, Rn);
   notes.push(
-    "3DOF point-mass adaptive RK4 (step doubling). CL/CD from the panel polar, Mach-scaled by Cp_max (Lees). CD grows with Knudsen at altitude. Heating is Fay–Riddell + Tauber–Sutton; Tw from a 3 mm C/C lump. Spherical Earth, US76. Skips are integrated, not aborted. Eq-glide range is Sänger / Eggers: ½ Re (L/D) ln[(1−Vf²/Vc²)/(1−V0²/Vc²)].",
+    "3DOF point-mass adaptive RK4 (step doubling). CL/CD from the panel polar, Mach-scaled by Cp_max (Lees). CD grows with Knudsen at altitude. Heating is Fay–Riddell + Tauber–Sutton; Tw from a 3 mm C/C lump. Spherical Earth, US76. Skips are integrated, not aborted.",
+  );
+  notes.push(
+    "Eq-glide range is Sänger / Eggers: ½ Re (L/D) ln[(1−Vf²/Vc²)/(1−V0²/Vc²)]. Flat glide is the same integral with Vc → ∞. Vacuum range is a Kepler arc from the entry γ, no air.",
+  );
+  notes.push(
+    ae.peakG > 0
+      ? `Allen–Eggers ballistic ceiling (NACA TN 4047, no lift, γ fixed, H = 7.2 km): ${ae.peakG.toFixed(2)} g at ${ae.underground ? "an underground peak — the pulse hits the surface first" : `${ae.altKm.toFixed(1)} km`}, speed ${ae.vPeak.toFixed(0)} m/s (Ve/√e). Sutton–Graves on that path peaks at ${ae.heatUnderground ? "the surface" : `${ae.heatAltKm.toFixed(1)} km`} (${ae.qPeak.toFixed(2)} W/cm², ${ae.heatLoad.toFixed(0)} J/cm²). The 3DOF peak n and heat include lift, so they are not these numbers.`
+      : "Allen–Eggers needs a nose-down flight-path angle. It is a steep ballistic ceiling, not the lifting glide load.",
   );
   const last = samples[samples.length - 1];
   return {
@@ -216,6 +260,23 @@ export function integrateGlide(
     finalH: last ? last.hKm : h / 1000,
     skipped,
     rangeEqKm,
+    flatGlideKm,
+    vacuumRangeKm,
+    ballistic,
+    energyKm,
+    eqLoad,
+    allenG: ae.peakG,
+    allenAltKm: ae.altKm,
+    allenUnderground: ae.underground,
+    allenV: ae.vPeak,
+    allenQ: ae.qPeak,
+    allenHeatAltKm: ae.heatAltKm,
+    allenHeatLoad: ae.heatLoad,
     notes,
   };
+}
+
+function lastSpeed(samples: TrajSample[], fallback: number): number {
+  const last = samples[samples.length - 1];
+  return last ? last.v : fallback;
 }

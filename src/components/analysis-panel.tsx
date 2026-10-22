@@ -407,12 +407,25 @@ export function TrajBlock({ study }: { study: StudyResult }) {
     <div>
       <Stat k="Range" v={`${fmt(t.rangeKm, 1)} km`} />
       <Stat k="Eq-glide range" v={`${fmt(t.rangeEqKm, 1)} km`} />
+      <Stat k="Flat glide" v={`${fmt(t.flatGlideKm, 1)} km`} />
+      <Stat k="Vacuum arc" v={t.vacuumRangeKm > 0 ? `${fmt(t.vacuumRangeKm, 1)} km` : "—"} />
       <Stat k="Time" v={`${fmt(t.timeS, 0)} s`} />
       <Stat k="Max q" v={`${fmt(t.maxQ / 1000, 2)} kPa`} />
       <Stat k="Max-q alt" v={`${fmt(t.maxQAltKm, 1)} km`} />
       <Stat k="Peak heat" v={`${fmt(t.maxHeat, 2)} W/cm²`} />
       <Stat k="Peak-heat alt" v={`${fmt(t.maxHeatAltKm, 1)} km`} />
-      <Stat k="Peak n" v={`${fmt(t.maxN, 2)} g`} />
+      <Stat k="Peak n (3DOF)" v={`${fmt(t.maxN, 2)} g`} />
+      <Stat k="Allen–Eggers" v={t.allenG > 0 ? `${fmt(t.allenG, 2)} g` : "—"} />
+      <Stat
+        k="Allen alt"
+        v={t.allenG <= 0 ? "—" : t.allenUnderground ? "surface" : `${fmt(t.allenAltKm, 1)} km`}
+      />
+      <Stat k="AE speed" v={t.allenV > 0 ? `${fmt(t.allenV, 0)} m/s` : "—"} />
+      <Stat k="AE heat" v={t.allenQ > 0 ? `${fmt(t.allenQ, 2)} W/cm²` : "—"} />
+      <Stat
+        k="AE heat alt"
+        v={t.allenQ <= 0 ? "—" : t.allenHeatAltKm <= 0 ? "surface" : `${fmt(t.allenHeatAltKm, 1)} km`}
+      />
       <Stat k="Heat load" v={`${fmt(t.heatLoad, 1)} J/cm²`} />
       <Stat k="Tw lump" v={`${fmt(t.twPeak, 0)} K`} />
       <Stat k="Final V" v={`${fmt(t.finalV, 0)} m/s`} />
@@ -420,18 +433,22 @@ export function TrajBlock({ study }: { study: StudyResult }) {
       <div className="mt-4 h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(255,255,255,0.08)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#9a9a9a", fontSize: 10 }} />
-            <YAxis tick={{ fill: "#9a9a9a", fontSize: 10 }} />
+            <CartesianGrid stroke="rgba(243,239,230,0.08)" />
+            <XAxis dataKey="xKm" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#111111", border: "1px solid #2c2c2c", fontSize: 11, color: "#f4f4f4" }}
+              contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }}
               labelFormatter={(v) => `${Number(v).toFixed(0)} km`}
             />
-            <Line type="monotone" dataKey="hKm" stroke="#f2f2f2" dot={false} strokeWidth={1.5} name="h km" />
+            <Line type="monotone" dataKey="hKm" stroke="#ff2d2d" dot={false} strokeWidth={1.5} name="h km" />
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-subtle">{t.notes[0]}</p>
+      {t.notes.map((n) => (
+        <p key={n.slice(0, 24)} className="mt-2 text-xs leading-relaxed text-subtle">
+          {n}
+        </p>
+      ))}
     </div>
   );
 }

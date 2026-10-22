@@ -9,7 +9,7 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "hud-btn-primary bg-accent text-accent-fg hover:bg-[#6ff0ff]",
+        default: "hud-btn-primary bg-accent text-accent-fg hover:bg-[#ff5c52]",
         secondary: "bg-surface-3 text-fg shadow-[inset_0_0_0_1px_var(--color-line)] hover:shadow-[inset_0_0_0_1px_var(--color-accent)] hover:text-accent",
         outline: "bg-transparent text-fg shadow-[inset_0_0_0_1px_var(--color-line)] hover:bg-accent-dim/50 hover:shadow-[inset_0_0_0_1px_var(--color-accent)] hover:text-accent",
         ghost: "bg-transparent text-muted [--edge:transparent] hover:bg-surface-3 hover:text-fg hover:[--edge:var(--color-line)]",

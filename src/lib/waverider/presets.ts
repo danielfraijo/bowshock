@@ -252,28 +252,100 @@ export const PRESETS: Preset[] = [
 
 const STORAGE_KEY = "cuspis.design.v1";
 
+const BANNED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Ranges a saved design is allowed to restore. Outside this, the field falls back to the default — a hand-edited localStorage blob cannot ask for a million cells. */
+const NUM_RANGE: Partial<Record<keyof DesignParams, readonly [number, number]>> = {
+  mach: [1.05, 30],
+  flightMach: [0.2, 30],
+  gamma: [1.05, 1.67],
+  length: [0.05, 80],
+  span: [0.05, 40],
+  height: [0.01, 20],
+  shockDeg: [1, 60],
+  coneDeg: [1, 45],
+  superN: [1, 8],
+  planformPower: [0.4, 4],
+  fins: [0, 12],
+  wedgeFrac: [0.05, 0.95],
+  captureFrac: [0.05, 0.95],
+  nx: [12, 160],
+  ny: [10, 120],
+  leRadius: [0, 2],
+  dihedralDeg: [-30, 45],
+  camber: [-0.5, 0.8],
+  teSweepDeg: [-30, 60],
+  elevonDeg: [-30, 30],
+  finHeight: [0, 3],
+  nRamps: [1, 6],
+  alphaDeg: [-40, 40],
+  betaDeg: [-30, 30],
+  gammaDeg: [-30, 30],
+  altKm: [0, 120],
+  cgFrac: [0.05, 0.95],
+  twK: [200, 4000],
+  inletHeight: [0.01, 2],
+  cowlFrac: [0.05, 0.95],
+  combustorFrac: [0.02, 0.8],
+  nozzleER: [1, 40],
+  rampDeg: [0, 40],
+  phi: [0, 3],
+  rhoKgM3: [1, 20000],
+  massKg: [0, 1e6],
+};
+
+const ENUMS: Partial<Record<keyof DesignParams, readonly string[]>> = {
+  planform: ["delta", "power", "spatular", "rect", "double"],
+  lid: ["top", "bottom"],
+  cowlSide: ["belly", "dorsal"],
+  unit: ["m", "mm", "in"],
+  fuel: ["H2", "JP"],
+  aeroMethod: ["newtonian", "tangent", "mixed", "cbaero", "euler"],
+};
+
+function safeDesignName(v: string): string {
+  const cleaned = v.replace(/[\u0000-\u001f\u007f]/g, "").replace(/[\\/]/g, "_").trim().slice(0, 64);
+  return cleaned || DEFAULT_PARAMS.name;
+}
+
 /**
  * [mesh-refinement] Saved designs come from an older build or a hand-edited localStorage: a null / NaN / wrong-typed field or an
  * unknown family must not reach the generator. Every field is checked against the type of its default; refinement is
  * re-validated (clamped / capped); anything wrong falls back to the default for that field.
+ * Unknown keys are dropped (no prototype pollution, nothing extra reaches an export).
  */
 export function sanitizeParams(parsed: unknown): DesignParams {
   const src = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   const out: Record<string, unknown> = { ...DEFAULT_PARAMS };
   const def = DEFAULT_PARAMS as unknown as Record<string, unknown>;
   for (const k of Object.keys(src)) {
+    if (BANNED_KEYS.has(k) || k === "refinement") continue;
     const v = src[k];
-    if (k === "refinement") continue;
-    if (!(k in def)) {
-      out[k] = v;
+    if (k === "leBlend") {
+      if (v === "circular" || v === "g2") out.leBlend = v;
+      continue;
+    }
+    if (!(k in def)) continue;
+    if (k === "name" && typeof v === "string") {
+      out.name = safeDesignName(v);
+      continue;
+    }
+    const allowed = ENUMS[k as keyof DesignParams];
+    if (allowed) {
+      if (typeof v === "string" && allowed.includes(v)) out[k] = v;
       continue;
     }
     const d = def[k];
     if (typeof d === "number") {
-      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
-    } else if (typeof d === "boolean" || typeof d === "string") {
-      if (typeof v === typeof d) out[k] = v;
-    } else if (v !== undefined && v !== null) out[k] = v;
+      const range = NUM_RANGE[k as keyof DesignParams];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        out[k] = range ? Math.min(range[1], Math.max(range[0], v)) : v;
+      }
+    } else if (typeof d === "boolean") {
+      if (typeof v === "boolean") out[k] = v;
+    } else if (typeof d === "string") {
+      if (typeof v === "string" && v.length <= 64 && !/[\u0000-\u001f\u007f]/.test(v)) out[k] = v;
+    }
   }
   if (!(String(out.family) in FAMILY_META)) out.family = DEFAULT_PARAMS.family;
   const ref = src.refinement;
@@ -290,8 +362,8 @@ export function loadSavedParams(): DesignParams | null {
       localStorage.getItem("bowshock.design.v3") ??
       localStorage.getItem("bowshock.design.v2") ??
       localStorage.getItem("bowshock.design.v1");
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<DesignParams>;
+    if (!raw || raw.length > 400_000) return null;
+    const parsed = JSON.parse(raw, (key, value) => (BANNED_KEYS.has(key) ? undefined : value)) as Partial<DesignParams>;
     const merged: DesignParams = sanitizeParams(parsed); // [mesh-refinement] was { ...DEFAULT_PARAMS, ...parsed }
     if (parsed.leBlunt === undefined) {
       merged.leBlunt = true;

@@ -10,16 +10,10 @@
 @import "@fontsource/jetbrains-mono/latin-700.css";
 
 /*
- * CUSPIS HUD theme — Roadster-style cockpit display, loosely Cyberpunk 2077.
- *
- *   • near-black cool surfaces, ONE neon accent (electric cyan)
- *   • a second hue (hot red) is reserved for warnings / FAIL / destructive
- *   • angular clipped-corner panels, corner brackets, tick marks, faint scanlines
- *   • every token below is a CSS custom property; Tailwind utilities
- *     (bg-bg, text-muted, border-border, bg-accent …) inherit from @theme.
- *
- * Contrast of every text/background pair is verified by
- * scripts/ui-redesign/contrast.mjs (WCAG AA) — rerun it after touching tokens.
+ * CUSPIS — black cockpit, one red line, warm white type.
+ * Inspired by the 2026 Roadster screen (retro-futuristic, not a copy of it):
+ * near-black field, a single red accent, large tabular numbers, almost no scan.
+ * Amber is only for warnings, so a failure is not the same red as a selected control.
  */
 @theme {
   --font-sans: "Chakra Petch", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -27,36 +21,36 @@
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 
   /* surfaces (darkest → lightest) */
-  --color-bg: #05080b;
-  --color-surface: #0a1015;
-  --color-surface-2: #111a21;
-  --color-surface-3: #18242d;
+  --color-bg: #070707;
+  --color-surface: #101010;
+  --color-surface-2: #161616;
+  --color-surface-3: #1e1e1e;
 
   /* text */
-  --color-fg: #e8f4f8;
-  --color-muted: #a3b6c0;
-  --color-subtle: #8399a5;
-  --color-disabled: #5f7480;
+  --color-fg: #f3efe6;
+  --color-muted: #b9b3a8;
+  --color-subtle: #8d877c;
+  --color-disabled: #6b665e;
 
   /* lines: border = decorative hairline, line = control outline (>= 3:1 non-text) */
-  --color-border: #1f2d36;
-  --color-line: #55737f;
+  --color-border: #2a2424;
+  --color-line: #7a4545;
 
-  /* the one neon accent + its dark-on-accent text */
-  --color-accent: #1fe5ff;
-  --color-accent-fg: #021117;
-  --color-accent-dim: #0c4a58; /* tinted fills / hover washes */
-  --color-steel: #8399a5;
+  /* the one accent + its dark-on-accent text */
+  --color-accent: #ff2d2d;
+  --color-accent-fg: #1a0606;
+  --color-accent-dim: #4a1414;
+  --color-steel: #b9b3a8;
 
   /* semantic */
-  --color-ok: #1fe5ff; /* pass uses the accent (no 2nd hue) */
-  --color-warn: #ff5a6b; /* the sparing second colour */
-  --color-warn-dim: #4a1620;
+  --color-ok: #ff2d2d;
+  --color-warn: #ffb020;
+  --color-warn-dim: #4a3010;
 
-  /* chart series (see .recharts-* overrides): accent, light steel, dashed grey-blue */
-  --color-chart-1: #1fe5ff;
-  --color-chart-2: #e8f4f8;
-  --color-chart-3: #8fa9b8;
+  /* chart series */
+  --color-chart-1: #ff2d2d;
+  --color-chart-2: #f3efe6;
+  --color-chart-3: #8d877c;
 
   --radius-xs: 1px;
   --radius-sm: 2px;
@@ -69,11 +63,11 @@
   color-scheme: dark;
   --cut: 8px; /* clipped-corner size */
   --cut-lg: 12px;
-  --accent-rgb: 31 229 255;
-  --warn-rgb: 255 90 107;
+  --accent-rgb: 255 45 45;
+  --warn-rgb: 255 176 32;
   --glow-sm: 0 0 6px rgb(var(--accent-rgb) / 0.35);
   --glow-md: 0 0 14px rgb(var(--accent-rgb) / 0.4);
-  --scan-opacity: 0.035;
+  --scan-opacity: 0.012;
   --ease-hud: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -278,7 +272,7 @@ textarea:disabled {
 select {
   appearance: none;
   padding-right: 1.4rem;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%231fe5ff'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%23ff2d2d'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.4rem center;
 }
@@ -509,8 +503,8 @@ body::before {
     content: "";
     position: absolute;
     left: 6px;
-    top: 56px;
-    bottom: 56px;
+    top: 12px;
+    bottom: 12px;
     width: 7px;
     opacity: 0.55;
     background: repeating-linear-gradient(to bottom, var(--color-accent) 0 1px, transparent 1px 12px);
@@ -518,9 +512,9 @@ body::before {
   }
   .hud-ticks-x {
     position: absolute;
-    left: 56px;
-    right: 56px;
-    bottom: 14px;
+    left: 16px;
+    right: 16px;
+    bottom: 10px;
     height: 7px;
     pointer-events: none;
     opacity: 0.45;
@@ -530,8 +524,8 @@ body::before {
   /* axis-triad overlay slot: anchored bottom-left above the colour-mode strip, reserved for an axis gizmo */
   .hud-triad-slot {
     position: absolute;
-    left: 20px;
-    bottom: 76px;
+    left: 14px;
+    bottom: 14px;
     width: 64px;
     height: 64px;
     pointer-events: none;
@@ -665,13 +659,17 @@ body::before {
   }
   .hud-tab-primary > [role="tab"] {
     position: relative;
+    min-width: 0;
     height: 2.5rem;
-    padding: 0 0.25rem;
+    overflow: hidden;
+    padding: 0 0.2rem;
     font-family: var(--font-display);
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.06em;
+    text-overflow: ellipsis;
     text-transform: uppercase;
+    white-space: nowrap;
     color: var(--color-muted);
     background: var(--color-bg);
     border-right: 1px solid var(--color-border);
@@ -730,7 +728,7 @@ body::before {
     box-shadow: inset 0 0 14px rgb(255 255 255 / 0.25);
   }
   .hud-btn-primary:not(:disabled):hover {
-    background: #6ff0ff;
+    background: #ff5c52;
     box-shadow: inset 0 0 18px rgb(255 255 255 / 0.5);
   }
 

@@ -58,7 +58,7 @@ export function fileBlobs(
       return new Blob([meshToTessellatedStep(mesh, name, unit)], { type: "application/step" });
     },
     get iges() {
-      return new Blob([gridsToIges(dense, name)], { type: "model/iges" });
+      return new Blob([gridsToIges(dense, name, unit)], { type: "model/iges" });
     },
     get plot3d() {
       return new Blob([gridsToPlot3d(dense)], { type: "text/plain" });

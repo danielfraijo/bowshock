@@ -23,6 +23,15 @@ function u32(n: number): Uint8Array {
   return b;
 }
 
+/** Drop path traversal, absolute paths and control characters from a zip entry name. */
+function safeZipName(name: string): string {
+  const parts = name.split(/[\\/]+/).filter((p) => p && p !== "." && p !== "..");
+  const joined = parts
+    .map((p) => p.replace(/[\u0000-\u001f\u007f]/g, ""))
+    .filter(Boolean)
+    .join("/");
+  return (joined || "file").slice(0, 180);
+}
 export interface ZipEntry {
   name: string;
   data: Uint8Array;
@@ -38,7 +47,7 @@ export function buildZip(entries: ZipEntry[]): Blob {
     (((now.getFullYear() - 1980) & 127) << 9) | ((now.getMonth() + 1) << 5) | (now.getDate() & 31);
 
   for (const e of entries) {
-    const name = new TextEncoder().encode(e.name);
+    const name = new TextEncoder().encode(safeZipName(e.name));
     const crc = crc32(e.data);
     const local = new Uint8Array(30 + name.length);
     local.set([0x50, 0x4b, 0x03, 0x04], 0);

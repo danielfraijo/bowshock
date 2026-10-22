@@ -486,24 +486,7 @@ export function WaveriderViewer({
     rebuildFn.current();
   }, [built, study, opts.color]);
 
-  const scale = opts.color !== "surface" && study ? fieldScale(study, opts.color, built.mesh.surfaces) : null;
-  const fmtScale = (v: number) => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
-
   return (
-    <div ref={wrapRef} className="absolute inset-0 touch-none">
-      {scale ? (
-        <div className="pointer-events-none absolute right-3 bottom-14 flex items-end gap-1.5">
-          <div className="flex h-28 flex-col justify-between py-0.5 text-right font-mono text-[9px] leading-none text-muted">
-            <span>{fmtScale(scale.hi)}</span>
-            <span>
-              {scale.unit}
-              {scale.log ? " log" : ""}
-            </span>
-            <span>{fmtScale(scale.lo)}</span>
-          </div>
-          <div className="jet-ramp h-28 w-2.5 rounded-sm" title={opts.color === "heat" ? "q W/cm²" : "Cp"} />
-        </div>
-      ) : null}
-    </div>
+    <div ref={wrapRef} className="absolute inset-0 touch-none" />
   );
 }

@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { WaveriderViewer, type ViewerOpts } from "@/components/viewer";
+import { WaveriderViewer, fieldScale, type ViewerOpts } from "@/components/viewer";
 import { NumberField, Seg, Stat } from "@/components/fields";
 import { RefinementControls } from "@/components/refinement-controls"; // [mesh-refinement]
 import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
@@ -28,7 +28,7 @@ import { useStudy } from "@/components/use-study"; // [mesh-refinement]
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import kernelSource from "../../native/bowshock_kernel.c?raw";
 import { fmt } from "@/lib/waverider/math";
-import { studyJson, studyVehicle } from "@/lib/waverider/study";
+import { studyJson, studyVehicle, type StudyResult } from "@/lib/waverider/study";
 import { loadSavedParams, PRESETS, saveParams } from "@/lib/waverider/presets";
 import {
   COLOR_MODES,
@@ -37,6 +37,7 @@ import {
   FAMILY_META,
   domainOf,
   type AeroMethod,
+  type ColorMode,
   type CowlSide,
   type DesignParams,
   type FlowDomain,
@@ -91,6 +92,63 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
   ];
 }
 
+function solveCaption(
+  method: string,
+  eulerOn: boolean,
+  status: {
+    busy: boolean;
+    stage: string;
+    fraction: number;
+    error?: string;
+    warnings: string[];
+    report: { pending: boolean; lower?: { residual: number; converged: boolean } } | null;
+  },
+): { text: string; warn: boolean } {
+  if (status.error) return { text: `Solve failed (${status.error}). Instant numbers kept.`, warn: true };
+  if (status.warnings.length) return { text: status.warnings[0]!, warn: true };
+  if (eulerOn && (status.busy || status.stage === "preview" || status.stage === "solving" || status.report?.pending)) {
+    if (status.stage === "solving") return { text: `Euler ${Math.round(status.fraction * 100)}% · CBAERO until it finishes`, warn: false };
+    return { text: "Euler queued · CBAERO on screen", warn: false };
+  }
+  const lo = status.report?.lower;
+  if (eulerOn && lo && Number.isFinite(lo.residual)) {
+    return { text: `Euler · res ${lo.residual.toExponential(1)}${lo.converged ? "" : " · open"}`, warn: !lo.converged };
+  }
+  const names: Record<string, string> = {
+    newtonian: "Newtonian",
+    tangent: "Tangent wedge",
+    mixed: "Mixed",
+    cbaero: "CBAERO",
+    euler: "Euler",
+  };
+  return { text: names[method] ?? method, warn: false };
+}
+
+function ScaleLegend({
+  study,
+  color,
+  surfaces,
+}: {
+  study: StudyResult;
+  color: ColorMode;
+  surfaces: Uint8Array;
+}) {
+  const scale = fieldScale(study, color, surfaces);
+  const fmtScale = (v: number) => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
+  return (
+    <div className="flex min-w-0 items-center gap-2" title={scale.unit || color}>
+      <span className="font-mono text-[10px] text-muted">{fmtScale(scale.lo)}</span>
+      <div className="h-2 w-28 shrink-0 overflow-hidden rounded-sm bg-bg">
+        <span className="jet-ramp-h block h-full w-full" />
+      </div>
+      <span className="truncate font-mono text-[10px] text-muted">
+        {fmtScale(scale.hi)} {scale.unit}
+        {scale.log ? " log" : ""}
+      </span>
+    </div>
+  );
+}
+
 function geomKey(p: DesignParams) {
   return [
     p.family,
@@ -112,6 +170,7 @@ function geomKey(p: DesignParams) {
     JSON.stringify(p.refinement ?? null), // [mesh-refinement] re-build (and re-solve) when the refinement changes
     p.leRadius,
     p.leBlunt,
+    p.leBlend ?? "circular",
     p.halfModel,
     p.lid,
     p.dihedralDeg,
@@ -217,6 +276,7 @@ export function Designer() {
   const a = built.aero;
   const fam = FAMILY_META[params.family];
   const domain = domainOf(params.family);
+  const solveLine = solveCaption(study.aero.method, params.aeroMethod === "euler", studyStatus);
   const TABS = tabsFor(domain);
 
   function goDomain(d: FlowDomain) {
@@ -311,14 +371,14 @@ export function Designer() {
 
   return (
     <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-bg text-fg">
-      <header className="hud-header flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
+      <header className="hud-header flex shrink-0 flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div className="min-w-0">
           <p className="hud-wordmark text-xl">CUSPIS</p>
           <p className="hud-label truncate !text-muted">
             {domain === "external" ? "Roma · hypersonic CAD · external" : "Roma · hypersonic CAD · internal"}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => setParams(DEFAULT_PARAMS)}>
             <RotateCcw />
             Reset
@@ -393,34 +453,29 @@ export function Designer() {
           </div>
         </aside>
 
-        <section className="hud-viewport relative order-1 min-h-0 overflow-hidden lg:order-2">
-          <div className="absolute inset-0">
-            <PanelBoundary label="3D viewer" resetKey={built}>
-              <WaveriderViewer built={built} study={study} opts={opts} />
-            </PanelBoundary>
-            {builtRes.error || studyStatus.error || studyStatus.warnings.length > 0 || studyStatus.busy ? (
-              <div data-testid="study-status" className="absolute right-3 top-3 max-w-xs rounded-md bg-bg/80 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur-sm">
-                {builtRes.error ? <div className="text-amber-300">{builtRes.error} Showing the last valid shape.</div> : null}
-                {studyStatus.error ? <div className="text-amber-300">Background solve failed ({studyStatus.error}); instant numbers shown.</div> : null}
-                {studyStatus.warnings.map((w) => (
-                  <div key={w} className="text-amber-300">{w}</div>
-                ))}
-                {studyStatus.busy ? <div>Refining the Euler solve in the background...</div> : null}
+        <section className="hud-viewport relative order-1 flex min-h-0 flex-col overflow-hidden lg:order-2">
+          <div className="z-10 flex shrink-0 flex-col gap-1.5 border-b border-line bg-bg/95 px-3 py-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+              <div className="hud-chip-info flex min-w-0 items-center gap-1 px-2.5 py-1 font-mono text-[11px] text-muted">
+                <span className="hud-led mr-1.5 shrink-0" aria-hidden />
+                <span className="font-display font-semibold tracking-[0.1em] text-accent uppercase">{fam.label}</span>
+                <span className="mx-1.5 text-subtle">/</span>
+                {domain}
+                <span className="mx-1.5 text-subtle">/</span>
+                M {params.lockFlight ? params.mach : params.flightMach}
               </div>
-            ) : null}
-            <ViewportChrome />
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-bg/70 to-transparent" />
-            <div className="hud-chip-info absolute top-5 left-5 flex items-center gap-1 px-3 py-1.5 font-mono text-[11px] text-muted max-sm:hidden">
-              <span className="hud-led mr-1.5" aria-hidden />
-              <span className="font-display font-semibold tracking-[0.1em] text-accent uppercase">{fam.label}</span>
-              <span className="mx-1.5 text-subtle">/</span>
-              {domain}
-              <span className="mx-1.5 text-subtle">/</span>
-              M {params.lockFlight ? params.mach : params.flightMach}
-              <span className="mx-1.5 text-subtle">/</span>
-              tip @ 0
+              <p
+                data-testid="study-status"
+                className={`min-w-0 flex-1 truncate text-[11px] leading-snug ${solveLine.warn ? "text-warn" : "text-muted"}`}
+                title={solveLine.text}
+              >
+                {solveLine.text}
+              </p>
             </div>
-            <div className="absolute top-5 right-5 flex flex-wrap justify-end gap-1" role="group" aria-label="View modes">
+            {builtRes.error ? (
+              <p className="min-w-0 text-[11px] leading-snug text-warn">{builtRes.error} Showing the last valid shape.</p>
+            ) : null}
+            <div className="flex gap-1 overflow-x-auto" role="group" aria-label="View modes">
               {(
                 [
                   ["wireframe", "Wires", opts.wireframe],
@@ -434,36 +489,44 @@ export function Designer() {
                   type="button"
                   onClick={() => setOpts((o) => ({ ...o, [key]: !o[key] }))}
                   aria-pressed={on}
-                  className="hud-toggle rounded-sm"
+                  className="hud-toggle shrink-0 rounded-sm"
                 >
                   {label}
                 </button>
               ))}
             </div>
-            <div className="absolute bottom-5 left-5 flex flex-col gap-1.5">
-              <div className="flex max-w-[26rem] flex-wrap gap-1" role="group" aria-label="Surface colour mode">
-                {COLOR_MODES.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => setOpts((o) => ({ ...o, color: c.id }))}
-                    aria-pressed={opts.color === c.id}
-                    className="hud-toggle hud-toggle--sm rounded-sm"
-                  >
-                    {c.label}
-                  </button>
-                ))}
-              </div>
-              {opts.color !== "surface" ? (
-                <div className="flex h-2 w-40 overflow-hidden rounded-sm bg-bg" title={opts.color === "cp" ? "Cp" : "heat"}>
-                  <span className="jet-ramp-h h-full w-full" />
-                </div>
-              ) : null}
+          </div>
+          <div className="relative min-h-0 flex-1">
+            <PanelBoundary label="3D viewer" resetKey={built}>
+              <WaveriderViewer built={built} study={study} opts={opts} />
+            </PanelBoundary>
+            <ViewportChrome />
+          </div>
+          <div className="z-10 flex shrink-0 flex-col gap-2 border-t border-line bg-bg/95 px-3 py-2">
+            <div className="flex gap-1 overflow-x-auto" role="group" aria-label="Surface colour mode">
+              {COLOR_MODES.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setOpts((o) => ({ ...o, color: c.id }))}
+                  aria-pressed={opts.color === c.id}
+                  className="hud-toggle hud-toggle--sm shrink-0 rounded-sm"
+                >
+                  {c.label}
+                </button>
+              ))}
             </div>
-            <div className="hud-chip-info absolute right-5 bottom-5 flex items-end gap-5 px-4 py-2 max-sm:hidden">
-              <Readout label="L/D" value={fmt(study.aero.ld, 2)} />
-              <Readout label="CoP" value={fmt(study.aero.xCp / Math.max(params.length, 1e-8), 2)} unit="L" />
-              {hydrated ? <Readout size="sm" label="Solve" value={fmt(study.elapsedMs, 0)} unit="ms" /> : null}
+            <div className="flex items-end justify-between gap-3">
+              {opts.color !== "surface" ? (
+                <ScaleLegend study={study} color={opts.color} surfaces={built.mesh.surfaces} />
+              ) : (
+                <span className="text-[11px] text-subtle">Surface colour</span>
+              )}
+              <div className="hud-chip-info flex shrink-0 items-end gap-4 px-3 py-1.5">
+                <Readout label="L/D" value={fmt(study.aero.ld, 2)} />
+                <Readout size="sm" label="CoP" value={fmt(study.aero.xCp / Math.max(params.length, 1e-8), 2)} unit="L" />
+                {hydrated ? <Readout size="sm" label="Solve" value={fmt(study.elapsedMs, 0)} unit="ms" /> : null}
+              </div>
             </div>
           </div>
         </section>
@@ -662,16 +725,32 @@ export function Designer() {
                   />
                 </div>
                 {params.leBlunt !== false ? (
-                  <LiveField setDragging={setDragging}
-                    label="Nose / LE radius"
-                    value={params.leRadius}
-                    min={0.001 * params.length}
-                    max={Math.max(0.08, params.length * 0.04)}
-                    step={0.001}
-                    unit="m"
-                    digits={3}
-                    onChange={(leRadius) => patch({ leRadius, leBlunt: true })}
-                  />
+                  <>
+                    <LiveField setDragging={setDragging}
+                      label="Nose / LE radius"
+                      value={params.leRadius}
+                      min={0.001 * params.length}
+                      max={Math.max(0.08, params.length * 0.04)}
+                      step={0.001}
+                      unit="m"
+                      digits={3}
+                      onChange={(leRadius) => patch({ leRadius, leBlunt: true })}
+                    />
+                    <div>
+                      <span className="hud-label mb-2 block !text-muted">LE blend</span>
+                      <Seg
+                        value={params.leBlend ?? "circular"}
+                        onChange={(leBlend: "circular" | "g2") => patch({ leBlend, leBlunt: true })}
+                        options={[
+                          { id: "circular", label: "Circular" },
+                          { id: "g2", label: "G2" },
+                        ]}
+                      />
+                      <p className="mt-1.5 text-[11px] leading-snug text-subtle">
+                        Circular is the default fillet (G1 at the seam). G2 matches curvature too, but on a slender wedge the nose stays sharper than the radius you set.
+                      </p>
+                    </div>
+                  </>
                 ) : (
                   <p className="text-[11px] text-subtle">Sharp knife-edge — inviscid theory only. Pointwise needs a radius.</p>
                 )}
@@ -798,6 +877,8 @@ export function Designer() {
                   ok={q.watertight || ((params.family === "ramjet" || params.family === "scramjet") && params.flowThrough)}
                 />
                 <Stat k="Manifold" v={q.manifold ? "yes" : "check"} ok={q.manifold} />
+                <Stat k="Non-manifold edges" v={String(q.nonManifoldEdges)} ok={q.nonManifoldEdges === 0} />
+                <Stat k="Degenerate" v={String(q.skippedDegenerate)} ok={q.skippedDegenerate === 0} />
                 <div className="mt-4">
                   <span className="hud-label mb-2 block !text-muted">Export unit</span>
                   <Seg
@@ -848,7 +929,8 @@ export function Designer() {
                 </Button>
                 <p className="mt-3 text-[11px] leading-relaxed text-subtle">
                   <span className="font-medium text-fg">Pointwise:</span> export uses a dense CAD grid (at least 96×72)
-                  with healed trailing edges. Import the <span className="text-fg">binary STL</span> (File → Import → STL)
+                  with healed trailing edges. STL, IGES, and NURBS STEP are written in the export unit selected above
+                  (IGES global unit flag included). Import the <span className="text-fg">binary STL</span> (File → Import → STL)
                   or <span className="text-fg">IGES</span> type-128 / <span className="text-fg">NURBS STEP</span> /
                   Plot3D <span className="text-fg">.x</span>. Nose is a circular fillet. Do not import STEP as XYZ
                   points. Frame: most-forward point at <span className="text-fg">(0, 0, 0)</span>. Half-model: Y = 0 is

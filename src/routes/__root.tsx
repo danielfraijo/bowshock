@@ -16,7 +16,7 @@ export const Route = createRootRoute({
         content:
           "Cuspis — inverse-design waveriders with a blunt leading edge. Watertight STL, NURBS STEP, IGES, and Plot3D for Pointwise, SolidWorks, and FreeCAD.",
       },
-      { name: "theme-color", content: "#05080b" },
+      { name: "theme-color", content: "#070707" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },

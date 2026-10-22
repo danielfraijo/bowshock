@@ -131,4 +131,15 @@ describe("saved-parameter sanitiser", () => {
     assert.deepEqual(sanitizeParams(null), DEFAULT_PARAMS);
     assert.deepEqual(sanitizeParams("garbage"), DEFAULT_PARAMS);
   });
+  it("drops prototype keys, path characters and out-of-range grids", () => {
+    const polluted = JSON.parse('{"__proto__":{"admin":true},"constructor":{"x":1},"length":3,"nx":100000,"name":"../etc/passwd\\n","leBlend":"g2","extra":"nope"}');
+    const s = sanitizeParams(polluted);
+    assert.equal(s.length, 3);
+    assert.equal(s.nx, 160);
+    assert.equal(s.name, ".._etc_passwd");
+    assert.equal(s.leBlend, "g2");
+    assert.equal("extra" in s, false);
+    assert.equal("admin" in {}, false);
+    assert.equal(({} as { admin?: boolean }).admin, undefined);
+  });
 });
