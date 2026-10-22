@@ -439,9 +439,9 @@ export function DatcomBlock({ params }: { params: DesignParams }) {
                   <CartesianGrid stroke="currentColor" strokeOpacity={0.12} />
                   <XAxis dataKey="x" tick={{ fontSize: 10 }} stroke="currentColor" strokeOpacity={0.4} />
                   <YAxis tick={{ fontSize: 10 }} stroke="currentColor" strokeOpacity={0.4} width={40} />
-                  <Tooltip contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }} />
+                  <Tooltip contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="y" name={plotY} stroke="#ff2d2d" strokeWidth={1.5} dot={false} />
+                  <Line type="monotone" dataKey="y" name={plotY} stroke="#ff1744" strokeWidth={1.5} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

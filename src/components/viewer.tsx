@@ -5,15 +5,15 @@ import { SURFACE_ID } from "@/lib/waverider/types";
 import { gridPoint } from "@/lib/waverider/mesh";
 import type { StudyResult } from "@/lib/waverider/study";
 
-const SURFACE_GREY: Record<number, number> = {
-  [SURFACE_ID.upper]: 0xe8e8e8,
-  [SURFACE_ID.lower]: 0x5a5a5a,
-  [SURFACE_ID.base]: 0x2a2a2a,
-  [SURFACE_ID.leading]: 0xc8c8c8,
-  [SURFACE_ID.symmetry]: 0x7a7a7a,
-  [SURFACE_ID.inlet]: 0xb0b0b0,
-  [SURFACE_ID.nozzle]: 0x3a3a3a,
-  [SURFACE_ID.cowl]: 0x8a8a8a,
+const SURFACE_PAINT: Record<number, number> = {
+  [SURFACE_ID.upper]: 0xf7f7f7,
+  [SURFACE_ID.lower]: 0x3a0012,
+  [SURFACE_ID.base]: 0x140008,
+  [SURFACE_ID.leading]: 0xff1744,
+  [SURFACE_ID.symmetry]: 0xff6b84,
+  [SURFACE_ID.inlet]: 0xffffff,
+  [SURFACE_ID.nozzle]: 0x6b0020,
+  [SURFACE_ID.cowl]: 0xff8fa0,
 };
 
 type Three = typeof ThreeNS;
@@ -158,7 +158,7 @@ function geomFrom(THREE: Three, built: BuiltVehicle, study: StudyResult | null, 
   for (let t = 0; t < nt; t++) {
     const s = mesh.surfaces[t] ?? 0;
     if (src) jetRamp(c, mapT(valueAt(t)));
-    else c.setHex(SURFACE_GREY[s] ?? 0x888888);
+    else c.setHex(SURFACE_PAINT[s] ?? 0xff4466);
     for (let k = 0; k < 3; k++) {
       const i = mesh.indices[t * 3 + k];
       col[i * 3] += c.r;
@@ -236,7 +236,7 @@ export function WaveriderViewer({
       if (disposed || !wrapRef.current) return;
 
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x080808);
+      scene.background = new THREE.Color(0x000000);
 
       const camera = new THREE.PerspectiveCamera(34, 1, 0.05, 200);
       camera.up.set(0, 0, 1);
@@ -264,22 +264,22 @@ export function WaveriderViewer({
       controls.dampingFactor = 0.08;
       controls.target.set(2, 0, -0.15);
 
-      scene.add(new THREE.AmbientLight(0xffffff, 0.28));
-      const key = new THREE.DirectionalLight(0xffffff, 1.35);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.22));
+      const key = new THREE.DirectionalLight(0xffffff, 1.05);
       key.position.set(-5, 7, 11);
       scene.add(key);
-      const fill = new THREE.DirectionalLight(0xffffff, 0.32);
+      const fill = new THREE.DirectionalLight(0xff1744, 0.28);
       fill.position.set(7, -6, 2);
       scene.add(fill);
-      const rim = new THREE.DirectionalLight(0xffffff, 0.7);
+      const rim = new THREE.DirectionalLight(0xff1744, 1.35);
       rim.position.set(3, 1, -9);
       scene.add(rim);
-      scene.add(new THREE.HemisphereLight(0xd0d0d0, 0x1a1a1a, 0.4));
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x1a0008, 0.38));
 
       const bodyMat = new THREE.MeshStandardMaterial({
         vertexColors: true,
-        metalness: 0.04,
-        roughness: 0.62,
+        metalness: 0.72,
+        roughness: 0.2,
         flatShading: true,
         side: THREE.DoubleSide,
         polygonOffset: true,
@@ -293,9 +293,9 @@ export function WaveriderViewer({
         polygonOffsetFactor: 1,
         polygonOffsetUnits: 1,
       });
-      const featureMat = new THREE.LineBasicMaterial({ color: 0xf0f0f0, transparent: true, opacity: 0.55 });
-      const wireMat = new THREE.LineBasicMaterial({ color: 0xc8c8c8, transparent: true, opacity: 0.22 });
-      const shockMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.28 });
+      const featureMat = new THREE.LineBasicMaterial({ color: 0xff1744, transparent: true, opacity: 0.72 });
+      const wireMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3 });
+      const shockMat = new THREE.LineBasicMaterial({ color: 0xff1744, transparent: true, opacity: 0.55 });
 
       let body: ThreeNS.Mesh | null = null;
       let features: ThreeNS.LineSegments | null = null;
@@ -322,12 +322,12 @@ export function WaveriderViewer({
           const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(...to)]);
           g.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color })));
         };
-        add([s, 0, 0], 0xffffff);
-        add([0, s, 0], 0x8a8a8a);
-        add([0, 0, s], 0xc8c8c8);
+        add([s, 0, 0], 0xff1744);
+        add([0, s, 0], 0xffffff);
+        add([0, 0, s], 0xff8fa0);
         const sph = new THREE.Mesh(
           new THREE.SphereGeometry(Math.max(0.0035, 0.0032 * L), 12, 8),
-          new THREE.MeshBasicMaterial({ color: 0xf4f4f4 }),
+          new THREE.MeshBasicMaterial({ color: 0xffffff }),
         );
         g.add(sph);
         originGroup = g;
@@ -343,13 +343,13 @@ export function WaveriderViewer({
         const xCp = st?.aero.xCp ?? cg[0];
         const cgMesh = new THREE.Mesh(
           new THREE.OctahedronGeometry(r * 0.85, 0),
-          new THREE.MeshBasicMaterial({ color: 0xb8b8b8 }),
+          new THREE.MeshBasicMaterial({ color: 0xff1744 }),
         );
         cgMesh.position.set(cg[0], cg[1], cg[2]);
         g.add(cgMesh);
         const copMesh = new THREE.Mesh(
           new THREE.SphereGeometry(r * 1.15, 14, 10),
-          new THREE.MeshBasicMaterial({ color: 0xf4f4f4 }),
+          new THREE.MeshBasicMaterial({ color: 0xffffff }),
         );
         copMesh.position.set(xCp, 0, 0);
         g.add(copMesh);
@@ -365,7 +365,7 @@ export function WaveriderViewer({
         const vz = Math.sin(a) * Math.cos(be);
         const len = 0.38 * L;
         const origin = new THREE.Vector3(-0.08 * L - vx * len, -vy * len, -vz * len);
-        const arrow = new THREE.ArrowHelper(new THREE.Vector3(vx, vy, vz).normalize(), origin, len, 0xf0f0f0, 0.07 * L, 0.035 * L);
+        const arrow = new THREE.ArrowHelper(new THREE.Vector3(vx, vy, vz).normalize(), origin, len, 0xff1744, 0.07 * L, 0.035 * L);
         g.add(arrow);
         markerGroup = g;
         scene.add(g);
@@ -384,7 +384,12 @@ export function WaveriderViewer({
           (gridHelper.material as ThreeNS.Material).dispose();
         }
         const size = Math.max(L, span) * 2.4;
-        gridHelper = new THREE.GridHelper(size, 16, 0x3a3a3a, 0x1a1a1a);
+        gridHelper = new THREE.GridHelper(size, 16, 0xff1744, 0x3a0012);
+        const gridMats = Array.isArray(gridHelper.material) ? gridHelper.material : [gridHelper.material];
+        gridMats.forEach((m, i) => {
+          m.transparent = true;
+          m.opacity = i === 0 ? 0.7 : 0.4;
+        });
         gridHelper.rotateX(Math.PI / 2);
         gridHelper.position.z = 0;
         scene.add(gridHelper);

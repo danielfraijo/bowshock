@@ -170,14 +170,14 @@ export function StabBlock({ study }: { study: StudyResult }) {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={s.polar} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.08)" />
-            <XAxis dataKey="a" tick={{ fill: "#9a9a9a", fontSize: 10 }} />
-            <YAxis tick={{ fill: "#9a9a9a", fontSize: 10 }} />
+            <XAxis dataKey="a" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#111111", border: "1px solid #2c2c2c", fontSize: 11, color: "#f4f4f4" }}
+              contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
               labelFormatter={(v) => `α ${v}°`}
             />
-            <Line type="monotone" dataKey="cl" stroke="#f2f2f2" dot={false} strokeWidth={1.5} name="CL" />
-            <Line type="monotone" dataKey="cm" stroke="#8a8a8a" dot={false} strokeWidth={1.5} name="Cm" />
+            <Line type="monotone" dataKey="cl" stroke="#ff1744" dot={false} strokeWidth={1.5} name="CL" />
+            <Line type="monotone" dataKey="cm" stroke="#ffffff" dot={false} strokeWidth={1.5} name="Cm" />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -246,16 +246,16 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
       <div className="h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-            <XAxis dataKey="t" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} />
+            <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+            <XAxis dataKey="t" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }}
+              contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
               labelFormatter={(v) => `${Number(v).toFixed(2)} s`}
             />
-            <Line type="monotone" dataKey="alphaDeg" stroke="#ff2d2d" dot={false} strokeWidth={1.5} name="α°" />
-            <Line type="monotone" dataKey="qDeg" stroke="#f3efe6" dot={false} strokeWidth={1.25} name="q °/s" />
-            <Line type="monotone" dataKey="thetaDeg" stroke="#b9b3a8" dot={false} strokeWidth={1.1} name="θ°" />
+            <Line type="monotone" dataKey="alphaDeg" stroke="#ff1744" dot={false} strokeWidth={1.5} name="α°" />
+            <Line type="monotone" dataKey="qDeg" stroke="#ffffff" dot={false} strokeWidth={1.25} name="q °/s" />
+            <Line type="monotone" dataKey="thetaDeg" stroke="#ff8fa0" dot={false} strokeWidth={1.1} name="θ°" />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -263,16 +263,16 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
       <div className="h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis yAxisId="h" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis yAxisId="g" orientation="right" tick={{ fill: "#7a4545", fontSize: 10 }} />
+            <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+            <XAxis dataKey="xKm" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis yAxisId="h" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis yAxisId="g" orientation="right" tick={{ fill: "#ff8fa0", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }}
+              contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
               labelFormatter={(v) => `${Number(v).toFixed(2)} km`}
             />
-            <Line yAxisId="h" type="monotone" dataKey="hKm" stroke="#ff2d2d" dot={false} strokeWidth={1.5} name="h km" />
-            <Line yAxisId="g" type="monotone" dataKey="gammaDeg" stroke="#f3efe6" dot={false} strokeWidth={1.25} name="γ°" />
+            <Line yAxisId="h" type="monotone" dataKey="hKm" stroke="#ff1744" dot={false} strokeWidth={1.5} name="h km" />
+            <Line yAxisId="g" type="monotone" dataKey="gammaDeg" stroke="#ffffff" dot={false} strokeWidth={1.25} name="γ°" />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -280,16 +280,16 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
       <div className="h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={study.traj.samples.filter((_, i) => i % 2 === 0)} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis yAxisId="h" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis yAxisId="g" orientation="right" tick={{ fill: "#7a4545", fontSize: 10 }} />
+            <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+            <XAxis dataKey="xKm" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis yAxisId="h" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis yAxisId="g" orientation="right" tick={{ fill: "#ff8fa0", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }}
+              contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
               labelFormatter={(v) => `${Number(v).toFixed(0)} km`}
             />
-            <Line yAxisId="h" type="monotone" dataKey="hKm" stroke="#ff2d2d" dot={false} strokeWidth={1.5} name="h km" />
-            <Line yAxisId="g" type="monotone" dataKey="gammaDeg" stroke="#f3efe6" dot={false} strokeWidth={1.25} name="γ°" />
+            <Line yAxisId="h" type="monotone" dataKey="hKm" stroke="#ff1744" dot={false} strokeWidth={1.5} name="h km" />
+            <Line yAxisId="g" type="monotone" dataKey="gammaDeg" stroke="#ffffff" dot={false} strokeWidth={1.25} name="γ°" />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -472,16 +472,16 @@ export function TrajBlock({ study }: { study: StudyResult }) {
       <div className="mt-4 h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis yAxisId="h" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis yAxisId="g" orientation="right" tick={{ fill: "#7a4545", fontSize: 10 }} />
+            <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+            <XAxis dataKey="xKm" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis yAxisId="h" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis yAxisId="g" orientation="right" tick={{ fill: "#ff8fa0", fontSize: 10 }} />
             <Tooltip
-              contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }}
+              contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
               labelFormatter={(v) => `${Number(v).toFixed(0)} km`}
             />
-            <Line yAxisId="h" type="monotone" dataKey="hKm" stroke="#ff2d2d" dot={false} strokeWidth={1.5} name="h km" />
-            <Line yAxisId="g" type="monotone" dataKey="gammaDeg" stroke="#f3efe6" dot={false} strokeWidth={1.25} name="γ°" />
+            <Line yAxisId="h" type="monotone" dataKey="hKm" stroke="#ff1744" dot={false} strokeWidth={1.5} name="h km" />
+            <Line yAxisId="g" type="monotone" dataKey="gammaDeg" stroke="#ffffff" dot={false} strokeWidth={1.25} name="γ°" />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -491,16 +491,16 @@ export function TrajBlock({ study }: { study: StudyResult }) {
           <div className="h-36">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={study.six.samples.filter((_, i) => i % 2 === 0)} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-                <XAxis dataKey="t" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-                <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} />
+                <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+                <XAxis dataKey="t" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+                <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
                 <Tooltip
-                  contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }}
+                  contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
                   labelFormatter={(v) => `${Number(v).toFixed(2)} s`}
                 />
-                <Line type="monotone" dataKey="alphaDeg" stroke="#ff2d2d" dot={false} strokeWidth={1.5} name="α°" />
-                <Line type="monotone" dataKey="qDeg" stroke="#f3efe6" dot={false} strokeWidth={1.25} name="q °/s" />
-                <Line type="monotone" dataKey="hKm" stroke="#b9b3a8" dot={false} strokeWidth={1.1} name="h km" />
+                <Line type="monotone" dataKey="alphaDeg" stroke="#ff1744" dot={false} strokeWidth={1.5} name="α°" />
+                <Line type="monotone" dataKey="qDeg" stroke="#ffffff" dot={false} strokeWidth={1.25} name="q °/s" />
+                <Line type="monotone" dataKey="hKm" stroke="#ff8fa0" dot={false} strokeWidth={1.1} name="h km" />
               </LineChart>
             </ResponsiveContainer>
           </div>

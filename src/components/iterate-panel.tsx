@@ -87,7 +87,7 @@ function readList<T extends { params?: unknown; name?: unknown }>(key: string, l
 
 function chartTip(label: string) {
   return {
-    contentStyle: { background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" },
+    contentStyle: { background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" },
     labelFormatter: () => label,
   };
 }
@@ -379,14 +379,14 @@ export function IteratePanel({
               <div className="h-40">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={mergeSlices(db)} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                    <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-                    <XAxis dataKey="alpha" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-                    <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} />
+                    <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+                    <XAxis dataKey="alpha" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+                    <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
                     <Tooltip {...chartTip("α deg")} />
                     <Legend wrapperStyle={{ fontSize: 10 }} />
-                    <Line type="monotone" dataKey="cl" stroke="#ff2d2d" dot={false} name={`CL M${fmt(db.slices.design.mach, 1)}`} strokeWidth={1.5} />
-                    <Line type="monotone" dataKey="clOff" stroke="#f3efe6" dot={false} name={`CL M${fmt(db.slices.offDesign.mach, 1)}`} strokeWidth={1.25} />
-                    <Line type="monotone" dataKey="cm" stroke="#7a4545" dot={false} name="Cm design" strokeWidth={1.25} />
+                    <Line type="monotone" dataKey="cl" stroke="#ff1744" dot={false} name={`CL M${fmt(db.slices.design.mach, 1)}`} strokeWidth={1.5} />
+                    <Line type="monotone" dataKey="clOff" stroke="#ffffff" dot={false} name={`CL M${fmt(db.slices.offDesign.mach, 1)}`} strokeWidth={1.25} />
+                    <Line type="monotone" dataKey="cm" stroke="#ff8fa0" dot={false} name="Cm design" strokeWidth={1.25} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -489,11 +489,11 @@ export function IteratePanel({
             <div className="h-36">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={sweep.map((r) => ({ x: r.value, ld: r.metrics.ld, q: r.metrics.qStag }))}>
-                  <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-                  <XAxis dataKey="x" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-                  <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} />
+                  <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+                  <XAxis dataKey="x" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+                  <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
                   <Tooltip {...chartTip(String(sweepKey))} />
-                  <Line type="monotone" dataKey="ld" stroke="#ff2d2d" dot={false} name="L/D" strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="ld" stroke="#ff1744" dot={false} name="L/D" strokeWidth={1.5} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -554,11 +554,11 @@ export function IteratePanel({
               <div className="h-36">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={fly.samples}>
-                    <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-                    <XAxis dataKey="xKm" tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-                    <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} />
+                    <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+                    <XAxis dataKey="xKm" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+                    <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
                     <Tooltip {...chartTip("downrange km")} />
-                    <Line type="monotone" dataKey="hKm" stroke="#ff2d2d" dot={false} name="h km" strokeWidth={1.5} />
+                    <Line type="monotone" dataKey="hKm" stroke="#ff1744" dot={false} name="h km" strokeWidth={1.5} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>

@@ -10,47 +10,48 @@
 @import "@fontsource/jetbrains-mono/latin-700.css";
 
 /*
- * CUSPIS — black cockpit, one red line, warm white type.
- * Inspired by the 2026 Roadster screen (retro-futuristic, not a copy of it):
- * near-black field, a single red accent, large tabular numbers, almost no scan.
+ * CUSPIS — Roadster cockpit. Black field, white type, one neon red.
+ * Matrix rain lives on the vehicle viewport only, so the rails stay readable.
  * Amber is only for warnings, so a failure is not the same red as a selected control.
+ * The jet ramp (Heat / Cp) stays a quantitative scale, not chrome.
  */
 @theme {
   --font-sans: "Chakra Petch", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   --font-display: "Chakra Petch", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 
-  /* surfaces (darkest → lightest) */
-  --color-bg: #070707;
-  --color-surface: #101010;
-  --color-surface-2: #161616;
-  --color-surface-3: #1e1e1e;
+  /* surfaces: pure black with a red cast, never mid-grey */
+  --color-bg: #000000;
+  --color-surface: #080003;
+  --color-surface-2: #120006;
+  --color-surface-3: #1c000c;
 
-  /* text */
-  --color-fg: #f3efe6;
-  --color-muted: #b9b3a8;
-  --color-subtle: #8d877c;
-  --color-disabled: #6b665e;
+  /* text: white, then rose-white. Not beige. */
+  --color-fg: #ffffff;
+  --color-muted: #ffd4da;
+  --color-subtle: #e7a0ab;
+  --color-disabled: #8d4454;
 
-  /* lines: border = decorative hairline, line = control outline (>= 3:1 non-text) */
-  --color-border: #2a2424;
-  --color-line: #7a4545;
+  /* lines: hairline is deep red; control outline is neon */
+  --color-border: #3a0614;
+  --color-line: #ff1744;
 
-  /* the one accent + its dark-on-accent text */
-  --color-accent: #ff2d2d;
-  --color-accent-fg: #1a0606;
-  --color-accent-dim: #4a1414;
-  --color-steel: #b9b3a8;
+  /* the one accent + black-on-neon text */
+  --color-accent: #ff1744;
+  --color-accent-hot: #ff4d6d;
+  --color-accent-fg: #000000;
+  --color-accent-dim: #3a0012;
+  --color-steel: #ffffff;
 
   /* semantic */
-  --color-ok: #ff2d2d;
+  --color-ok: #ff1744;
   --color-warn: #ffb020;
-  --color-warn-dim: #4a3010;
+  --color-warn-dim: #3a2208;
 
-  /* chart series */
-  --color-chart-1: #ff2d2d;
-  --color-chart-2: #f3efe6;
-  --color-chart-3: #8d877c;
+  /* chart series: neon, white, rose */
+  --color-chart-1: #ff1744;
+  --color-chart-2: #ffffff;
+  --color-chart-3: #ff8fa0;
 
   --radius-xs: 1px;
   --radius-sm: 2px;
@@ -63,11 +64,11 @@
   color-scheme: dark;
   --cut: 8px; /* clipped-corner size */
   --cut-lg: 12px;
-  --accent-rgb: 255 45 45;
+  --accent-rgb: 255 23 68;
   --warn-rgb: 255 176 32;
-  --glow-sm: 0 0 6px rgb(var(--accent-rgb) / 0.35);
-  --glow-md: 0 0 14px rgb(var(--accent-rgb) / 0.4);
-  --scan-opacity: 0.012;
+  --glow-sm: 0 0 8px rgb(var(--accent-rgb) / 0.55);
+  --glow-md: 0 0 18px rgb(var(--accent-rgb) / 0.5);
+  --scan-opacity: 0.05;
   --ease-hud: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -246,7 +247,7 @@ textarea:disabled {
 select {
   appearance: none;
   padding-right: 1.4rem;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%23ff2d2d'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%23ff1744'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.4rem center;
 }
@@ -297,7 +298,7 @@ textarea {
   background: var(--color-surface);
 }
 
-/* ───────────────────────── global scanline + vignette (very faint) ───────────────────────── */
+/* ───────────────────────── global red scan + vignette ───────────────────────── */
 body::before {
   content: "";
   position: fixed;
@@ -305,8 +306,8 @@ body::before {
   z-index: 60;
   pointer-events: none;
   background:
-    repeating-linear-gradient(to bottom, rgb(0 0 0 / var(--scan-opacity)) 0 1px, transparent 1px 3px),
-    radial-gradient(ellipse at center, transparent 55%, rgb(0 0 0 / 0.35) 100%);
+    repeating-linear-gradient(to bottom, rgb(var(--accent-rgb) / var(--scan-opacity)) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 52%, rgb(0 0 0 / 0.5) 100%);
 }
 
 @layer components {
@@ -428,8 +429,50 @@ body::before {
   /* ── lab viewport frame ── */
   .hud-viewport {
     background:
-      radial-gradient(ellipse at 50% 45%, rgb(var(--accent-rgb) / 0.04), transparent 65%),
+      radial-gradient(ellipse at 50% 42%, rgb(var(--accent-rgb) / 0.16), transparent 58%),
       var(--color-bg);
+  }
+  /* Glyph rain over the vehicle only. Screen-blend keeps the white skin readable. */
+  .hud-matrix {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 8px;
+    overflow: hidden;
+    pointer-events: none;
+    mix-blend-mode: screen;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.15;
+    color: var(--color-accent);
+    text-shadow: 0 0 8px rgb(var(--accent-rgb) / 0.7);
+  }
+  .hud-matrix > span {
+    display: block;
+    writing-mode: vertical-rl;
+    text-orientation: upright;
+    letter-spacing: 0.12em;
+    white-space: nowrap;
+    animation: matrix-fall 12s linear infinite;
+  }
+  .hud-matrix > span > b {
+    color: var(--color-fg);
+    font-weight: 700;
+    text-shadow: 0 0 8px var(--color-fg);
+  }
+  .hud-matrix > span:nth-child(odd) {
+    animation-duration: 9s;
+  }
+  .hud-matrix > span:nth-child(3n) {
+    animation-duration: 15s;
+    animation-delay: -5s;
+    opacity: 0.62;
+  }
+  .hud-matrix > span:nth-child(4n) {
+    animation-delay: -8s;
   }
   .hud-frame {
     position: absolute;
@@ -512,7 +555,7 @@ body::before {
 
   .hud-chip-info {
     border: 1px solid var(--color-line);
-    background: rgb(5 8 11 / 0.82);
+    background: rgb(8 0 3 / 0.88);
     backdrop-filter: blur(3px);
     clip-path: none;
   }
@@ -535,7 +578,7 @@ body::before {
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--color-muted);
-    background: rgb(5 8 11 / 0.82);
+    background: rgb(8 0 3 / 0.88);
     box-shadow: inset 0 0 0 1px var(--color-line);
   }
   .hud-toggle:hover {
@@ -684,7 +727,7 @@ body::before {
     box-shadow: inset 0 0 14px rgb(255 255 255 / 0.25);
   }
   .hud-btn-primary:not(:disabled):hover {
-    background: #ff5c52;
+    background: var(--color-accent-hot);
     box-shadow: inset 0 0 18px rgb(255 255 255 / 0.5);
   }
 
@@ -846,7 +889,7 @@ body::before {
   dialog::backdrop,
   [data-radix-dialog-overlay],
   [data-state][class*="overlay"] {
-    background: rgb(2 6 9 / 0.78);
+    background: rgb(0 0 0 / 0.82);
     backdrop-filter: blur(2px);
   }
 }
@@ -872,20 +915,11 @@ body::before {
   font-size: 10px;
   font-family: var(--font-mono);
 }
-/* the three hard-coded greys used by analysis-panel series → chart tokens (different dash patterns, not colour alone) */
-.recharts-wrapper [stroke="#f2f2f2"] {
-  stroke: var(--color-chart-1);
-}
-.recharts-wrapper [stroke="#8a8a8a"] {
-  stroke: var(--color-chart-2);
-}
-.recharts-wrapper [stroke="#5a5a5a"] {
-  stroke: var(--color-chart-3);
-}
-.recharts-wrapper [stroke="#8a8a8a"].recharts-line-curve {
+/* second and third series stay distinct without a grey */
+.recharts-wrapper [stroke="#ffffff"].recharts-line-curve {
   stroke-dasharray: 6 3;
 }
-.recharts-wrapper [stroke="#5a5a5a"].recharts-line-curve {
+.recharts-wrapper [stroke="#ff8fa0"].recharts-line-curve {
   stroke-dasharray: 2 3;
 }
 .recharts-legend-item-text {
@@ -925,6 +959,14 @@ body::before {
   background: linear-gradient(to right, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
 }
 
+@keyframes matrix-fall {
+  from {
+    transform: translateY(-42%);
+  }
+  to {
+    transform: translateY(8%);
+  }
+}
 @keyframes hud-sweep {
   from {
     transform: translateY(0);
@@ -954,7 +996,8 @@ body::before {
     scroll-behavior: auto !important;
   }
   .hud-scan::after,
-  .hud-led {
+  .hud-led,
+  .hud-matrix > span {
     animation: none !important;
   }
   .hud-scan::after {
@@ -965,7 +1008,8 @@ body::before {
 /* High-contrast / forced colours: fall back to system colours so nothing depends on glow. */
 @media (forced-colors: active) {
   body::before,
-  .hud-scan {
+  .hud-scan,
+  .hud-matrix {
     display: none;
   }
   button,
