@@ -63,7 +63,7 @@ The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py
 
 7. **Iterate** — the vehicle-level loop, on top of the same panel kernel:
    - **Aero DB** builds a Mach / α / β / δ table (design Mach and off-design Mach in one run), static derivatives from the table, dynamic derivatives from body-rate perturbations, and an optional symmetry-plane Euler slice at β = 0. Export CSV, JSON, or a Simulink n-D lookup (`.m`).
-   - **Optimize** is an NSGA-II search (L/D up, stagnation heat down, static margin ≥ 0), plus a one-variable sweep and a central-difference sensitivity. `scripts/cuspis-eval.ts` is the same evaluation for OpenMDAO or a Python subprocess.
+   - **Optimize** is an NSGA-II search (L/D up, stagnation heat down, static margin ≥ 0), plus a one-variable sweep and a central-difference sensitivity. `scripts/cuspis-eval.ts` is the same evaluation for OpenMDAO or a Python subprocess. CMA-ES, DE, Nelder–Mead, pattern search, LHS/factorial DOE and Morris/Sobol sensitivity live alongside it; see [docs/optimize.md](docs/optimize.md).
    - **Fly** is a nonlinear 6DOF on a small aero table with boost-glide, constant-q, skip, or terminal guidance, PID or nonlinear dynamic inversion, a rate-limited actuator, and optional sensor noise.
    - **TPS** sizes insulation (and an ablator if the peak exceeds reradiation) and rolls the mass, fuel, payload, and CG back into the design.
    - **Compare** stores variants and a snapshot history in the browser.
