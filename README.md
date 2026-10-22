@@ -59,7 +59,16 @@ Stop the server with `Ctrl+C`.
 5. **Checks** — closed-form kernel tests (Rankine–Hugoniot, isentropic A/A*, Prandtl–Meyer, θ-β-M, Taylor–Maccoll, US76, Kantrowitz, γ_vib, mean free path, Fay–Riddell, Billig, Lees, Millikan–White, Waltrup–Billig). All should read PASS.
 6. **CAD** — download binary STL (Pointwise auto-mesh), Plot3D `.x` (3-D formatted), IGES, sewn NURBS STEP (SolidWorks / FreeCAD / Pointwise Database), or the **full CFD kit (.zip)**.
 
-The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py`, `bowshock_aero.c`, `bowshock_kernel.c`, and `bowshock.cpp`.
+The kit zip contains the mesh, `design.json`, `analysis.json`, `waverider_cad.py`, `bowshock_aero.c`, `bowshock_kernel.c`, `bowshock.cpp`, a SU2 `.cfg`, an OpenFOAM `rhoCentralFoam` skeleton, `cuspis_deck.json`, and `cuspis_6dof.py`.
+
+7. **Iterate** — the vehicle-level loop, on top of the same panel kernel:
+   - **Aero DB** builds a Mach / α / β / δ table (design Mach and off-design Mach in one run), static derivatives from the table, dynamic derivatives from body-rate perturbations, and an optional symmetry-plane Euler slice at β = 0. Export CSV, JSON, or a Simulink n-D lookup (`.m`).
+   - **Optimize** is an NSGA-II search (L/D up, stagnation heat down, static margin ≥ 0), plus a one-variable sweep and a central-difference sensitivity. `scripts/cuspis-eval.ts` is the same evaluation for OpenMDAO or a Python subprocess.
+   - **Fly** is a nonlinear 6DOF on a small aero table with boost-glide, constant-q, skip, or terminal guidance, PID or nonlinear dynamic inversion, a rate-limited actuator, and optional sensor noise.
+   - **TPS** sizes insulation (and an ablator if the peak exceeds reradiation) and rolls the mass, fuel, payload, and CG back into the design.
+   - **Compare** stores variants and a snapshot history in the browser.
+
+New families on the External list — capsule, boost-glide, missile, stack — are parametric outer mold lines, not inverse waveriders. Fins are faired ridges so the skin stays watertight. A stack does not stage. Limitations are written on the Geom tab and in the export headers.
 
 The leading edge is a circular G1 fillet in the local osculating plane. Tips keep a minimum chord so they do not collapse to a pole. Closed families should read **watertight / manifold** on the CAD tab.
 
@@ -79,6 +88,10 @@ The leading edge is a circular G1 fillet in the local osculating plane. Tips kee
 | Wedge-cone | Mixed wedge + cone |
 | Star | n-fold caret star |
 | Lift body | HL-20 / HTV-class lifting body |
+| Capsule | Sphere-cone. Span is the base diameter. Sref = πRb² |
+| Boost-glide | Parametric planform loft, not an inverse waverider |
+| Missile | Tangent ogive, cylinder, boattail, faired fin ridges |
+| Stack | Approximate multi-stage OML. Stages do not separate |
 
 **Internal flow**
 

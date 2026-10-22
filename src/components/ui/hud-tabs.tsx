@@ -13,6 +13,7 @@ const GROUPS: { id: string; label: string; hint: string; tabs: string[] }[] = [
   { id: "analyze", label: "Analyze", hint: "Aero, heating, frontier, stability, internal flow", tabs: ["aero", "heat", "frontier", "stab", "cycle", "shocks"] },
   { id: "dynamics", label: "Dynamics", hint: "6-DOF and trajectory", tabs: ["sixdof", "traj"] },
   { id: "verify", label: "Verify", hint: "DATCOM and design checks", tabs: ["datcom", "checks"] },
+  { id: "iterate", label: "Iterate", hint: "Aero database, optimizer, closed-loop flight, TPS", tabs: ["iterate"] },
   { id: "output", label: "Output", hint: "Data pack and CAD export", tabs: ["data", "cad"] },
 ];
 

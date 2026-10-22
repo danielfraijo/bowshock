@@ -20,6 +20,7 @@ import { repairAftIfDefective } from "./mesh-repair"; // [mesh-refinement]
 import { clusterFractionsToLE } from "./refinement"; // [mesh-refinement]
 import { curvatureStations } from "./curvature"; // [mesh-refinement]
 import { liftOml, liftXs } from "./liftbody-oml";
+import { buildClassVehicle, type ClassVehicle } from "./vehicles";
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -1059,8 +1060,16 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   let grids: SurfaceGrid[] = [];
   let shock: SurfaceGrid[] = [];
   let noseMeta: { noseR?: number; noseReq?: number } | null = null;
+  let classBuild: ClassVehicle | null = null;
 
-  if (params.family === "star") {
+  classBuild = buildClassVehicle(params);
+  if (classBuild) {
+    mesh = classBuild.mesh;
+    grids = classBuild.grids;
+    shock = classBuild.shock;
+    skipped = classBuild.skipped;
+    notes.push(...classBuild.notes);
+  } else if (params.family === "star") {
     const star = buildStar(params);
     mesh = star.mesh;
     grids = star.grids;
@@ -1221,11 +1230,12 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
   if (params.lid === "bottom") notes.push("Lid on the belly — compression surface is the upper face.");
 
   const pArea =
-    params.family === "star"
+    classBuild?.sRef ??
+    (params.family === "star"
       ? 0.5 * params.span * params.length * 0.55
       : params.family === "ramjet" || params.family === "scramjet"
         ? params.span * params.length
-        : planformAreaOf(grids[0]);
+        : planformAreaOf(grids[0]));
   const aero = aeroFrom(
     params,
     quality.volume,

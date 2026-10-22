@@ -44,6 +44,9 @@ import { publishedChecks } from "./validate-published";
 import { allenEggers } from "./flight-science";
 import { presetSettings } from "./refinement";
 import { stripCase } from "./refinement-study";
+import { axisBreaks } from "./aerodb";
+import { actuatorStep } from "./guidance";
+import { sizeTps } from "./tps";
 
 export interface Check {
   id: string;
@@ -484,8 +487,79 @@ export function runValidation(): Check[] {
 
   out.push(...extendedChecks());
   out.push(...publishedChecks());
+  out.push(...missionChecks());
 
   validationCache = out;
+  return out;
+}
+
+/** Fast checks for the aero-database, TPS, and actuator models. No mesh. */
+function missionChecks(): Check[] {
+  const axis = axisBreaks(0, 10, 5, [10]);
+  const out: Check[] = [];
+  out.push(
+    chk(
+      "aerodb-axis",
+      "external",
+      "Aero-database axis includes both endpoints",
+      "breaks 0, 5, 10",
+      10,
+      axis[axis.length - 1],
+      "axisBreaks is inclusive. The table always contains the design Mach you asked for.",
+      1e-9,
+    ),
+  );
+  out.push(
+    chk(
+      "aerodb-axis-n",
+      "external",
+      "Aero-database axis step count",
+      "n = floor(span/step)+1 = 3",
+      3,
+      axis.length,
+      "0, 5, 10. A duplicate forced endpoint must not add a row.",
+      1e-12,
+    ),
+  );
+  const tps = sizeTps({ qWcm2: 1, areaM2: 2, timeS: 20, material: "pica" });
+  const deltaInsul = (0.08 * (1800 - 300)) / 5000;
+  out.push(
+    chk(
+      "tps-insul",
+      "external",
+      "PICA insulation thickness at 1 W/cm²",
+      "δ = k (Tmax−300) / q_back, q_back = 0.5 W/cm²",
+      deltaInsul,
+      tps.thickness,
+      "Screening insulation. Not a FIAT/CMA ablation solution. 1 W/cm² is under the reradiation limit, so no ablator is added.",
+      1e-9,
+    ),
+  );
+  out.push(
+    chk(
+      "tps-mass",
+      "external",
+      "TPS mass is ρ δ A",
+      "240 kg/m³ × δ × 2 m²",
+      240 * deltaInsul * 2,
+      tps.mass,
+      "Mass uses the sized thickness and the windward area you pass in.",
+      1e-6,
+    ),
+  );
+  const step = actuatorStep(0, 10, 0.1, 0.01, 20, 30);
+  out.push(
+    chk(
+      "actuator-rate",
+      "external",
+      "Actuator rate limit",
+      "Δδ = rate × dt = 2° when the lag would jump 100°",
+      2,
+      step,
+      "First-order lag, then a hard rate limit, then a deflection stop. τ = 0.01 s, rate = 20°/s, dt = 0.1 s.",
+      1e-9,
+    ),
+  );
   return out;
 }
 

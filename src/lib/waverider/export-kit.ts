@@ -8,6 +8,7 @@ import { unitScale } from "./math";
 import { designJson, pythonRunner, readmeFor } from "./kit-text";
 import { buildZip, utf8 } from "./zip";
 import { packFiles, type DataPack } from "./datapack";
+import { genericDeck, openFoamFiles, python6dofSource, su2Config } from "./export-cfd";
 
 export function scaledClone(built: BuiltVehicle) {
   const s = unitScale(built.params.unit);
@@ -140,6 +141,10 @@ export async function cfdZip(
   if (analysis) files.push({ name: `${n}/analysis.json`, data: utf8(analysis) });
   // Data package: one CSV per table + datapack.json + README data dictionary (src/lib/waverider/datapack.ts)
   if (dataPack) for (const f of packFiles(dataPack, `${n}/data`)) files.push({ name: f.name, data: utf8(f.content) });
+  files.push({ name: `${n}/cuspis.su2.cfg`, data: utf8(su2Config(built)) });
+  files.push({ name: `${n}/cuspis_deck.json`, data: utf8(genericDeck(built)) });
+  files.push({ name: `${n}/cuspis_6dof.py`, data: utf8(python6dofSource()) });
+  for (const ofile of openFoamFiles(built)) files.push({ name: `${n}/${ofile.name}`, data: utf8(ofile.content) });
   return buildZip(files);
 }
 

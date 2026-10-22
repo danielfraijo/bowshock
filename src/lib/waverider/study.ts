@@ -58,6 +58,22 @@ const LIT: Record<string, LitBand> = {
     ld: [1.2, 3.2],
     note: "HL-20 / HTV-class: L/D ~ 1.3–2.5 hypersonic (NASA).",
   },
+  capsule: {
+    ld: [0.2, 1.2],
+    note: "Sphere-cone capsules are drag devices. Apollo hypersonic L/D is about 0.3–0.4 with an offset CG; a symmetric cone is lower.",
+  },
+  boostglide: {
+    ld: [1.5, 4.5],
+    note: "HTV-2 class boost-glide L/D is roughly 2–4. This loft is parametric, not a waverider optimum.",
+  },
+  missile: {
+    ld: [0.4, 2.5],
+    note: "Axisymmetric missiles live on normal force, not L/D. Fins are faired ridges.",
+  },
+  multistage: {
+    ld: [0.3, 1.5],
+    note: "A stack OML is a booster screen. Range here is not a staging simulation.",
+  },
   ramjet: {
     ld: [1.5, 4.0],
     note: "Ramjet OML is a propulsion body; use the Cycle tab for Isp / F.",

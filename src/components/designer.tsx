@@ -18,6 +18,7 @@ import { RefinementControls } from "@/components/refinement-controls"; // [mesh-
 import { AeroBlock, ChecksBlock, CycleBlock, FrontierBlock, HeatBlock, MassBlock, ShocksBlock, SixDofBlock, StabBlock, TrajBlock } from "@/components/analysis-panel";
 import { DataPanel } from "@/components/data-panel";
 import { DatcomBlock } from "@/components/datcom-panel";
+import { IteratePanel } from "@/components/iterate-panel";
 import { HudTabs } from "@/components/ui/hud-tabs"; // [ui-redesign]
 import { Readout, ViewportChrome } from "@/components/ui/hud"; // [ui-redesign]
 import { computeDataPackAsync } from "@/lib/waverider/datapack";
@@ -49,8 +50,9 @@ import {
   type WaveriderFamily,
 } from "@/lib/waverider/types";
 import { downloadBlob } from "@/lib/utils";
+import { classNote, isClassFamily } from "@/lib/waverider/vehicles";
 
-type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "data" | "cad" | "datcom";
+type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "data" | "cad" | "datcom" | "iterate";
 
 function LiveField(
   props: Omit<React.ComponentProps<typeof NumberField>, "onDragStart" | "onDragEnd"> & {
@@ -72,6 +74,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
       { id: "sixdof", label: "6DOF" },
       { id: "datcom", label: "DATCOM" },
       { id: "checks", label: "Checks" },
+      { id: "iterate", label: "Iterate" },
       { id: "data", label: "Data" },
       { id: "cad", label: "CAD" },
     ];
@@ -87,6 +90,7 @@ function tabsFor(domain: FlowDomain): { id: Tab; label: string }[] {
     { id: "datcom", label: "DATCOM" },
     { id: "traj", label: "Traj" },
     { id: "checks", label: "Checks" },
+    { id: "iterate", label: "Iterate" },
     { id: "data", label: "Data" },
     { id: "cad", label: "CAD" },
   ];
@@ -541,11 +545,14 @@ export function Designer() {
             {tab === "geom" ? (
               <div className="space-y-4">
                 <p className="hidden text-sm leading-relaxed text-muted lg:block">{fam.blurb}</p>
-                <LiveField setDragging={setDragging} label="Design Mach" value={params.mach} min={3} max={16} step={0.1} onChange={(mach) => patch({ mach })} digits={1} />
+                {classNote(params.family) ? <p className="text-xs leading-relaxed text-subtle">{classNote(params.family)}</p> : null}
+                <LiveField setDragging={setDragging} label="Design Mach" value={params.mach} min={3} max={26} step={0.1} onChange={(mach) => patch({ mach })} digits={1} />
                 <LiveField setDragging={setDragging} label="Length" value={params.length} min={0.4} max={20} step={0.1} unit="m" onChange={(length) => patch({ length })} />
-                <LiveField setDragging={setDragging} label="Span" value={params.span} min={0.15} max={12} step={0.05} unit="m" onChange={(span) => patch({ span })} />
-                <LiveField setDragging={setDragging} label="Height" value={params.height} min={0.05} max={4} step={0.01} unit="m" onChange={(height) => patch({ height })} />
-                {domain === "external" || params.family === "integrated" || params.family === "inward" || params.family === "busemann" ? (
+                <LiveField setDragging={setDragging} label={params.family === "capsule" || params.family === "missile" || params.family === "multistage" ? "Diameter" : "Span"} value={params.span} min={0.15} max={12} step={0.05} unit="m" onChange={(span) => patch({ span })} />
+                {params.family !== "capsule" ? (
+                  <LiveField setDragging={setDragging} label="Height" value={params.height} min={0.05} max={4} step={0.01} unit="m" onChange={(height) => patch({ height })} />
+                ) : null}
+                {(domain === "external" || params.family === "integrated" || params.family === "inward" || params.family === "busemann") && !isClassFamily(params.family) ? (
                   <>
                 <div>
                   <span className="hud-label mb-2 block !text-muted">Flat lid</span>
@@ -606,6 +613,19 @@ export function Designer() {
                 />
                   </>
                 ) : null}
+                {params.family === "boostglide" ? (
+                  <>
+                    <LiveField setDragging={setDragging} label="Dihedral" value={params.dihedralDeg} min={-8} max={18} step={0.5} unit="deg" digits={1} onChange={(dihedralDeg) => patch({ dihedralDeg })} />
+                    <LiveField setDragging={setDragging} label="Camber" value={params.camber} min={-0.25} max={0.4} step={0.01} onChange={(camber) => patch({ camber })} />
+                    <LiveField setDragging={setDragging} label="Elevon" value={params.elevonDeg} min={-12} max={12} step={0.25} unit="deg" digits={1} onChange={(elevonDeg) => patch({ elevonDeg })} />
+                  </>
+                ) : null}
+                {params.family === "missile" || params.family === "multistage" ? (
+                  <>
+                    <LiveField setDragging={setDragging} label="Elevon" value={params.elevonDeg} min={-12} max={12} step={0.25} unit="deg" digits={1} onChange={(elevonDeg) => patch({ elevonDeg })} />
+                    <LiveField setDragging={setDragging} label="Fin height / R" value={params.finHeight} min={0} max={1.4} step={0.05} onChange={(finHeight) => patch({ finHeight })} />
+                  </>
+                ) : null}
                 <LiveField setDragging={setDragging} label="γ gas" value={params.gamma} min={1.2} max={1.67} step={0.01} onChange={(gamma) => patch({ gamma })} />
                 {params.family === "caret" || params.family === "star" ? (
                   <LiveField setDragging={setDragging} label="Shock β" value={params.shockDeg} min={8} max={40} step={0.1} unit="deg" onChange={(shockDeg) => patch({ shockDeg })} digits={1} />
@@ -616,15 +636,19 @@ export function Designer() {
                     <LiveField setDragging={setDragging} label="Capture cut" value={params.captureFrac} min={0.15} max={0.8} step={0.01} onChange={(captureFrac) => patch({ captureFrac })} />
                   </>
                 ) : null}
+                {params.family === "capsule" ? (
+                  <LiveField setDragging={setDragging} label="Cone half-angle" value={params.coneDeg} min={8} max={45} step={0.5} unit="deg" onChange={(coneDeg) => patch({ coneDeg })} digits={1} />
+                ) : null}
                 {params.family === "osculating" ||
                 params.family === "wedgecone" ||
                 params.family === "viscopt" ||
                 params.family === "inward" ||
                 params.family === "elliptic" ||
                 params.family === "integrated" ||
-                params.family === "liftbody" ? (
+                params.family === "liftbody" ||
+                params.family === "boostglide" ? (
                   <>
-                    {params.family !== "liftbody" && params.family !== "elliptic" ? (
+                    {params.family !== "liftbody" && params.family !== "elliptic" && params.family !== "boostglide" ? (
                       <LiveField setDragging={setDragging} label="Superellipse n" value={params.superN} min={1} max={6} step={0.05} onChange={(superN) => patch({ superN })} />
                     ) : null}
                     <div>
@@ -651,8 +675,14 @@ export function Designer() {
                 {params.family === "wedgecone" || params.family === "inward" || params.family === "integrated" ? (
                   <LiveField setDragging={setDragging} label="Center width" value={params.wedgeFrac} min={0.1} max={0.85} step={0.01} onChange={(wedgeFrac) => patch({ wedgeFrac })} />
                 ) : null}
-                {params.family === "star" ? (
+                {params.family === "star" || params.family === "missile" || params.family === "multistage" ? (
                   <LiveField setDragging={setDragging} label="Fins" value={params.fins} min={3} max={8} step={1} digits={0} onChange={(fins) => patch({ fins: Math.round(fins) })} />
+                ) : null}
+                {params.family === "missile" ? (
+                  <LiveField setDragging={setDragging} label="Nose fraction" value={params.wedgeFrac} min={0.15} max={0.6} step={0.01} onChange={(wedgeFrac) => patch({ wedgeFrac })} />
+                ) : null}
+                {params.family === "multistage" ? (
+                  <LiveField setDragging={setDragging} label="Stages" value={params.nRamps} min={2} max={4} step={1} digits={0} onChange={(nRamps) => patch({ nRamps: Math.round(nRamps) })} />
                 ) : null}
                 {params.family === "ramjet" || params.family === "scramjet" || params.family === "integrated" ? (
                   <>
@@ -712,6 +742,7 @@ export function Designer() {
                   />
                 </div>
                 <RefinementControls params={params} patch={patch} setDragging={setDragging} />
+                {!isClassFamily(params.family) ? (
                 <div className="flex items-center justify-between gap-3 pt-1">
                   <span className="hud-label !text-muted">Rounded leading edge</span>
                   <Switch
@@ -724,7 +755,20 @@ export function Designer() {
                     }
                   />
                 </div>
-                {params.leBlunt !== false ? (
+                ) : null}
+                {params.family === "capsule" || params.family === "boostglide" ? (
+                  <LiveField setDragging={setDragging}
+                    label={params.family === "capsule" ? "Nose radius" : "LE radius"}
+                    value={params.leRadius}
+                    min={0.001 * params.length}
+                    max={params.family === "capsule" ? Math.max(0.2, params.span * 0.45) : Math.max(0.08, params.length * 0.04)}
+                    step={0.001}
+                    unit="m"
+                    digits={3}
+                    onChange={(leRadius) => patch({ leRadius, leBlunt: true })}
+                  />
+                ) : null}
+                {params.leBlunt !== false && !isClassFamily(params.family) ? (
                   <>
                     <LiveField setDragging={setDragging}
                       label="Nose / LE radius"
@@ -751,13 +795,17 @@ export function Designer() {
                       </p>
                     </div>
                   </>
-                ) : (
+                ) : !isClassFamily(params.family) ? (
                   <p className="text-[11px] text-subtle">Sharp knife-edge — inviscid theory only. Pointwise needs a radius.</p>
-                )}
+                ) : null}
+                {!isClassFamily(params.family) ? (
                 <div className="flex items-center justify-between gap-3 pt-1">
                   <span className="hud-label !text-muted">Half-model (Y≥0)</span>
                   <Switch checked={params.halfModel} onCheckedChange={(halfModel) => patch({ halfModel })} />
                 </div>
+                ) : (
+                  <p className="text-[11px] leading-snug text-subtle">Full OML only. Half-model and the waverider lid do not apply to this family.</p>
+                )}
               </div>
             ) : null}
 
@@ -853,6 +901,7 @@ export function Designer() {
 
             {tab === "shocks" ? <ShocksBlock study={study} /> : null}
             {tab === "checks" ? <ChecksBlock study={study} /> : null}
+            {tab === "iterate" ? <IteratePanel params={params} built={studyBuilt} onParams={setParams} /> : null}
             {tab === "data" ? <DataPanel params={params} paused={dragging} /> : null}
 
             {tab === "traj" ? (

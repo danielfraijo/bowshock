@@ -12,6 +12,10 @@ export type WaveriderFamily =
   | "star"
   | "wedgecone"
   | "liftbody"
+  | "capsule"
+  | "boostglide"
+  | "missile"
+  | "multistage"
   | "ramjet"
   | "scramjet"
   | "integrated";
@@ -269,6 +273,30 @@ export const FAMILY_META: Record<
     generating: "Paraboloid nose, elliptic section, monotone slope",
     domain: "external",
   },
+  capsule: {
+    label: "Capsule",
+    blurb: "Sphere-cone blunt body. Base area is the reference.",
+    generating: "Sphere-cone of revolution",
+    domain: "external",
+  },
+  boostglide: {
+    label: "Boost-glide",
+    blurb: "Parametric planform loft. Cranked, delta, or spatular.",
+    generating: "Direct planform × elliptic section",
+    domain: "external",
+  },
+  missile: {
+    label: "Missile",
+    blurb: "Ogive-cylinder-boattail with faired fin ridges.",
+    generating: "Tangent ogive + fin ridges",
+    domain: "external",
+  },
+  multistage: {
+    label: "Stack",
+    blurb: "Approximate multi-stage outer mold line. Stages do not separate.",
+    generating: "Stacked frustums",
+    domain: "external",
+  },
   ramjet: {
     label: "Ramjet",
     blurb: "2-D ramjet duct: ramps, isolator NS, Rayleigh heat, nozzle.",
@@ -310,6 +338,10 @@ export const EXTERNAL_FAMILIES: WaveriderFamily[] = [
   "wedgecone",
   "star",
   "liftbody",
+  "capsule",
+  "boostglide",
+  "missile",
+  "multistage",
 ];
 
 export const INTERNAL_FAMILIES: WaveriderFamily[] = ["ramjet", "scramjet", "busemann", "inward", "integrated"];
