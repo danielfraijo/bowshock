@@ -30,7 +30,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test:datcom": "node scripts/datcom-run-tests.mjs",
-    "datcom": "node scripts/datcom-run.mjs"
+    "datcom": "node scripts/datcom-run.mjs",
+    "test:project": "node --import ./scripts/ts-register.mjs --test src/lib/project/project.test.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",
