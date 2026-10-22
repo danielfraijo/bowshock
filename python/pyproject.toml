@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bowshock"
+version = "0.1.0"
+description = "Python access to Bowshock headless runs: drive npm run aerodb, load aero databases and batch outputs into numpy/pandas, interpolate for OpenMDAO."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21", "pandas>=1.3"]
+
+[project.optional-dependencies]
+openmdao = ["openmdao>=3.20"]
+test = ["pytest>=7"]
+
+[project.scripts]
+bowshock-aerodb = "bowshock.cli:main"
+
+[tool.setuptools]
+packages = ["bowshock"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

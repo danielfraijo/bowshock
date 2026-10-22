@@ -32,6 +32,7 @@ bowshock_aero
 bowshock_aero.exe
 bowshock
 bowshock.exe
+!/python/bowshock/
 *.o
 
 # env / OS / editor

@@ -1,0 +1,5 @@
+*.egg-info/
+__main___out/
+*_out/reports/
+.pytest_cache/
+build/
