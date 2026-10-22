@@ -46,7 +46,7 @@ import { presetSettings } from "./refinement";
 import { stripCase } from "./refinement-study";
 import { axisBreaks, perRad } from "./aerodb";
 import { actuatorStep } from "./guidance";
-import { sizeTps } from "./tps";
+import { TPS_LIB, sizeTps } from "./tps";
 
 export interface Check {
   id: string;
@@ -522,7 +522,7 @@ function missionChecks(): Check[] {
     ),
   );
   const tps = sizeTps({ qWcm2: 1, areaM2: 2, timeS: 20, material: "pica" });
-  const deltaInsul = (0.08 * (1800 - 300)) / 5000;
+  const deltaInsul = (TPS_LIB.pica.k * (TPS_LIB.pica.tmax - 300)) / 5000;
   out.push(
     chk(
       "tps-insul",
@@ -540,21 +540,22 @@ function missionChecks(): Check[] {
       "tps-mass",
       "external",
       "TPS mass is ρ δ A",
-      "240 kg/m³ × δ × 2 m²",
-      240 * deltaInsul * 2,
+      `${TPS_LIB.pica.rho} kg/m³ × δ × 2 m²`,
+      TPS_LIB.pica.rho * deltaInsul * 2,
       tps.mass,
       "Mass uses the sized thickness and the windward area you pass in.",
       1e-6,
     ),
   );
-  // ε σ T⁴, σ = 5.670374419e-8 (CODATA), ε = 0.85, T = 1800 K → 505965.24 W/m².
+  // ε σ T⁴, σ = 5.670374419e-8 (CODATA), T = 1800 K. [accuracy-audit] ε is the TPS_LIB PICA value (TPSX #43: 0.8,
+  // was 0.85), so the reference is 0.8 × σ × 1800⁴ = 476202.58 W/m² (505965.24 at ε 0.85).
   out.push(
     chk(
       "tps-rerad",
       "external",
       "PICA reradiation at 1800 K",
-      "ε σ T⁴ = 0.85 × 5.670374419e-8 × 1800⁴",
-      505965.24,
+      `ε σ T⁴ = ${TPS_LIB.pica.emiss} × 5.670374419e-8 × ${TPS_LIB.pica.tmax}⁴`,
+      TPS_LIB.pica.emiss * 5.670374419e-8 * TPS_LIB.pica.tmax ** 4,
       tps.qRadWm2,
       "Stefan–Boltzmann. The surface can reject this flux before an ablator is added. Not a FIAT temperature.",
       1e-6,
