@@ -298,13 +298,17 @@ export async function generateAeroDatabase(
     `Coefficient method: ${method}.`,
     "Control deflection rebuilds the OML (elevon rotation, or fin-ridge shear on missile / stack).",
     "Static derivatives are per radian. Interior stations are a central difference; the ends of an axis are one-sided.",
-    "Dynamic derivatives: central difference of a body-rate pair (±q̂, ±p̂, ±r̂ = 0.02) at α nearest the design angle, β = 0, δ nearest 0, per Mach.",
+    "Dynamic derivatives: central difference of a body-rate pair (±q̂, ±p̂, ±r̂ = 0.02; q̂ = qL/2V, p̂ = pb/2V, r̂ = rb/2V) at α nearest the design angle, β = 0, δ nearest 0, per Mach.",
+    "Panel frame: X aft, Y span, Z up; p, q, r are about +X, +Y, +Z; β > 0 sends the flow toward +Y (β_panel = −β_conventional). Cm has the conventional sign. Conventional Cl = −Cll·Lref/bref, Cn = −Cn·Lref/bref (see panelToConventional).",
     spec.eulerSymmetry
       ? "Symmetry-plane Euler is an extra β = 0, δ = 0 column. Off the centerline the Euler kernel is not defined."
       : "Symmetry-plane Euler slice was not requested.",
-    "Reference length is the geometric length. Moments use Sref·Lref for all three axes, matching the panel book.",
+    "Reference length is the geometric length. Moments use Sref·Lref for all three axes, matching the panel book. Sref is the undeflected planform for every δ.",
   ];
 
+  // [accuracy-audit] One reference area for the whole table (it used to be each deflected mesh's own
+  // planform, so CLδ / Cmδ mixed two normalisations).
+  const sRefTable = Math.max(built.aero.planformArea, 1e-6);
   const meshes = new Map<number, { mesh: TriMesh; sRef: number }>();
   const meshFor = (delta: number) => {
     const key = Math.round(delta * 1000);
@@ -312,12 +316,12 @@ export async function generateAeroDatabase(
     if (hit) return hit;
     const same = Math.abs(delta - (base.elevonDeg || 0)) < 1e-6;
     if (same) {
-      const pack = { mesh: built.mesh, sRef: Math.max(built.aero.planformArea, 1e-6) };
+      const pack = { mesh: built.mesh, sRef: sRefTable };
       meshes.set(key, pack);
       return pack;
     }
     const vehicle = buildVehicle({ ...base, elevonDeg: delta });
-    const pack = { mesh: vehicle.mesh, sRef: Math.max(vehicle.aero.planformArea, 1e-6) };
+    const pack = { mesh: vehicle.mesh, sRef: sRefTable };
     meshes.set(key, pack);
     return pack;
   };
@@ -548,8 +552,10 @@ export async function generateAeroDatabase(
     }
     if (p.onDesign) onN++;
   }
-  const cgx = clamp(base.cgFrac, 0.05, 0.95) * base.length;
-  const sRef0 = Math.max(built.aero.planformArea, 1e-6);
+  // [accuracy-audit] Same clamp as panelAero's moment reference (0.2–0.85). It was 0.05–0.95, so the exported
+  // CG disagreed with the point the moments were taken about whenever cgFrac was outside 0.2–0.85.
+  const cgx = clamp(base.cgFrac, 0.2, 0.85) * base.length;
+  const sRef0 = sRefTable;
   const massKg = base.massKg > 0 ? base.massKg : Math.max(1, (base.rhoKgM3 || 160) * Math.max(built.quality.volume, 0));
   const db: AeroDatabase = {
     meta: {
@@ -768,4 +774,63 @@ aero.dyn.Cnp = [${dyn("cnp")}];
 aero.dyn.Clr = [${dyn("clr")}];
 end
 `;
+}
+
+/**
+ * Panel-frame moment coefficients → conventional body axes (x forward, y right wing, z down).
+ *
+ * The panel book is X aft, Y span, Z up with every moment on Sref·Lref. Rotating by π about Y maps
+ * X→−x, Z→−z, Y→y, so Cm keeps its sign, roll and yaw flip, and the lateral moments are
+ * re-referenced to the span: Cl = −Cll·L/b, Cn = −Cn·L/b, Cm = Cm·L/c. β_conventional = −β_panel and
+ * p, r flip with their axes, so every lateral derivative keeps its sign except the side-force ones
+ * (CYβ, CYp, CYr), which flip. Cmq / CLq are re-referenced from q̂ = qL/2V to q̂ = qc/2V.
+ */
+export function panelToConventional(
+  c: { cm: number; cn: number; cll: number },
+  lRef: number,
+  bRef: number,
+  cRef = lRef,
+): { Cm: number; Cn: number; Cl: number } {
+  const L = Math.max(lRef, 1e-9);
+  const b = Math.max(bRef, 1e-9);
+  const cr = Math.max(cRef, 1e-9);
+  return { Cm: (c.cm * L) / cr, Cn: (-c.cn * L) / b, Cl: (-c.cll * L) / b };
+}
+
+export interface ConventionalDerivs {
+  CYb: number;
+  Cnb: number;
+  Clb: number;
+  Cmq: number;
+  CLq: number;
+  Clp: number;
+  Cnp: number;
+  CYp: number;
+  Cnr: number;
+  Clr: number;
+  CYr: number;
+}
+
+/** Panel-frame derivatives (per radian, per panel rate hats) → conventional body-axis derivatives. See `panelToConventional`. */
+export function derivsToConventional(
+  d: { cyb: number; cnb: number; clb: number; cmq: number; clq: number; clp: number; cnp: number; cyp: number; cnr: number; clr: number; cyr: number },
+  lRef: number,
+  bRef: number,
+  cRef = lRef,
+): ConventionalDerivs {
+  const k = Math.max(lRef, 1e-9) / Math.max(bRef, 1e-9);
+  const kc = Math.max(lRef, 1e-9) / Math.max(cRef, 1e-9);
+  return {
+    CYb: -d.cyb,
+    Cnb: d.cnb * k,
+    Clb: d.clb * k,
+    Cmq: d.cmq * kc * kc,
+    CLq: d.clq * kc,
+    Clp: d.clp * k,
+    Cnp: d.cnp * k,
+    CYp: -d.cyp,
+    Cnr: d.cnr * k,
+    Clr: d.clr * k,
+    CYr: -d.cyr,
+  };
 }
