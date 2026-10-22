@@ -10,10 +10,10 @@
 @import "@fontsource/jetbrains-mono/latin-700.css";
 
 /*
- * CUSPIS — Roadster cockpit. Black field, white type, one neon red.
- * Matrix rain lives on the vehicle viewport only, so the rails stay readable.
- * Amber is only for warnings, so a failure is not the same red as a selected control.
- * The jet ramp (Heat / Cp) stays a quantitative scale, not chrome.
+ * CUSPIS — Palantir density, Roadster black / white / neon red, a quiet matrix accent.
+ * The vehicle view stays clear: no glyph rain, scan sweep, or tick rulers on the shape.
+ * Neon is for selection, focus, and key numbers. Structure uses a deep red line.
+ * Amber is only for warnings. The jet ramp (Heat / Cp) stays a quantitative scale.
  */
 @theme {
   --font-sans: "Chakra Petch", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -32,9 +32,9 @@
   --color-subtle: #e7a0ab;
   --color-disabled: #8d4454;
 
-  /* lines: hairline is deep red; control outline is neon */
+  /* lines: hairline is deep red; neon is reserved for accent */
   --color-border: #3a0614;
-  --color-line: #ff1744;
+  --color-line: #6e1a2c;
 
   /* the one accent + black-on-neon text */
   --color-accent: #ff1744;
@@ -66,9 +66,8 @@
   --cut-lg: 12px;
   --accent-rgb: 255 23 68;
   --warn-rgb: 255 176 32;
-  --glow-sm: 0 0 8px rgb(var(--accent-rgb) / 0.55);
-  --glow-md: 0 0 18px rgb(var(--accent-rgb) / 0.5);
-  --scan-opacity: 0.05;
+  --glow-sm: 0 0 6px rgb(var(--accent-rgb) / 0.28);
+  --glow-md: 0 0 12px rgb(var(--accent-rgb) / 0.28);
   --ease-hud: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -298,17 +297,7 @@ textarea {
   background: var(--color-surface);
 }
 
-/* ───────────────────────── global red scan + vignette ───────────────────────── */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  pointer-events: none;
-  background:
-    repeating-linear-gradient(to bottom, rgb(var(--accent-rgb) / var(--scan-opacity)) 0 1px, transparent 1px 3px),
-    radial-gradient(ellipse at center, transparent 52%, rgb(0 0 0 / 0.5) 100%);
-}
+/* No full-screen scan. A stripe over the page sits on the vehicle and the numbers. */
 
 @layer components {
   /* ── HUD labels, readouts, panels ── */
@@ -357,7 +346,6 @@ body::before {
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums slashed-zero;
     color: var(--color-accent);
-    text-shadow: 0 0 10px rgb(var(--accent-rgb) / 0.45);
   }
   .hud-readout-value--sm {
     font-size: 1.05rem;
@@ -426,53 +414,11 @@ body::before {
       linear-gradient(var(--b), var(--b)) bottom right / 2px var(--l) no-repeat;
   }
 
-  /* ── lab viewport frame ── */
+  /* ── lab viewport frame. Corners only — nothing drawn across the shape. ── */
   .hud-viewport {
     background:
-      radial-gradient(ellipse at 50% 42%, rgb(var(--accent-rgb) / 0.16), transparent 58%),
+      radial-gradient(ellipse at 50% 42%, rgb(var(--accent-rgb) / 0.05), transparent 58%),
       var(--color-bg);
-  }
-  /* Glyph rain over the vehicle only. Screen-blend keeps the white skin readable. */
-  .hud-matrix {
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    display: flex;
-    justify-content: space-between;
-    padding: 0 8px;
-    overflow: hidden;
-    pointer-events: none;
-    mix-blend-mode: screen;
-    font-family: var(--font-mono);
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.15;
-    color: var(--color-accent);
-    text-shadow: 0 0 8px rgb(var(--accent-rgb) / 0.7);
-  }
-  .hud-matrix > span {
-    display: block;
-    writing-mode: vertical-rl;
-    text-orientation: upright;
-    letter-spacing: 0.12em;
-    white-space: nowrap;
-    animation: matrix-fall 12s linear infinite;
-  }
-  .hud-matrix > span > b {
-    color: var(--color-fg);
-    font-weight: 700;
-    text-shadow: 0 0 8px var(--color-fg);
-  }
-  .hud-matrix > span:nth-child(odd) {
-    animation-duration: 9s;
-  }
-  .hud-matrix > span:nth-child(3n) {
-    animation-duration: 15s;
-    animation-delay: -5s;
-    opacity: 0.62;
-  }
-  .hud-matrix > span:nth-child(4n) {
-    animation-delay: -8s;
   }
   .hud-frame {
     position: absolute;
@@ -495,32 +441,9 @@ body::before {
       linear-gradient(var(--b), var(--b)) bottom left / 2px var(--l) no-repeat,
       linear-gradient(var(--b), var(--b)) bottom right / var(--l) 2px no-repeat,
       linear-gradient(var(--b), var(--b)) bottom right / 2px var(--l) no-repeat;
-    filter: drop-shadow(0 0 4px rgb(var(--accent-rgb) / 0.55));
+    filter: none;
   }
-  /* tick ruler along the left + bottom edges (axis-triad margin) */
-  .hud-frame::after {
-    content: "";
-    position: absolute;
-    left: 6px;
-    top: 12px;
-    bottom: 12px;
-    width: 7px;
-    opacity: 0.55;
-    background: repeating-linear-gradient(to bottom, var(--color-accent) 0 1px, transparent 1px 12px);
-    mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 85%, transparent);
-  }
-  .hud-ticks-x {
-    position: absolute;
-    left: 16px;
-    right: 16px;
-    bottom: 10px;
-    height: 7px;
-    pointer-events: none;
-    opacity: 0.45;
-    background: repeating-linear-gradient(to right, var(--color-accent) 0 1px, transparent 1px 12px);
-    mask-image: linear-gradient(to right, transparent, #000 15%, #000 85%, transparent);
-  }
-  /* axis-triad overlay slot: anchored bottom-left above the colour-mode strip, reserved for an axis gizmo */
+  /* axis-triad overlay slot: anchored bottom-left, reserved for an axis gizmo */
   .hud-triad-slot {
     position: absolute;
     left: 14px;
@@ -528,29 +451,6 @@ body::before {
     width: 64px;
     height: 64px;
     pointer-events: none;
-  }
-  /* scanline sweep (animated; disabled under prefers-reduced-motion) */
-  .hud-scan {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    overflow: hidden;
-  }
-  .hud-scan::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: repeating-linear-gradient(to bottom, rgb(var(--accent-rgb) / 0.03) 0 1px, transparent 1px 4px);
-  }
-  .hud-scan::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    height: 90px;
-    top: -90px;
-    background: linear-gradient(to bottom, transparent, rgb(var(--accent-rgb) / 0.07), transparent);
-    animation: hud-sweep 7s linear infinite;
   }
 
   .hud-chip-info {
@@ -858,7 +758,6 @@ body::before {
     font-weight: 700;
     letter-spacing: 0.32em;
     color: var(--color-fg);
-    text-shadow: 0 0 12px rgb(var(--accent-rgb) / 0.4);
   }
   .hud-rail {
     background: var(--color-surface);
@@ -959,22 +858,6 @@ body::before {
   background: linear-gradient(to right, #1d4ed8, #22d3ee, #4ade80, #facc15, #ef4444);
 }
 
-@keyframes matrix-fall {
-  from {
-    transform: translateY(-42%);
-  }
-  to {
-    transform: translateY(8%);
-  }
-}
-@keyframes hud-sweep {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(calc(100vh + 180px));
-  }
-}
 @keyframes hud-pulse {
   0%,
   100% {
@@ -985,7 +868,7 @@ body::before {
   }
 }
 
-/* Reduced motion: no scanline sweep, no glow pulses, no transitions. Static scanlines/glow stay (they do not move). */
+/* Reduced motion: no glow pulses, no transitions. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -995,23 +878,13 @@ body::before {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  .hud-scan::after,
-  .hud-led,
-  .hud-matrix > span {
+  .hud-led {
     animation: none !important;
-  }
-  .hud-scan::after {
-    display: none;
   }
 }
 
 /* High-contrast / forced colours: fall back to system colours so nothing depends on glow. */
 @media (forced-colors: active) {
-  body::before,
-  .hud-scan,
-  .hud-matrix {
-    display: none;
-  }
   button,
   [role="tab"] {
     border: 1px solid ButtonText;

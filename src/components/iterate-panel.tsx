@@ -53,7 +53,7 @@ import { downloadBlob } from "@/lib/utils";
 type Sub = "db" | "opt" | "fly" | "mass" | "compare";
 type ListAxis = "machList" | "alphaList" | "betaList" | "deltaList";
 
-const MACH_COLORS = ["#ff2d2d", "#f3efe6", "#ff8a5c", "#b9b3a8", "#c94f4f", "#ffd9c7", "#7a4545"];
+const MACH_COLORS = ["#ff1744", "#ffffff", "#ff8fa0", "#ff4d6d", "#ffd4da", "#c41e3a", "#ff6b84"];
 
 const HIST_KEY = "cuspis.history.v1";
 const VAR_KEY = "cuspis.variants.v1";
@@ -874,9 +874,9 @@ function MachChart({ title, xLabel, series }: { title: string; xLabel: string; s
       <div className="h-40">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={series.rows} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="rgba(243,239,230,0.08)" />
-            <XAxis dataKey="x" type="number" domain={["dataMin", "dataMax"]} tick={{ fill: "#b9b3a8", fontSize: 10 }} />
-            <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} width={44} tickFormatter={(v: number) => fmt(v, 2)} />
+            <CartesianGrid stroke="rgba(255,23,68,0.16)" />
+            <XAxis dataKey="x" type="number" domain={["dataMin", "dataMax"]} tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} width={44} tickFormatter={(v: number) => fmt(v, 2)} />
             <Tooltip {...chartTip(xLabel)} formatter={(v: number) => fmt(v, 4)} />
             <Legend wrapperStyle={{ fontSize: 10 }} />
             {series.keys.map((k, i) => (

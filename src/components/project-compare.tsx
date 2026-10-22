@@ -8,7 +8,7 @@ import { fmt } from "@/lib/waverider/math";
 import { buildCompare, compareCandidates, type CompareData } from "@/lib/project/index";
 import type { ProjectSession } from "@/components/use-project";
 
-const SERIES = ["#ff2d2d", "#f3efe6", "#ffb020", "#7fb8ff"];
+const SERIES = ["#ff1744", "#ffffff", "#ff8fa0", "#ff4d6d"];
 
 function show(v: unknown): string {
   if (typeof v === "number") return fmt(v, Math.abs(v) >= 100 ? 1 : 4);
@@ -144,10 +144,10 @@ export function CompareView({ project }: { project: ProjectSession }) {
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={data.curves.rows} margin={{ top: 4, right: 8, bottom: 4, left: -8 }}>
-                    <CartesianGrid stroke="#2a2424" strokeDasharray="2 4" />
-                    <XAxis dataKey="alpha" type="number" domain={["dataMin", "dataMax"]} tick={{ fill: "#b9b3a8", fontSize: 10 }} unit="°" />
-                    <YAxis tick={{ fill: "#b9b3a8", fontSize: 10 }} width={48} />
-                    <Tooltip contentStyle={{ background: "#101010", border: "1px solid #7a4545", fontSize: 11, color: "#f3efe6" }} />
+                    <CartesianGrid stroke="rgba(255,23,68,0.16)" strokeDasharray="2 4" />
+                    <XAxis dataKey="alpha" type="number" domain={["dataMin", "dataMax"]} tick={{ fill: "#ffd4da", fontSize: 10 }} unit="°" />
+                    <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} width={48} />
+                    <Tooltip contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }} />
                     <Legend wrapperStyle={{ fontSize: 10 }} />
                     {data.curves.series.map((s, i) => {
                       const color = SERIES[data.entries.findIndex((e) => e.id === s.entryId)] ?? SERIES[i];
