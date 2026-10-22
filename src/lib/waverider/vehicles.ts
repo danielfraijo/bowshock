@@ -68,7 +68,22 @@ export function buildClassVehicle(params: DesignParams): ClassVehicle | null {
   }
 }
 
-interface FinSet {
+/** Spanwise station (|η| = |y|/semispan) where the elevons end and the body flap begins. */
+export const ELEVON_ETA_IN = 0.3;
+/** Width of the spanwise blend between elevon and body flap, in η. */
+export const ELEVON_ETA_BLEND = 0.16;
+export const ELEVON_HINGE_FRAC = 0.82;
+export const BODYFLAP_HINGE_FRAC = 0.86;
+export const BOOSTGLIDE_HINGE_FRAC = 0.78;
+
+/** Spanwise weights (a partition of unity) for left elevon, right elevon and centre body flap at η = y / semispan. */
+export function spanWeights(eta: number): { l: number; r: number; c: number } {
+  const t = clamp((Math.abs(eta) - ELEVON_ETA_IN) / ELEVON_ETA_BLEND + 0.5, 0, 1);
+  const out = t * t * (3 - 2 * t);
+  return { l: eta < 0 ? out : 0, r: eta > 0 ? out : 0, c: 1 - out };
+}
+
+export interface FinSet {
   x0: number;
   x1: number;
   n: number;
@@ -84,7 +99,7 @@ function wrapPi(d: number): number {
   return x;
 }
 
-function finSets(p: DesignParams, radius: number): FinSet[] {
+export function finSets(p: DesignParams, radius: number): FinSet[] {
   const h = Math.max(0, p.finHeight) * Math.max(p.height, radius, 0.05);
   if (h < 1e-4) return [];
   const L = Math.max(p.length, 0.2);
@@ -115,6 +130,75 @@ function finSets(p: DesignParams, radius: number): FinSet[] {
     }
   }
   return sets.filter((s) => s.x1 > s.x0 + 1e-4);
+}
+
+/** Control-surface id of fin k (0 at +Y, counter-clockwise toward +Z) in fin set s (0 = aft). */
+export function finSurfaceId(set: number, k: number): string {
+  return `fin${set}_${k}`;
+}
+
+/**
+ * Ring stations θ ∈ [0, 2π] for a body of revolution. Without fins this is
+ * main's uniform ring. With fins every sector between two fins gets the same
+ * stations, mirrored about the fin centre, and each ridge is sampled at its
+ * crest, its half-width and its foot, so all n fins are resolved identically.
+ * (Uniform θ put the +Y fin on a vertex and the others between vertices:
+ * a 4-fin missile had CY ≈ −0.026 and Cll ≈ 2e-3 at β = 0.)
+ */
+export function ringStations(nj: number, sets: FinSet[]): number[] {
+  if (!sets.length) {
+    const out: number[] = [];
+    for (let j = 0; j < nj; j++) out.push((2 * Math.PI * j) / (nj - 1));
+    return out;
+  }
+  const n = sets[0].n;
+  const w = (2 * Math.PI) / n;
+  const ha = Math.min(Math.max(...sets.map((s) => s.halfAng)), w * 0.3);
+  const dUni = (2 * Math.PI) / Math.max(nj - 1, 1);
+  const interior = Math.max(1, Math.ceil((w - 2 * ha) / dUni - 1e-9) - 1);
+  const local: number[] = [0, ha * 0.5, ha];
+  for (let k = 1; k <= interior; k++) local.push(ha + ((w - 2 * ha) * k) / (interior + 1));
+  local.push(w - ha, w - ha * 0.5);
+  const out: number[] = [];
+  for (let f = 0; f < n; f++) for (const t of local) out.push(f * w + t);
+  out.push(2 * Math.PI);
+  return out;
+}
+
+/** Circumferential rotation (rad) of a ring vertex for per-fin hinge deflections. 0 when no fin is deflected. */
+function finSwing(theta: number, x: number, rb: number, sets: FinSet[], defl: number[][], fades: number[]): number {
+  let dth = 0;
+  for (let si = 0; si < sets.length; si++) {
+    const s = sets[si];
+    const ds = defl[si];
+    if (!ds) continue;
+    if (x <= s.hinge) continue;
+    const cAft = Math.max(s.x1 - s.hinge, 1e-6);
+    // aft of the fin the swing fades back to 0 on the bare body (a pure Δθ leaves a body of revolution on itself)
+    let u = Math.min(x - s.hinge, cAft);
+    if (x > s.x1) {
+      const t = clamp((x - s.x1) / Math.max(fades[si], 1e-9), 0, 1);
+      u *= 1 - t * t * (3 - 2 * t);
+      if (u <= 0) continue;
+    }
+    // ramp the hinge rotation in over the first quarter of the moving chord, so the skin has no kink at the hinge
+    const ramp = (() => {
+      const t = clamp(u / (0.25 * cAft), 0, 1);
+      return t * t * (3 - 2 * t);
+    })();
+    const hw = Math.PI / s.n;
+    for (let k = 0; k < s.n; k++) {
+      const d = ds[k];
+      if (!d) continue;
+      const th0 = (2 * Math.PI * k) / s.n;
+      const a = Math.abs(wrapPi(theta - th0));
+      if (a >= hw) continue;
+      const bell = 0.5 * (1 + Math.cos((a / hw) * Math.PI));
+      // right-hand rotation about the outward radial axis moves the TE toward −e_θ
+      dth -= (u * Math.sin(d * DEG * ramp) * bell) / Math.max(rb, 1e-6);
+    }
+  }
+  return dth;
 }
 
 function axialEnvelope(x: number, x0: number, x1: number): number {
@@ -195,6 +279,17 @@ function revolve(
   const b = new MeshBuilder(L);
   const sets = withFins ? finSets(p, Math.max(p.span / 2, 0.05)) : [];
   const defl = clamp((p.elevonDeg || 0) * DEG, -18 * DEG, 18 * DEG);
+  const thetas = ringStations(nj, sets);
+  const finDefl: number[][] = sets.map((s, si) => {
+    const row: number[] = [];
+    for (let k = 0; k < s.n; k++) {
+      const v = p.controls?.[finSurfaceId(si, k)];
+      row.push(typeof v === "number" && Number.isFinite(v) ? v : 0);
+    }
+    return row;
+  });
+  const anyFin = finDefl.some((r) => r.some((v) => Math.abs(v) > 1e-9));
+  const fades = sets.map((s, si) => (si === 0 ? Math.max(L - s.x1, 1e-4) : Math.max(0.9 * (sets[0].x0 - s.x1), 1e-4)));
   const xs: number[] = [];
   const rs: number[] = [];
   const ids: number[][] = [];
@@ -204,9 +299,10 @@ function revolve(
     xs.push(x);
     rs.push(rb);
     const ring: number[] = [];
-    for (let j = 0; j < nj; j++) {
-      const th = (2 * Math.PI * j) / (nj - 1);
-      const rr = rb + finExtra(th, x, sets);
+    for (let j = 0; j < thetas.length; j++) {
+      const th0 = thetas[j];
+      const rr = rb + finExtra(th0, x, sets);
+      const th = anyFin ? th0 + finSwing(th0, x, rb, sets, finDefl, fades) : th0;
       let y = rr * Math.cos(th);
       let z = rr * Math.sin(th);
       if (sets.length && Math.abs(defl) > 1e-8) {
@@ -218,8 +314,8 @@ function revolve(
     ids.push(ring);
   }
   for (let i = 0; i < ni - 1; i++) {
-    for (let j = 0; j < nj - 1; j++) {
-      const th = (2 * Math.PI * (j + 0.5)) / (nj - 1);
+    for (let j = 0; j < thetas.length - 1; j++) {
+      const th = 0.5 * (thetas[j] + thetas[j + 1]);
       const surf = Math.sin(th) >= 0 ? "upper" : "lower";
       b.quad(ids[i][j], ids[i][j + 1], ids[i + 1][j + 1], ids[i + 1][j], surf);
     }
@@ -227,12 +323,12 @@ function revolve(
   if (rs[ni - 1] > 1e-5) {
     const hub = b.vert(L, 0, 0);
     const last = ids[ni - 1];
-    for (let j = 0; j < nj - 1; j++) b.tri(hub, last[j], last[j + 1], "base");
+    for (let j = 0; j < thetas.length - 1; j++) b.tri(hub, last[j], last[j + 1], "base");
   }
   if (rs[0] > 1e-4) {
     const hub = b.vert(0, 0, 0);
     const first = ids[0];
-    for (let j = 0; j < nj - 1; j++) b.tri(hub, first[j + 1], first[j], "leading");
+    for (let j = 0; j < thetas.length - 1; j++) b.tri(hub, first[j + 1], first[j], "leading");
   }
   const mesh = b.finish();
   const yEps = Math.max(p.span, L) * 2e-4;
@@ -251,6 +347,10 @@ function revolve(
     notes.push(
       `${sets.length} fin set${sets.length > 1 ? "s" : ""} as faired ridges (half-angle ~8°). Elevon ${p.elevonDeg.toFixed(1)}° shears the horizontal pair about the hinge. Not a separate flap volume.`,
     );
+  }
+  if (anyFin) {
+    const list = finDefl.flatMap((r, si) => r.map((v, k) => (v ? `${finSurfaceId(si, k)} ${v.toFixed(1)}°` : "")).filter(Boolean));
+    notes.push(`Fin hinge deflections: ${list.join(", ")}. The ridge swings about its radial hinge; the round body is unchanged.`);
   }
   if (p.halfModel) notes.push("Half-model is not applied to bodies of revolution — the full OML is meshed.");
   return { mesh, grids: [upper, lower], shock: [shock], skipped: b.skipped, notes, sRef };
@@ -388,6 +488,40 @@ function sectionThick(x: number, p: DesignParams): number {
   return h * cam * env;
 }
 
+interface PartSpan {
+  elevon_l: number;
+  elevon_r: number;
+  body_flap: number;
+}
+
+function boostglideControls(p: DesignParams): PartSpan | null {
+  const c = p.controls;
+  if (!c) return null;
+  const v = (k: string) => {
+    const d = c[k];
+    return typeof d === "number" && Number.isFinite(d) ? clamp(d, -25, 25) : 0;
+  };
+  const out = { elevon_l: v("elevon_l"), elevon_r: v("elevon_r"), body_flap: v("body_flap") };
+  return out.elevon_l || out.elevon_r || out.body_flap ? out : null;
+}
+
+/**
+ * Part-span elevon / body-flap shear for the boost-glide loft: the same
+ * z −= (x − x_h)·tan δ as the full-span elevon, weighted by a spanwise
+ * partition of unity (controls.ts `spanWeights`). z-only, so it cannot fold.
+ */
+function partSpanShear(x: number, L: number, d: PartSpan): (eta: number) => number {
+  const xE = BOOSTGLIDE_HINGE_FRAC * L;
+  const xB = BODYFLAP_HINGE_FRAC * L;
+  const kL = x > xE ? (x - xE) * Math.tan(d.elevon_l * DEG) : 0;
+  const kR = x > xE ? (x - xE) * Math.tan(d.elevon_r * DEG) : 0;
+  const kB = x > xB ? (x - xB) * Math.tan(d.body_flap * DEG) : 0;
+  return (eta: number) => {
+    const w = spanWeights(eta);
+    return -(kL * w.l + kR * w.r + kB * w.c);
+  };
+}
+
 function buildBoostglide(p: DesignParams): ClassVehicle {
   const L = Math.max(p.length, 0.2);
   const ni = clamp(Math.round(p.nx) || 28, 14, 64);
@@ -401,6 +535,16 @@ function buildBoostglide(p: DesignParams): ClassVehicle {
   if (p.halfModel) notes.push("Half-model is not applied — the full planform is meshed.");
   if (Math.abs(p.elevonDeg || 0) > 0.05) {
     notes.push(`Elevon ${p.elevonDeg.toFixed(1)}° shears the surface aft of 78% length (trailing edge down is positive). Same sign as the waverider elevon.`);
+  }
+  const partSpan = boostglideControls(p);
+  const semiB = Math.max(p.span, 0.08) / 2;
+  if (partSpan) {
+    notes.push(
+      `Control surfaces: ${Object.entries(partSpan)
+        .filter(([, v]) => v)
+        .map(([k, v]) => `${k} ${(v as number).toFixed(1)}°`)
+        .join(", ")} (part-span shear, TE down positive).`,
+    );
   }
   const upper: number[][] = [];
   const lower: number[][] = [];
@@ -420,6 +564,7 @@ function buildBoostglide(p: DesignParams): ClassVehicle {
     // so the belly outward normal has an upstream component at α = 0.
     const incidence = 0.22 * p.height * (1 - xi);
     const elev = x > 0.78 * L ? -(x - 0.78 * L) * Math.tan(clamp(p.elevonDeg || 0, -18, 18) * DEG) : 0;
+    const part = partSpan ? partSpanShear(x, L, partSpan) : null;
     const rowU: number[] = [];
     const rowL: number[] = [];
     for (let j = 0; j < nj; j++) {
@@ -428,8 +573,9 @@ function buildBoostglide(p: DesignParams): ClassVehicle {
       const eta = clamp(y / yHalf, -1, 1);
       const zSheet = incidence + camb + Math.abs(y) * dih;
       const drop = thick * Math.sqrt(Math.max(0, 1 - eta * eta));
-      const zU = zSheet + elev;
-      const zL = zSheet - drop + elev;
+      const ctl = part ? part(y / semiB) : 0;
+      const zU = zSheet + elev + ctl;
+      const zL = zSheet - drop + elev + ctl;
       rowL.push(b.vert(x, y, zL));
       rowU.push(b.vert(x, y, zU));
       const o = (i * nj + j) * 3;

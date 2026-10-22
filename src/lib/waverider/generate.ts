@@ -21,6 +21,7 @@ import { clusterFractionsToLE } from "./refinement"; // [mesh-refinement]
 import { curvatureStations } from "./curvature"; // [mesh-refinement]
 import { liftOml, liftXs } from "./liftbody-oml";
 import { buildClassVehicle, type ClassVehicle } from "./vehicles";
+import { BODYFLAP_HINGE_FRAC, ELEVON_HINGE_FRAC, RUDDER_HINGE_FRAC, activeControls, spanWeights, waveriderRudders } from "./controls";
 
 function liftStations(ny: number, half: boolean): number[] {
   // ±1 so the elliptic section closes. Cluster at the sides, where curvature is highest.
@@ -824,6 +825,42 @@ function applyElevon(upper: SurfaceGrid, lower: SurfaceGrid, deg: number, L: num
 }
 
 /**
+ * Part-span elevons and body flap on the same pre-fillet path as `applyElevon`:
+ * z −= (x − x_h)·tan δ · W(y). W is the spanwise partition of unity of
+ * controls.ts (left elevon, right elevon, centre body flap), so equal elevon
+ * and flap angles about a common hinge reproduce the full-span elevon. Upper
+ * and lower rows at the same (x, y) move together, so the LE zipper / fillet
+ * rows stay coincident and the map (z-only) cannot fold. No-op (and the mesh is
+ * main's, bit for bit) when no surface is deflected.
+ */
+function applyControlSurfaces(upper: SurfaceGrid, lower: SurfaceGrid, params: DesignParams) {
+  const d = activeControls(params, ["elevon_l", "elevon_r", "body_flap"]);
+  if (!Object.keys(d).length) return;
+  const L = params.length;
+  const xE = ELEVON_HINGE_FRAC * L;
+  const xB = BODYFLAP_HINGE_FRAC * L;
+  const tl = Math.tan(clamp(d.elevon_l ?? 0, -25, 25) * DEG);
+  const tr = Math.tan(clamp(d.elevon_r ?? 0, -25, 25) * DEG);
+  const tb = Math.tan(clamp(d.body_flap ?? 0, -25, 25) * DEG);
+  let semi = 0;
+  for (const g of [upper, lower]) for (let o = 1; o < g.xyz.length; o += 3) semi = Math.max(semi, Math.abs(g.xyz[o]));
+  semi = Math.max(semi, 1e-9);
+  const apply = (g: SurfaceGrid) => {
+    for (let o = 0; o < g.xyz.length; o += 3) {
+      const x = g.xyz[o];
+      if (x <= xE && x <= xB) continue;
+      const w = spanWeights(g.xyz[o + 1] / semi);
+      let dz = 0;
+      if (x > xE) dz += (x - xE) * (tl * w.l + tr * w.r);
+      if (x > xB) dz += (x - xB) * tb * w.c;
+      g.xyz[o + 2] -= dz;
+    }
+  };
+  apply(upper);
+  apply(lower);
+}
+
+/**
  * Collapse the wingtip chord onto the mid-surface so the planform edge is
  * not a chopped slab. Leave i = 0 alone when a fillet is attached: pinching
  * that arc to one point in a single span step is the corner fan.
@@ -852,7 +889,12 @@ function applyFins(lid: SurfaceGrid, params: DesignParams, zSign: number) {
   const yOff = params.span * 0.36;
   const yFins = params.halfModel ? [yOff] : [-yOff, yOff];
   const x0 = L * 0.68;
-  const halfT = Math.max(params.span * 0.018, 0.01);
+  const halfT = finHalfWidth(lid, yFins, x0, Math.max(params.span * 0.018, 0.01));
+  const rud = activeControls(params, ["rudder_l", "rudder_r"]);
+  if (Object.keys(rud).length) {
+    applyRudderFins(lid, params, zSign, h, x0, halfT, rud);
+    return;
+  }
   for (let i = 0; i < lid.ni; i++) {
     for (let j = 0; j < lid.nj; j++) {
       const o = (i * lid.nj + j) * 3;
@@ -866,6 +908,73 @@ function applyFins(lid: SurfaceGrid, params: DesignParams, zSign: number) {
       const across = 1 - (dy / halfT) ** 2;
       lid.xyz[o + 2] += zSign * h * along * across;
     }
+  }
+}
+
+/**
+ * Half-width of the faired fin bump. The nominal 1.8 % span is narrower than one
+ * span station at typical ny, so the bump used to land on 0, 1 or 2 lid stations
+ * depending on ny (at ny = 40 a 2.5 m caret had no fin at all). Widen it to
+ * 1.6 local station spacings so every fin is sampled by at least three stations.
+ */
+function finHalfWidth(lid: SurfaceGrid, yFins: number[], x0: number, nominal: number): number {
+  let dy = 0;
+  for (let i = 0; i < lid.ni; i++) {
+    for (let j = 0; j + 1 < lid.nj; j++) {
+      const o = (i * lid.nj + j) * 3;
+      const o2 = o + 3;
+      if (lid.xyz[o] < x0 && lid.xyz[o2] < x0) continue;
+      const ya = lid.xyz[o + 1];
+      const yb = lid.xyz[o2 + 1];
+      const lo = Math.min(ya, yb);
+      const hi = Math.max(ya, yb);
+      for (const yc of yFins) if (yc >= lo - nominal && yc <= hi + nominal) dy = Math.max(dy, hi - lo);
+    }
+  }
+  return Math.max(nominal, 1.6 * dy);
+}
+
+/**
+ * `applyFins` with rudders: aft of the hinge each fin bump is the same bump
+ * rotated about its vertical hinge line (TE left positive), i.e. the bump height
+ * field is sampled at the hinge-rotated coordinates. The rotation ramps in over
+ * 4 % L so the fin has no step at the hinge. Still a z-only map of the lid grid.
+ */
+function applyRudderFins(
+  lid: SurfaceGrid,
+  params: DesignParams,
+  zSign: number,
+  h: number,
+  x0: number,
+  halfT: number,
+  rud: Record<string, number>,
+) {
+  const L = params.length;
+  const xh = RUDDER_HINGE_FRAC * L;
+  const ramp = 0.04 * L;
+  const fins = waveriderRudders(params).map((r) => ({ yc: r.yc, d: clamp(rud[r.id] ?? 0, -25, 25) * DEG }));
+  for (let o = 0; o < lid.xyz.length; o += 3) {
+    const x = lid.xyz[o];
+    const y = lid.xyz[o + 1];
+    let bump = 0;
+    for (const f of fins) {
+      let xs = x;
+      let ys = y - f.yc;
+      const u = x - xh;
+      if (u > 0 && f.d !== 0) {
+        const t = clamp(u / ramp, 0, 1);
+        const a = f.d * t * t * (3 - 2 * t);
+        // inverse of a rotation by −a about +Z (TE toward −Y): sample the unrotated bump at R(+a)·(u, v)
+        xs = xh + u * Math.cos(a) - ys * Math.sin(a);
+        ys = u * Math.sin(a) + ys * Math.cos(a);
+      }
+      if (xs < x0) continue;
+      const dy = Math.abs(ys);
+      if (dy >= halfT) continue;
+      const along = Math.min((xs - x0) / Math.max(L - x0, 1e-9), 1);
+      bump = Math.max(bump, h * along * (1 - (dy / halfT) ** 2));
+    }
+    if (bump > 0) lid.xyz[o + 2] += zSign * bump;
   }
 }
 
@@ -1120,6 +1229,8 @@ export function buildVehicle(params: DesignParams): BuiltVehicle {
     if (!isDuct) applyFins(built.upper, params, zSign);
     // deflect the elevon BEFORE the fillet is built so the LE fillet and tip caps follow the same rows
     if (!isDuct) applyElevon(built.upper, built.lower, params.elevonDeg || 0, params.length);
+    // independent part-span surfaces ride the same pre-fillet path (no-op without params.controls)
+    if (!isDuct) applyControlSurfaces(built.upper, built.lower, params);
     let leading: SurfaceGrid | null = null;
     const tips: SurfaceGrid[] = [];
     if (!isDuct && !isLift) {

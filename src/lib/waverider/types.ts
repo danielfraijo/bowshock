@@ -66,6 +66,12 @@ export interface DesignParams {
   camber: number;
   teSweepDeg: number;
   elevonDeg: number;
+  /**
+   * Independent control-surface deflections, deg, keyed by `ControlSurface.id`
+   * (see controls.ts: elevon_l, elevon_r, body_flap, rudder_l/r, fin<set>_<k>).
+   * Added on top of `elevonDeg`. Absent or all-zero = the legacy geometry, bit for bit.
+   */
+  controls?: Partial<Record<string, number>>;
   finHeight: number;
   nRamps: number;
   cowlSide: CowlSide;
