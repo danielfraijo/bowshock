@@ -275,8 +275,8 @@ export const FAMILY_META: Record<
   },
   capsule: {
     label: "Capsule",
-    blurb: "Sphere-cone blunt body. Base area is the reference.",
-    generating: "Sphere-cone of revolution",
+    blurb: "Sphere-cone. Straight flank, tangent nose sphere, cylinder only if the length asks for it.",
+    generating: "Tangent sphere-cone",
     domain: "external",
   },
   boostglide: {
@@ -287,14 +287,14 @@ export const FAMILY_META: Record<
   },
   missile: {
     label: "Missile",
-    blurb: "Ogive-cylinder-boattail with faired fin ridges.",
-    generating: "Tangent ogive + fin ridges",
+    blurb: "Ogive, cylinder, boat-tail, and flat fins. Tail set, optional canards.",
+    generating: "Tangent ogive + plate fins",
     domain: "external",
   },
   multistage: {
     label: "Stack",
-    blurb: "Approximate multi-stage outer mold line. Stages do not separate.",
-    generating: "Stacked frustums",
+    blurb: "Conical nose, cylindrical stages, conical interstages, aft fins.",
+    generating: "Staged cylinders + nozzle",
     domain: "external",
   },
   ramjet: {

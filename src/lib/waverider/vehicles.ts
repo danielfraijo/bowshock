@@ -7,11 +7,12 @@
  * panel methods and CAD export can consume.
  *
  * Assumptions (screening, not a CAD master model):
- * - Fins are finite-angle ridges faired into the OML so the skin stays a
- *   single watertight shell. They are not hinged CAD flaps. Elevon deflection
- *   shears the horizontal ridges about their hinge line.
- * - A multi-stage concept is the stacked outer mold line. Stages do not
- *   separate, and interstage gaps are not modeled.
+ * - Fins are constant-thickness plates lofted into the shell (cruciform, or n
+ *   equally spaced). They are not cosine bumps on the body ring, so a coarse
+ *   circumferential grid cannot miss them. Elevon deflection pitches the
+ *   horizontal pair about the hinge; trailing edge down is positive.
+ * - A multi-stage concept is cylindrical stages with a conical nose, conical
+ *   interstages, and a short nozzle boat-tail. Stages do not separate.
  * - Reference area is base area πRb² for bodies of revolution and planform
  *   area for the boost-glide loft. Reference length stays the geometric length.
  * - The shock grid is a conical/ruled sheet for the viewer, not a captured bow shock.
@@ -40,13 +41,13 @@ export function isClassFamily(family: string): boolean {
 
 const CLASS_NOTES: Partial<Record<WaveriderFamily, string>> = {
   capsule:
-    "Sphere-cone. Span is the base diameter, cone half-angle is the flank, LE radius is the nose radius. Sref = πRb².",
+    "Sphere-cone. Diameter is the base, cone half-angle is the flank, nose radius is the sphere. A length past the shoulder adds a cylinder; a shorter length truncates the cone. No flare. Sref = π Rbase².",
   boostglide:
     "Parametric boost-glide loft (planform × elliptic section). Not an inverse waverider — the shock sheet is a ruled visualization.",
   missile:
-    "Tangent-ogive / cylinder / boattail. Span is the diameter. Fin height grows cruciform ridges; elevon shears the horizontal pair. Sref = πRb².",
+    "Tangent ogive, cylinder, boat-tail, and constant-thickness fins. Diameter is the cylinder. Nose fraction is the ogive. Base d/D is the boat-tail. Fin height is in body radii. Sref = π R².",
   multistage:
-    "Stacked OML, nose to fat aft stage. Stage count is Ramps. Not a separating stack. Sref = πRb² of the base.",
+    "Conical nose, cylindrical stages, conical interstages, short nozzle. Upper stages are smaller. Fin height is in base radii. Stages do not separate. Sref = π Rbase².",
 };
 
 export function classNote(family: WaveriderFamily): string | undefined {
@@ -68,14 +69,38 @@ export function buildClassVehicle(params: DesignParams): ClassVehicle | null {
   }
 }
 
-interface FinSet {
+interface Plate {
+  th0: number;
+  height: number;
+  thick: number;
   x0: number;
   x1: number;
-  n: number;
-  height: number;
-  halfAng: number;
+  sweep: number;
+  taper: number;
   hinge: number;
+  horizontal: boolean;
 }
+
+/** Shape defaults applied when the user picks a class, so a waverider's span is not reused as a diameter. */
+export const CLASS_SHAPE: Partial<Record<WaveriderFamily, Partial<DesignParams>>> = {
+  capsule: { length: 3.5, span: 3.9, height: 1.8, coneDeg: 25, leRadius: 0.6, leBlunt: true, finHeight: 0, fins: 0, nx: 48, ny: 36 },
+  missile: {
+    length: 5.2,
+    span: 0.36,
+    height: 0.36,
+    wedgeFrac: 0.3,
+    captureFrac: 0.86,
+    leRadius: 0.012,
+    leBlunt: true,
+    finHeight: 0.85,
+    fins: 4,
+    nRamps: 1,
+    nx: 64,
+    ny: 28,
+  },
+  multistage: { length: 16, span: 1.8, height: 1.8, finHeight: 0.35, fins: 4, nRamps: 2, leRadius: 0.02, nx: 72, ny: 28 },
+  boostglide: { length: 6, span: 2.4, height: 0.55, planform: "double", wedgeFrac: 0.42, leRadius: 0.03, leBlunt: true, finHeight: 0, nx: 40, ny: 24 },
+};
 
 function wrapPi(d: number): number {
   let x = d;
@@ -84,81 +109,140 @@ function wrapPi(d: number): number {
   return x;
 }
 
-function finSets(p: DesignParams, radius: number): FinSet[] {
-  const h = Math.max(0, p.finHeight) * Math.max(p.height, radius, 0.05);
-  if (h < 1e-4) return [];
+function axisStations(L: number, ni: number, extra: number[]): number[] {
+  const want = clamp(Math.round(ni) || 28, 16, 80);
+  const xs = [0, L];
+  for (let i = 1; i < want - 1; i++) xs.push((L * i) / (want - 1));
+  for (const x of extra) xs.push(x);
+  xs.sort((a, b) => a - b);
+  const tol = Math.max(1e-4, 0.0012 * L);
+  const out = [0];
+  for (const x of xs) {
+    const c = clamp(x, 0, L);
+    if (c - out[out.length - 1] > tol) out.push(c);
+  }
+  if (L - out[out.length - 1] > tol * 0.25) out.push(L);
+  else out[out.length - 1] = L;
+  return out;
+}
+
+function plateSpan(f: Plate, x: number): number {
+  const c = f.x1 - f.x0;
+  if (!(c > 1e-6) || x <= f.x0 || x >= f.x1) return 0;
+  const xLE = f.x0 + f.sweep * c;
+  const tipC = clamp(f.taper, 0.2, 0.9) * c;
+  const xTE = Math.min(f.x1 - c * 0.02, xLE + tipC);
+  const sLE = x < xLE ? (f.height * (x - f.x0)) / Math.max(xLE - f.x0, 1e-6) : f.height;
+  const sTE = x > xTE ? (f.height * (f.x1 - x)) / Math.max(f.x1 - xTE, 1e-6) : f.height;
+  return Math.max(0, Math.min(sLE, sTE, f.height));
+}
+
+function makePlates(p: DesignParams, Rb: number, noseEnd: number): Plate[] {
+  const hFrac = Math.max(0, p.finHeight);
+  if (hFrac < 1e-3 || !(Rb > 1e-4)) return [];
   const L = Math.max(p.length, 0.2);
   const n = clamp(Math.round(p.fins || 4), 2, 8);
-  const chord = clamp(p.combustorFrac || 0.22, 0.08, 0.4) * L;
-  const sets: FinSet[] = [];
-  const xAft = L * clamp(0.9 - chord / L, 0.35, 0.9);
-  sets.push({
-    x0: xAft,
-    x1: Math.min(L * 0.985, xAft + chord),
-    n,
-    height: h,
-    halfAng: 8 * DEG,
-    hinge: xAft + chord * 0.72,
-  });
-  if ((p.nRamps || 1) >= 2) {
-    const x2 = L * clamp(p.wedgeFrac, 0.2, 0.55);
-    const c2 = chord * 0.75;
-    if (x2 + c2 < xAft - 0.02 * L) {
-      sets.push({
-        x0: x2,
-        x1: x2 + c2,
-        n,
-        height: h * 0.62,
-        halfAng: 7 * DEG,
-        hinge: x2 + c2 * 0.7,
+  const height = hFrac * Rb;
+  const weld = 8e-4 * L;
+  let thick = Math.max(3.5 * weld, 0.045 * Rb);
+  thick = Math.min(thick, 0.16 * Rb, Math.max(0.22 * height, 4 * weld));
+  const slot = (Math.PI / n) * 0.62;
+  thick = Math.min(thick, 2 * Rb * Math.sin(slot));
+  const plates: Plate[] = [];
+  const push = (x0: number, x1: number, h: number) => {
+    if (!(x1 > x0 + 0.02 * L)) return;
+    const hinge = x0 + 0.62 * (x1 - x0);
+    for (let k = 0; k < n; k++) {
+      const th0 = (2 * Math.PI * k) / n;
+      plates.push({
+        th0,
+        height: h,
+        thick,
+        x0,
+        x1,
+        sweep: 0.18,
+        taper: 0.5,
+        hinge,
+        horizontal: Math.abs(Math.cos(th0)) > 0.65,
       });
     }
+  };
+  const chord = clamp(0.16 * L, 0.1 * L, 0.26 * L);
+  const x1 = 0.97 * L;
+  const x0 = Math.max(noseEnd + 0.03 * L, x1 - chord, 0.35 * L);
+  push(Math.min(x0, x1 - 0.06 * L), x1, height);
+  if ((p.nRamps || 1) >= 2) {
+    const c2 = chord * 0.55;
+    const xC0 = clamp(noseEnd + 0.04 * L, 0.08 * L, 0.42 * L);
+    const xC1 = xC0 + c2;
+    if (xC1 < x0 - 0.04 * L) push(xC0, xC1, height * 0.55);
   }
-  return sets.filter((s) => s.x1 > s.x0 + 1e-4);
+  return plates;
 }
 
-function axialEnvelope(x: number, x0: number, x1: number): number {
-  if (x <= x0 || x >= x1) return 0;
-  const u = (x - x0) / (x1 - x0);
-  return Math.sin(Math.PI * u);
+interface Spoke {
+  th0: number;
+  plates: Plate[];
+  thick: number;
+  horizontal: boolean;
 }
 
-function finExtra(theta: number, x: number, sets: FinSet[]): number {
-  let extra = 0;
-  for (const s of sets) {
-    const env = axialEnvelope(x, s.x0, s.x1);
-    if (env <= 0) continue;
-    for (let k = 0; k < s.n; k++) {
-      const th0 = (2 * Math.PI * k) / s.n;
-      const d = Math.abs(wrapPi(theta - th0));
-      if (d >= s.halfAng) continue;
-      const shape = 0.5 * (1 + Math.cos((d / s.halfAng) * Math.PI));
-      extra = Math.max(extra, s.height * env * shape);
+/** One circumferential slot per azimuth. A canard and a tail at the same angle share it, so the ring never contains two fins on top of each other. */
+function spokesOf(plates: Plate[]): Spoke[] {
+  const map = new Map<number, Spoke>();
+  for (const f of plates) {
+    const key = Math.round(f.th0 * 1e6);
+    let s = map.get(key);
+    if (!s) {
+      s = { th0: f.th0, plates: [], thick: f.thick, horizontal: f.horizontal };
+      map.set(key, s);
     }
+    s.plates.push(f);
+    s.thick = Math.max(s.thick, f.thick);
   }
-  return extra;
+  return [...map.values()].sort((a, b) => a.th0 - b.th0);
 }
 
-function horizShear(theta: number, x: number, sets: FinSet[]): { w: number; hinge: number } {
-  let w = 0;
+function spokeAt(s: Spoke, x: number): { span: number; hinge: number } {
+  let span = 0;
   let hinge = x;
-  for (const s of sets) {
-    const env = axialEnvelope(x, s.x0, s.x1);
-    if (env <= 0) continue;
-    for (let k = 0; k < s.n; k++) {
-      const th0 = (2 * Math.PI * k) / s.n;
-      if (Math.abs(Math.cos(th0)) < 0.7) continue;
-      const d = Math.abs(wrapPi(theta - th0));
-      if (d >= s.halfAng) continue;
-      const shape = 0.5 * (1 + Math.cos((d / s.halfAng) * Math.PI));
-      const ww = env * shape;
-      if (ww > w) {
-        w = ww;
-        hinge = s.hinge;
-      }
+  for (const f of s.plates) {
+    const h = plateSpan(f, x);
+    if (h > span) {
+      span = h;
+      hinge = f.hinge;
     }
   }
-  return { w, hinge };
+  return { span, hinge };
+}
+function gapThetas(spokes: Spoke[], half: number[], nSlot: number[]): number[] {
+  if (!spokes.length) return [];
+  const ths: number[] = [];
+  for (let i = 0; i < spokes.length; i++) {
+    const k = spokes[i];
+    const kn = spokes[(i + 1) % spokes.length];
+    let a = k.th0 + half[i];
+    let b = kn.th0 - half[(i + 1) % spokes.length];
+    if (i === spokes.length - 1) b += 2 * Math.PI;
+    const gap = Math.max(0, b - a);
+    const n = nSlot[i] ?? 1;
+    for (let s = 0; s < n; s++) ths.push(a + ((s + 0.5) * gap) / n);
+  }
+  return ths;
+}
+
+function cornerYZ(rb: number, th0: number, span: number, thick: number, corner: number, defl: number, hinge: number, x: number, horizontal: boolean): [number, number] {
+  const out = corner === 1 || corner === 2;
+  const sign = corner === 0 || corner === 1 ? -1 : 1;
+  const rad = out ? rb + span : rb;
+  const cy = Math.cos(th0);
+  const sy = Math.sin(th0);
+  const sMax = 0.42 * Math.max(rad, 1e-8);
+  const s = sign * Math.min(thick * 0.5, sMax);
+  let y = rad * cy + s * -sy;
+  let z = rad * sy + s * cy;
+  if (horizontal && out && span > 1e-8 && Math.abs(defl) > 1e-8) z -= Math.tan(defl) * (x - hinge);
+  return [y, z];
 }
 
 function meridian(name: string, xs: number[], zs: number[], yEps: number): SurfaceGrid {
@@ -187,167 +271,291 @@ function revolve(
   radiusAt: (x: number) => number,
   sRef: number,
   notes: string[],
-  withFins: boolean,
+  plates: Plate[],
 ): ClassVehicle {
   const L = Math.max(p.length, 0.2);
-  const ni = clamp(Math.round(p.nx) || 28, 16, 72);
-  const nj = clamp(Math.round(p.ny) || 20, 12, 56);
+  const niReq = clamp(Math.round(p.nx) || 28, 16, 72);
+  const nBody = clamp(Math.round(p.ny) || 24, 12, 48);
   const b = new MeshBuilder(L);
-  const sets = withFins ? finSets(p, Math.max(p.span / 2, 0.05)) : [];
   const defl = clamp((p.elevonDeg || 0) * DEG, -18 * DEG, 18 * DEG);
-  const xs: number[] = [];
-  const rs: number[] = [];
+  const rRef = Math.max(p.span / 2, 1e-3);
+  const spokes = spokesOf(plates);
+  const half = spokes.map((s) => {
+    const slot = (Math.PI / Math.max(spokes.length, 1)) * 0.62;
+    const a = Math.atan(Math.min(s.thick * 0.5, 0.42 * rRef) / rRef);
+    return Math.min(a * 1.15, slot);
+  });
+  const nSlot: number[] = [];
+  if (spokes.length) {
+    for (let i = 0; i < spokes.length; i++) {
+      const kn = (i + 1) % spokes.length;
+      let a0 = spokes[i].th0 + half[i];
+      let b0 = spokes[kn].th0 - half[kn];
+      if (i === spokes.length - 1) b0 += 2 * Math.PI;
+      const gap = Math.max(0, b0 - a0);
+      nSlot.push(Math.max(1, Math.round((nBody * gap) / (2 * Math.PI))));
+    }
+  }
+  const thetas = spokes.length
+    ? gapThetas(spokes, half, nSlot)
+    : Array.from({ length: nBody }, (_, j) => (2 * Math.PI * j) / nBody);
+  const extra: number[] = [];
+  for (const f of plates) {
+    const c = f.x1 - f.x0;
+    extra.push(f.x0, f.x0 + 0.22 * c, f.x0 + 0.55 * c, f.x1 - 0.08 * c, f.x1);
+  }
+  const xs = axisStations(L, niReq, extra);
+  const rs = xs.map((x) => Math.max(0, radiusAt(x)));
   const ids: number[][] = [];
-  for (let i = 0; i < ni; i++) {
-    const x = (L * i) / (ni - 1);
-    const rb = Math.max(0, radiusAt(x));
-    xs.push(x);
-    rs.push(rb);
+  const yz: [number, number][][] = [];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i];
+    const rb = rs[i];
     const ring: number[] = [];
-    for (let j = 0; j < nj; j++) {
-      const th = (2 * Math.PI * j) / (nj - 1);
-      const rr = rb + finExtra(th, x, sets);
-      let y = rr * Math.cos(th);
-      let z = rr * Math.sin(th);
-      if (sets.length && Math.abs(defl) > 1e-8) {
-        const sh = horizShear(th, x, sets);
-        z += Math.tan(defl) * (x - sh.hinge) * sh.w;
-      }
+    const yzr: [number, number][] = [];
+    const thin = rb < Math.max(2.4 * (plates[0]?.thick ?? 0), 0.12 * rRef);
+    const pushPt = (y: number, z: number) => {
+      yzr.push([y, z]);
       ring.push(b.vert(x, y, z));
+    };
+    if (!spokes.length) {
+      for (const th of thetas) pushPt(rb * Math.cos(th), rb * Math.sin(th));
+    } else {
+      let bi = 0;
+      for (let ii = 0; ii < spokes.length; ii++) {
+        const s = spokes[ii];
+        const live = thin ? { span: 0, hinge: x } : spokeAt(s, x);
+        if (live.span <= 1e-8) {
+          const y = rb * Math.cos(s.th0);
+          const z = rb * Math.sin(s.th0);
+          for (let c = 0; c < 4; c++) pushPt(y, z);
+        } else {
+          for (let c = 0; c < 4; c++) {
+            const [y, z] = cornerYZ(rb, s.th0, live.span, s.thick, c, defl, live.hinge, x, s.horizontal);
+            pushPt(y, z);
+          }
+        }
+        const n = nSlot[ii] ?? 1;
+        for (let k = 0; k < n; k++) {
+          const th = thetas[bi++];
+          pushPt(rb * Math.cos(th), rb * Math.sin(th));
+        }
+      }
     }
     ids.push(ring);
+    yz.push(yzr);
   }
-  for (let i = 0; i < ni - 1; i++) {
-    for (let j = 0; j < nj - 1; j++) {
-      const th = (2 * Math.PI * (j + 0.5)) / (nj - 1);
-      const surf = Math.sin(th) >= 0 ? "upper" : "lower";
-      b.quad(ids[i][j], ids[i][j + 1], ids[i + 1][j + 1], ids[i + 1][j], surf);
+  const nj = ids[0].length;
+  for (let i = 0; i < xs.length - 1; i++) {
+    for (let j = 0; j < nj; j++) {
+      const j2 = (j + 1) % nj;
+      const zc = (yz[i][j][1] + yz[i][j2][1] + yz[i + 1][j][1] + yz[i + 1][j2][1]) * 0.25;
+      const surf = zc >= 0 ? "upper" : "lower";
+      b.quad(ids[i][j], ids[i][j2], ids[i + 1][j2], ids[i + 1][j], surf);
     }
   }
-  if (rs[ni - 1] > 1e-5) {
+  if (rs[rs.length - 1] > 1e-5) {
     const hub = b.vert(L, 0, 0);
-    const last = ids[ni - 1];
-    for (let j = 0; j < nj - 1; j++) b.tri(hub, last[j], last[j + 1], "base");
-  }
-  if (rs[0] > 1e-4) {
-    const hub = b.vert(0, 0, 0);
-    const first = ids[0];
-    for (let j = 0; j < nj - 1; j++) b.tri(hub, first[j + 1], first[j], "leading");
+    const last = ids[ids.length - 1];
+    for (let j = 0; j < nj; j++) b.tri(hub, last[j], last[(j + 1) % nj], "base");
   }
   const mesh = b.finish();
   const yEps = Math.max(p.span, L) * 2e-4;
   const upper = meridian("upper", xs, rs, yEps);
   const lower = meridian("lower", xs, rs.map((r) => -r), yEps);
-  const nsi = Math.min(ni, 28);
-  const nsj = Math.min(nj, 20);
+  const nsi = Math.min(xs.length, 28);
+  const nsj = Math.min(Math.max(nBody, 12), 24);
   const beta = shockBeta(p);
+  let finH = 0;
+  for (const f of plates) finH = Math.max(finH, f.height);
   const shock = makeGrid("shock", nsi, nsj, (i, j) => {
     const x = (L * i) / (nsi - 1);
-    const th = (2 * Math.PI * j) / (nsj - 1);
-    const rsH = Math.max(radiusAt(x) * 1.04 + 0.01 * L, (x + 0.12 * L) * Math.tan(beta) * 0.45);
+    const th = (2 * Math.PI * j) / nsj;
+    const body = Math.max(0, radiusAt(x));
+    const rsH = Math.max((body + finH) * 1.12, (x + 0.08 * L) * Math.tan(beta) * 0.35);
     return [x, rsH * Math.cos(th), rsH * Math.sin(th)];
   });
-  if (sets.length) {
+  if (plates.length) {
+    const nFin = new Set(plates.map((f) => f.th0.toFixed(4))).size;
+    const sets = new Set(plates.map((f) => f.x0.toFixed(3))).size;
     notes.push(
-      `${sets.length} fin set${sets.length > 1 ? "s" : ""} as faired ridges (half-angle ~8°). Elevon ${p.elevonDeg.toFixed(1)}° shears the horizontal pair about the hinge. Not a separate flap volume.`,
+      `${sets} fin set${sets > 1 ? "s" : ""}, ${nFin} plates, thickness ${(plates[0].thick * 1000).toFixed(0)} mm, height ${(plates[0].height * 1000).toFixed(0)} mm on the aft set. Elevon ${p.elevonDeg.toFixed(1)}° drops the horizontal trailing edges. The shell is one watertight surface — not a cosine ridge.`,
     );
   }
   if (p.halfModel) notes.push("Half-model is not applied to bodies of revolution — the full OML is meshed.");
   return { mesh, grids: [upper, lower], shock: [shock], skipped: b.skipped, notes, sRef };
 }
 
-function buildCapsule(p: DesignParams): ClassVehicle {
+/** Body radius of a capsule, missile, or stack. Null for other families. Fins are not included. */
+export function revolutionRadius(p: DesignParams, x: number): number | null {
+  if (p.family === "capsule") return capsuleRadius(p)(x);
+  if (p.family === "missile") return missileRadius(p).r(x);
+  if (p.family === "multistage") return stackRadius(p)(x);
+  return null;
+}
+
+function capsuleRadius(p: DesignParams): (x: number) => number {
   const L = Math.max(p.length, 0.2);
   const Rb = Math.max(0.05, p.span / 2);
   const theta = clamp(p.coneDeg || 20, 5, 55) * DEG;
   let Rn = p.leRadius > 1e-6 ? p.leRadius : Math.min(0.45 * Rb, 0.28 * L);
-  Rn = clamp(Rn, 1e-3, Math.min(L * 0.9, Rb / Math.max(Math.cos(theta), 0.25)));
+  Rn = clamp(Rn, 1e-3, Math.min(L * 0.95, Rb / Math.max(Math.cos(theta), 0.2)));
   const xt = Rn * (1 - Math.sin(theta));
   const rt = Rn * Math.cos(theta);
-  const notes = [
-    `Sphere-cone capsule. Rn = ${Rn.toFixed(3)} m, cone ${(theta / DEG).toFixed(1)}°, base diameter ${(2 * Rb).toFixed(3)} m. Sref = πRb² = ${(Math.PI * Rb * Rb).toFixed(4)} m².`,
-    "Shoulder flare is added only if the cone has not reached the requested base by x = L. Heating still uses the LE radius on the nose.",
-  ];
-  const sphereCone = (x: number) => {
+  const tanT = Math.tan(theta);
+  const Lgeom = xt + Math.max(0, Rb - rt) / Math.max(tanT, 1e-6);
+  return (x) => {
     const xc = clamp(x, 0, L);
-    if (xc <= xt + 1e-9) {
+    if (xc <= 1e-12) return 0;
+    if (xc <= xt + 1e-9 || xc <= xt) {
       const c = clamp(1 - xc / Math.max(Rn, 1e-6), -1, 1);
       return Rn * Math.sqrt(Math.max(0, 1 - c * c));
     }
-    return Math.max(0, rt + (xc - xt) * Math.tan(theta));
+    if (xc >= Lgeom) return Rb;
+    return Math.max(0, rt + (xc - xt) * tanT);
   };
-  let radiusAt = sphereCone;
-  if (sphereCone(L) > Rb * 1.002) {
-    let xHit = L;
-    for (let i = 0; i <= 40; i++) {
-      const x = xt + ((L - xt) * i) / 40;
-      if (sphereCone(x) >= Rb) {
-        xHit = x;
-        break;
-      }
-    }
-    radiusAt = (x) => Math.min(Rb, sphereCone(x));
-    notes.push(`Cone reaches the base diameter at x/L = ${(xHit / L).toFixed(2)}; the flank is cylindrical after that.`);
-  } else if (sphereCone(L) < Rb * 0.98) {
-    const xflare = Math.max(xt, L * 0.8);
-    const r0 = Math.min(Rb, sphereCone(xflare));
-    radiusAt = (x) => {
-      if (x <= xflare) return Math.min(Rb, sphereCone(x));
-      const u = (x - xflare) / Math.max(L - xflare, 1e-6);
-      return r0 + (Rb - r0) * u;
-    };
-    notes.push("Cone is short of the requested diameter — a conical shoulder flare closes the base.");
+}
+
+function buildCapsule(p: DesignParams): ClassVehicle {
+  const L = Math.max(p.length, 0.2);
+  const Rb = Math.max(0.05, p.span / 2);
+  const theta = clamp(p.coneDeg || 20, 5, 55) * DEG;
+  const rAt = capsuleRadius(p);
+  const rBase = rAt(L);
+  const xt = (() => {
+    let Rn = p.leRadius > 1e-6 ? p.leRadius : Math.min(0.45 * Rb, 0.28 * L);
+    Rn = clamp(Rn, 1e-3, Math.min(L * 0.95, Rb / Math.max(Math.cos(theta), 0.2)));
+    return Rn * (1 - Math.sin(theta));
+  })();
+  const rt = rAt(Math.min(L, xt));
+  const tanT = Math.tan(theta);
+  const Lgeom = xt + Math.max(0, Rb - rt) / Math.max(tanT, 1e-6);
+  const notes = [
+    `Sphere-cone. Rn meets the ${(theta / DEG).toFixed(1)}° flank with a common tangent. Requested base diameter ${(2 * Rb).toFixed(3)} m, actual base ${(2 * rBase).toFixed(3)} m. Sref = π Rbase².`,
+  ];
+  if (Lgeom <= L + 1e-3) notes.push(`Cone reaches the base diameter at x/L = ${(Math.min(Lgeom, L) / L).toFixed(2)}${L > Lgeom + 0.02 * L ? "; the rest is a cylinder. No skirt flare." : "."}`);
+  else notes.push(`Length ends before the cone reaches the requested diameter (would need ${(Lgeom).toFixed(2)} m). The base is the cone at this station — it is not flared out.`);
+  return revolve(p, rAt, Math.PI * rBase * rBase, notes, []);
+}
+
+function missileRadius(p: DesignParams): { r: (x: number) => number; Ln: number; Rb: number; baseR: number } {
+  const L = Math.max(p.length, 0.2);
+  const Rb = Math.max(0.04, p.span / 2);
+  const baseFrac = clamp(p.captureFrac > 0 ? p.captureFrac : 0.86, 0.35, 1);
+  const baseR = Rb * baseFrac;
+  const btFrac = baseFrac > 0.985 ? 0 : clamp(0.06 + 0.22 * (1 - baseFrac), 0.06, 0.22);
+  let Ln = clamp(p.wedgeFrac || 0.3, 0.12, 0.6) * L;
+  let Lbt = btFrac * L;
+  if (Ln + Lbt > 0.9 * L) {
+    const s = (0.9 * L) / (Ln + Lbt);
+    Ln *= s;
+    Lbt *= s;
   }
-  return revolve(p, radiusAt, Math.PI * Rb * Rb, notes, false);
+  const rho = (Rb * Rb + Ln * Ln) / (2 * Rb);
+  let Rn = p.leBlunt === false ? 0 : Math.max(0, p.leRadius);
+  Rn = clamp(Rn, 0, Math.min(0.4 * Rb, 0.3 * Ln));
+  const sharp = (xs: number) => {
+    const dx = Ln - xs;
+    return Math.max(0, Math.sqrt(Math.max(0, rho * rho - dx * dx)) - (rho - Rb));
+  };
+  let xSc = Rn;
+  let shift = 0;
+  let tangV = 0;
+  let useBlunt = false;
+  if (Rn > 1e-5 * Rb) {
+    const disc = (rho - Rn) * (rho - Rn) - (rho - Rb) * (rho - Rb);
+    if (disc > 0) {
+      const xsC = Ln - Math.sqrt(disc);
+      const dist = Math.hypot(xsC - Ln, rho - Rb);
+      const xNose = xsC - Rn;
+      shift = -xNose;
+      const tangSharp = Ln + (rho * (xsC - Ln)) / Math.max(dist, 1e-9);
+      tangV = tangSharp + shift;
+      xSc = xsC + shift;
+      if (tangV > 1e-4 && tangV < Ln * 0.95 && xNose > -1e-6 && xNose < 0.5 * Ln) useBlunt = true;
+    }
+  }
+  const r = (x: number) => {
+    const xc = clamp(x, 0, L);
+    if (xc <= Ln) {
+      if (!useBlunt) return sharp(xc);
+      if (xc <= tangV) return Math.sqrt(Math.max(0, Rn * Rn - (xc - xSc) * (xc - xSc)));
+      const xs = xc - shift;
+      if (xs >= Ln) return Rb;
+      return sharp(Math.max(0, xs));
+    }
+    if (xc >= L - Lbt) {
+      const u = (xc - (L - Lbt)) / Math.max(Lbt, 1e-6);
+      return Rb + (baseR - Rb) * clamp(u, 0, 1);
+    }
+    return Rb;
+  };
+  return { r, Ln, Rb, baseR };
 }
 
 function buildMissile(p: DesignParams): ClassVehicle {
   const L = Math.max(p.length, 0.2);
-  const Rb = Math.max(0.04, p.span / 2);
-  const Ln = clamp(p.wedgeFrac || 0.28, 0.12, 0.65) * L;
-  const Lbt = clamp(0.08 + (1 - clamp(p.cowlFrac || 0.7, 0.4, 0.95)) * 0.35, 0.06, 0.4) * L;
-  const baseR = Rb * clamp(p.captureFrac || 0.72, 0.35, 1);
-  const rho = (Rb * Rb + Ln * Ln) / (2 * Rb);
+  const prof = missileRadius(p);
   const notes = [
-    `Missile OML: tangent ogive Ln/L = ${(Ln / L).toFixed(2)}, diameter ${(2 * Rb).toFixed(3)} m, boattail to ${(2 * baseR).toFixed(3)} m. Sref = πRb².`,
-    "Ridges stand in for fin sets. A second set appears when Ramps ≥ 2. Panel methods see the faired OML, not a thin-fin vortex lattice.",
+    `Missile OML: tangent ogive to x/L = ${(prof.Ln / L).toFixed(2)}, cylinder diameter ${(2 * prof.Rb).toFixed(3)} m, boat-tail to ${(2 * prof.baseR).toFixed(3)} m. Sref = πR².`,
+    p.leBlunt === false || !(p.leRadius > 0)
+      ? "Nose is sharp. A nose radius blends a sphere into the ogive with a common tangent."
+      : `Nose sphere Rn = ${(Math.min(p.leRadius, 0.4 * prof.Rb) * 1000).toFixed(1)} mm, tangent to the ogive.`,
   ];
-  const radiusAt = (x: number) => {
-    const xc = clamp(x, 0, L);
-    if (xc <= Ln) {
-      const dx = Ln - xc;
-      return Math.max(0, Math.sqrt(Math.max(0, rho * rho - dx * dx)) - (rho - Rb));
+  const plates = makePlates(p, prof.Rb, prof.Ln);
+  return revolve(p, prof.r, Math.PI * prof.Rb * prof.Rb, notes, plates);
+}
+
+function stackRadius(p: DesignParams): (x: number) => number {
+  const L = Math.max(p.length, 0.2);
+  const n = clamp(Math.round(p.nRamps || 2), 2, 4);
+  const Rb = Math.max(0.05, p.span / 2);
+  const Rs: number[] = [];
+  for (let i = 0; i < n; i++) Rs.push(Rb * (n === 1 ? 1 : 0.46 + 0.54 * (i / (n - 1))));
+  const noseL = clamp(Math.min(0.16 * L, 2.4 * Rs[0]), 0.06 * L, 0.28 * L);
+  const nozzleL = 0.055 * L;
+  const transL = 0.04 * L;
+  const remain = Math.max(0.2 * L, L - noseL - nozzleL - transL * (n - 1));
+  const stageL = remain / n;
+  const cuts: { x0: number; x1: number; r0: number; r1: number }[] = [];
+  let x = 0;
+  cuts.push({ x0: 0, x1: noseL, r0: 0, r1: Rs[0] });
+  x = noseL;
+  for (let i = 0; i < n; i++) {
+    const xC = x + stageL;
+    cuts.push({ x0: x, x1: xC, r0: Rs[i], r1: Rs[i] });
+    x = xC;
+    if (i < n - 1) {
+      cuts.push({ x0: x, x1: x + transL, r0: Rs[i], r1: Rs[i + 1] });
+      x += transL;
     }
-    if (xc >= L - Lbt) {
-      const u = (xc - (L - Lbt)) / Math.max(Lbt, 1e-6);
-      return Rb + (baseR - Rb) * u;
+  }
+  const rNoz = Rs[n - 1] * 0.78;
+  cuts.push({ x0: x, x1: L, r0: Rs[n - 1], r1: rNoz });
+  return (xq: number) => {
+    const xc = clamp(xq, 0, L);
+    for (const c of cuts) {
+      if (xc <= c.x1 + 1e-9 || c === cuts[cuts.length - 1]) {
+        const u = clamp((xc - c.x0) / Math.max(c.x1 - c.x0, 1e-9), 0, 1);
+        return c.r0 + (c.r1 - c.r0) * u;
+      }
     }
-    return Rb;
+    return Rs[n - 1];
   };
-  return revolve(p, radiusAt, Math.PI * Rb * Rb, notes, true);
 }
 
 function buildStack(p: DesignParams): ClassVehicle {
   const L = Math.max(p.length, 0.2);
   const n = clamp(Math.round(p.nRamps || 2), 2, 4);
   const Rb = Math.max(0.05, p.span / 2);
-  const Ls = L / n;
-  const stations: number[] = [];
-  for (let i = 0; i <= n; i++) stations.push(Rb * (0.22 + 0.78 * (i / n)));
-  stations[0] = 0;
+  const rAt = stackRadius(p);
   const notes = [
-    `${n}-stage stack, approximate OML only (no separation, no interstage cavity). Base diameter ${(2 * Rb).toFixed(3)} m. Sref = πRb².`,
-    "Stage radii grow smoothly from a pointed nose to the aft stage. Use fin height for aft control ridges.",
+    `${n}-stage stack. Conical nose, cylindrical stages (upper smaller), conical interstages, nozzle to ${(0.78 * 2 * Rb).toFixed(3)} m. No separation, no cavity. Sref = π Rbase².`,
+    "Fins, when the height is above zero, are plates on the aft stage.",
   ];
-  const radiusAt = (x: number) => {
-    const xc = clamp(x, 0, L);
-    const u = xc / Ls;
-    const i = Math.min(n - 1, Math.floor(u));
-    const t = u - i;
-    const s = t * t * (3 - 2 * t);
-    return stations[i] + (stations[i + 1] - stations[i]) * s;
-  };
-  return revolve(p, radiusAt, Math.PI * Rb * Rb, notes, true);
+  // Nose ends where the first cylinder starts — fins stay on the aft body.
+  const plates = makePlates(p, Rb, L * 0.45);
+  return revolve(p, rAt, Math.PI * Rb * Rb, notes, plates);
 }
 
 function sharpHalfSpan(x: number, p: DesignParams): number {

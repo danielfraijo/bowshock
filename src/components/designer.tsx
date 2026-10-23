@@ -53,7 +53,7 @@ import {
   type WaveriderFamily,
 } from "@/lib/waverider/types";
 import { downloadBlob } from "@/lib/utils";
-import { classNote, isClassFamily } from "@/lib/waverider/vehicles";
+import { CLASS_SHAPE, classNote, isClassFamily } from "@/lib/waverider/vehicles";
 import { cadAero, parseCad, type CadAxis, type CadImport } from "@/lib/waverider/import-cad";
 
 type Tab = "geom" | "flight" | "aero" | "heat" | "frontier" | "stab" | "sixdof" | "traj" | "cycle" | "shocks" | "checks" | "data" | "cad" | "datcom" | "iterate";
@@ -367,10 +367,12 @@ export function Designer() {
   function pickFamily(id: WaveriderFamily) {
     setCad(null);
     const meta = FAMILY_META[id];
+    const shape = CLASS_SHAPE[id];
     patch({
       family: id,
       name: `${id}_${params.mach}`,
       flowThrough: meta.domain === "internal" && (id === "ramjet" || id === "scramjet"),
+      ...(shape ?? {}),
     });
   }
 
@@ -787,10 +789,15 @@ export function Designer() {
                   <LiveField setDragging={setDragging} label="Center width" value={params.wedgeFrac} min={0.1} max={0.85} step={0.01} onChange={(wedgeFrac) => patch({ wedgeFrac })} />
                 ) : null}
                 {params.family === "star" || params.family === "missile" || params.family === "multistage" ? (
-                  <LiveField setDragging={setDragging} label="Fins" value={params.fins} min={3} max={8} step={1} digits={0} onChange={(fins) => patch({ fins: Math.round(fins) })} />
+                  <LiveField setDragging={setDragging} label="Fins" value={params.fins} min={params.family === "star" ? 3 : 2} max={8} step={1} digits={0} onChange={(fins) => patch({ fins: Math.round(fins) })} />
                 ) : null}
                 {params.family === "missile" ? (
-                  <LiveField setDragging={setDragging} label="Nose fraction" value={params.wedgeFrac} min={0.15} max={0.6} step={0.01} onChange={(wedgeFrac) => patch({ wedgeFrac })} />
+                  <>
+                    <LiveField setDragging={setDragging} label="Nose fraction" value={params.wedgeFrac} min={0.15} max={0.6} step={0.01} onChange={(wedgeFrac) => patch({ wedgeFrac })} />
+                    <LiveField setDragging={setDragging} label="Nose radius" value={params.leRadius} min={0} max={Math.max(0.02, params.span * 0.2)} step={0.001} unit="m" digits={3} onChange={(leRadius) => patch({ leRadius, leBlunt: leRadius > 0 })} />
+                    <LiveField setDragging={setDragging} label="Base d/D" value={params.captureFrac} min={0.4} max={1} step={0.01} onChange={(captureFrac) => patch({ captureFrac })} />
+                    <LiveField setDragging={setDragging} label="Fin sets" value={params.nRamps >= 2 ? 2 : 1} min={1} max={2} step={1} digits={0} onChange={(n) => patch({ nRamps: Math.round(n) })} />
+                  </>
                 ) : null}
                 {params.family === "multistage" ? (
                   <LiveField setDragging={setDragging} label="Stages" value={params.nRamps} min={2} max={4} step={1} digits={0} onChange={(nRamps) => patch({ nRamps: Math.round(nRamps) })} />
