@@ -849,22 +849,26 @@ function applyFins(lid: SurfaceGrid, params: DesignParams, zSign: number) {
   const h = (params.finHeight || 0) * Math.max(params.height, 0.05);
   if (h < 1e-4) return;
   const L = params.length;
-  const yOff = params.span * 0.36;
-  const yFins = params.halfModel ? [yOff] : [-yOff, yOff];
-  const x0 = L * 0.68;
-  const halfT = Math.max(params.span * 0.018, 0.01);
+  const span = Math.max(params.span, 1e-3);
+  // A fence thinner than a span cell lands between nodes and either vanishes or spikes one vertex.
+  const dyCell = span / Math.max(lid.nj - 1, 1);
+  const halfT = Math.max(span * 0.04, dyCell * 1.55);
+  const yFins = params.halfModel ? [span * 0.36] : [-span * 0.36, span * 0.36];
+  const x0 = L * 0.62;
+  const x1 = L * 0.97;
   for (let i = 0; i < lid.ni; i++) {
     for (let j = 0; j < lid.nj; j++) {
       const o = (i * lid.nj + j) * 3;
       const x = lid.xyz[o];
       const y = lid.xyz[o + 1];
-      if (x < x0) continue;
+      if (x <= x0 || x >= x1) continue;
       let dy = Infinity;
       for (const yc of yFins) dy = Math.min(dy, Math.abs(y - yc));
       if (dy >= halfT) continue;
-      const along = (x - x0) / Math.max(L - x0, 1e-9);
-      const across = 1 - (dy / halfT) ** 2;
-      lid.xyz[o + 2] += zSign * h * along * across;
+      const u = (x - x0) / Math.max(x1 - x0, 1e-9);
+      const along = u < 0.14 ? u / 0.14 : u > 0.86 ? (1 - u) / 0.14 : 1;
+      const across = dy <= halfT * 0.62 ? 1 : (halfT - dy) / Math.max(halfT * 0.38, 1e-9);
+      lid.xyz[o + 2] += zSign * h * along * Math.max(0, across);
     }
   }
 }

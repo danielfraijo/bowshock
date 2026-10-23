@@ -373,7 +373,8 @@ export function WaveriderViewer({
 
       function frameCamera(L: number, span: number) {
         const dist = Math.max(L, span) * 2.05;
-        camera.position.set(-0.18 * L, dist * 0.82, dist * 0.36);
+        // Three-quarter: a pure side view hides the horizontal fins edge-on.
+        camera.position.set(-0.08 * L, dist * 0.5, dist * 0.7);
         controls.target.set(L * 0.48, 0, 0);
         camera.near = dist / 90;
         camera.far = dist * 22;

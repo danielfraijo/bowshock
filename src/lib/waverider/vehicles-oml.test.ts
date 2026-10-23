@@ -193,6 +193,19 @@ function kink(r: (x: number) => number, x: number, dx: number) {
     return z;
   };
   assert.ok(teZ(up) < teZ(dn) - 1e-4, `positive elevon should drop the trailing edge ${teZ(up)} vs ${teZ(dn)}`);
+  const leZ = (b: ReturnType<typeof buildVehicle>) => {
+    let bestX = 1e9;
+    let z = 0;
+    const pp = b.mesh.positions;
+    for (let i = 0; i < pp.length; i += 3) {
+      if (Math.abs(pp[i + 1]) > Rb + 0.45 * h && pp[i] < bestX) {
+        bestX = pp[i];
+        z = pp[i + 2];
+      }
+    }
+    return z;
+  };
+  assert.ok(Math.abs(leZ(up) - leZ(dn)) < 1e-3, `elevon must not swing the fin leading edge ${leZ(up)} vs ${leZ(dn)}`);
   const atm = atmosphere(d.altKm, d.mach, d.gamma);
   const S = Math.PI * Rb * Rb;
   const a0 = panelAero(built.mesh, d, atm, 0, 0, S, d.length, undefined, true);
@@ -286,6 +299,74 @@ function kink(r: (x: number) => number, x: number, dx: number) {
     assertClosed(`fuzz ${k} ${family}`, built);
   }
   console.log("fuzz 24 closed");
+}
+
+{
+  // A long chord used to rotate the whole plate, so the leading edge ahead of
+  // the hinge left the body. The flap must stay inside the fin envelope.
+  const d = p("missile", { length: 12, span: 0.2, finHeight: 0.3, elevonDeg: 18, fins: 4, nRamps: 1 });
+  const built = buildVehicle(d);
+  assertClosed("slender elevon", built);
+  const Rb = d.span / 2;
+  const h = d.finHeight * Rb;
+  const pos = built.mesh.positions;
+  let maxR = 0;
+  let leZ = 0;
+  let leX = 1e9;
+  let teZ = 0;
+  let teX = -1;
+  for (let i = 0; i < pos.length; i += 3) {
+    const r = Math.hypot(pos[i + 1], pos[i + 2]);
+    maxR = Math.max(maxR, r);
+    if (Math.abs(pos[i + 1]) < Rb + 0.4 * h) continue;
+    if (pos[i] < leX) {
+      leX = pos[i];
+      leZ = pos[i + 2];
+    }
+    if (pos[i] > teX) {
+      teX = pos[i];
+      teZ = pos[i + 2];
+    }
+  }
+  assert.ok(Math.abs(leZ) < 0.04, `leading edge flung, z ${leZ} at x ${leX}`);
+  assert.ok(teZ < -0.01, `trailing edge did not drop, z ${teZ}`);
+  assert.ok(leX < teX - 0.2, `fin chord collapsed ${leX} → ${teX}`);
+  let fwd = 0;
+  for (let i = 0; i < pos.length; i += 3) {
+    if (Math.abs(pos[i + 1]) < Rb + 0.4 * h) continue;
+    if (pos[i] > (leX + teX) * 0.5) continue;
+    fwd = Math.max(fwd, Math.hypot(pos[i + 1], pos[i + 2]));
+  }
+  assert.ok(fwd < Rb + h + 0.025, `fin ahead of the hinge left the body, r ${fwd}`);
+  // Straight tip on a hard boat-tail: full-height stations share one radius.
+  const boat = p("missile", { captureFrac: 0.45, finHeight: 0.7, fins: 4, elevonDeg: 0, nRamps: 1 });
+  const bb = buildVehicle(boat);
+  assertClosed("boat-tail fin", bb);
+  const br = boat.span / 2;
+  const bh = boat.finHeight * br;
+  const tips: number[] = [];
+  const bp = bb.mesh.positions;
+  for (let i = 0; i < bp.length; i += 3) {
+    const r = Math.hypot(bp[i + 1], bp[i + 2]);
+    if (r > br + 0.82 * bh) tips.push(r);
+  }
+  assert.ok(tips.length > 8, "boat-tail fin has no straight tip");
+  const mean = tips.reduce((s, v) => s + v, 0) / tips.length;
+  const spread = Math.max(...tips) - Math.min(...tips);
+  assert.ok(spread < 0.08 * bh, `fin tip kinked by the boat-tail, spread ${spread} mean ${mean}`);
+  // Capsule flaps are real plates, and they are absent until the height is set.
+  const bare = buildVehicle(p("capsule"));
+  let bareR = 0;
+  const bpos = bare.mesh.positions;
+  for (let i = 0; i < bpos.length; i += 3) bareR = Math.max(bareR, Math.hypot(bpos[i + 1], bpos[i + 2]));
+  const flapped = buildVehicle(p("capsule", { finHeight: 0.35, fins: 2, elevonDeg: 6 }));
+  assertClosed("capsule flaps", flapped);
+  let flapR = 0;
+  const fp = flapped.mesh.positions;
+  for (let i = 0; i < fp.length; i += 3) flapR = Math.max(flapR, Math.hypot(fp[i + 1], fp[i + 2]));
+  assert.ok(Math.abs(bareR - p("capsule").span / 2) < 0.05, `bare capsule base ${bareR}`);
+  assert.ok(flapR > bareR + 0.2 * 0.35 * bareR, `capsule flaps missing ${flapR} vs ${bareR}`);
+  console.log(`slender maxR ${maxR.toFixed(3)} leZ ${leZ.toFixed(4)} teZ ${teZ.toFixed(3)} tip spread ${spread.toExponential(1)} flaps ${flapR.toFixed(3)}`);
 }
 
 console.log("vehicles-oml.test ok");

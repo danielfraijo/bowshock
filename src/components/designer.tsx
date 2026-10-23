@@ -750,7 +750,12 @@ export function Designer() {
                   </>
                 ) : null}
                 {params.family === "capsule" ? (
-                  <LiveField setDragging={setDragging} label="Cone half-angle" value={params.coneDeg} min={8} max={45} step={0.5} unit="deg" onChange={(coneDeg) => patch({ coneDeg })} digits={1} />
+                  <>
+                    <LiveField setDragging={setDragging} label="Cone half-angle" value={params.coneDeg} min={8} max={45} step={0.5} unit="deg" onChange={(coneDeg) => patch({ coneDeg })} digits={1} />
+                    <LiveField setDragging={setDragging} label="Flap height / R" value={params.finHeight} min={0} max={0.8} step={0.05} onChange={(finHeight) => patch({ finHeight })} />
+                    <LiveField setDragging={setDragging} label="Flaps" value={params.fins} min={2} max={8} step={1} digits={0} onChange={(fins) => patch({ fins: Math.round(fins) })} />
+                    <LiveField setDragging={setDragging} label="Elevon" value={params.elevonDeg} min={-12} max={12} step={0.25} unit="deg" digits={1} onChange={(elevonDeg) => patch({ elevonDeg })} />
+                  </>
                 ) : null}
                 {params.family === "osculating" ||
                 params.family === "wedgecone" ||

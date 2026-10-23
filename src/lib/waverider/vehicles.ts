@@ -1,16 +1,17 @@
 /**
  * Parametric vehicle classes beyond inverse-design waveriders.
  *
- * Capsule, missile, and multi-stage bodies are surfaces of revolution (plus
- * faired fin ridges). Boost-glide is a direct planform loft, not a shock-traced
+ * Capsule, missile, and multi-stage bodies are surfaces of revolution plus
+ * flat fins. Boost-glide is a direct planform loft, not a shock-traced
  * waverider. Every builder returns a closed triangle mesh that the existing
  * panel methods and CAD export can consume.
  *
  * Assumptions (screening, not a CAD master model):
- * - Fins are constant-thickness plates lofted into the shell (cruciform, or n
- *   equally spaced). They are not cosine bumps on the body ring, so a coarse
- *   circumferential grid cannot miss them. Elevon deflection pitches the
- *   horizontal pair about the hinge; trailing edge down is positive.
+ * - Fins are constant-thickness plates in the shell (cruciform, or n equally
+ *   spaced). The tip is a straight line at one radius, so a boat-tail or
+ *   interstage cannot kink it. Elevon is a flap: only the part aft of the
+ *   hinge moves, trailing edge down positive. The fin ahead of the hinge stays
+ *   fixed — swinging it throws the leading edge through the body.
  * - A multi-stage concept is cylindrical stages with a conical nose, conical
  *   interstages, and a short nozzle boat-tail. Stages do not separate.
  * - Reference area is base area πRb² for bodies of revolution and planform
@@ -79,6 +80,8 @@ interface Plate {
   taper: number;
   hinge: number;
   horizontal: boolean;
+  /** Full-height tip radius. Constant, so the planform stays straight. */
+  rTip: number;
 }
 
 /** Shape defaults applied when the user picks a class, so a waverider's span is not reused as a diameter. */
@@ -137,45 +140,108 @@ function plateSpan(f: Plate, x: number): number {
   return Math.max(0, Math.min(sLE, sTE, f.height));
 }
 
-function makePlates(p: DesignParams, Rb: number, noseEnd: number): Plate[] {
+function radiusRuns(radiusAt: (x: number) => number, L: number): { x0: number; x1: number; r: number }[] {
+  const n = 96;
+  const xs: number[] = [];
+  const rs: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const x = (L * i) / (n - 1);
+    xs.push(x);
+    rs.push(Math.max(0, radiusAt(x)));
+  }
+  const quiet = (i: number) => {
+    if (i <= 0 || i >= n - 1) return false;
+    return Math.abs(rs[i] - rs[i - 1]) / Math.max(xs[i] - xs[i - 1], 1e-9) < 0.15;
+  };
+  const runs: { x0: number; x1: number; r: number }[] = [];
+  let a = -1;
+  const push = (i0: number, i1: number) => {
+    if (xs[i1] - xs[i0] < 0.06 * L) return;
+    let r = 0;
+    for (let k = i0; k <= i1; k++) r = Math.max(r, rs[k]);
+    runs.push({ x0: xs[i0], x1: xs[i1], r });
+  };
+  for (let i = 0; i < n; i++) {
+    if (quiet(i)) {
+      if (a < 0) a = Math.max(0, i - 1);
+    } else if (a >= 0) {
+      push(a, i - 1);
+      a = -1;
+    }
+  }
+  if (a >= 0) push(a, n - 1);
+  return runs;
+}
+
+function makePlates(p: DesignParams, Rb: number, radiusAt: (x: number) => number): Plate[] {
   const hFrac = Math.max(0, p.finHeight);
   if (hFrac < 1e-3 || !(Rb > 1e-4)) return [];
   const L = Math.max(p.length, 0.2);
   const n = clamp(Math.round(p.fins || 4), 2, 8);
-  const height = hFrac * Rb;
   const weld = 8e-4 * L;
-  let thick = Math.max(3.5 * weld, 0.045 * Rb);
-  thick = Math.min(thick, 0.16 * Rb, Math.max(0.22 * height, 4 * weld));
+  const runs = radiusRuns(radiusAt, L);
+  const aft = runs.length ? runs[runs.length - 1] : { x0: 0.72 * L, x1: 0.98 * L, r: Math.max(0, radiusAt(0.9 * L)) };
+  const chord = clamp(0.16 * L, 0.08 * L, Math.max(0.1 * L, 0.9 * (aft.x1 - aft.x0 + 0.06 * L)));
+  // Sit on the cylindrical run and reach at most halfway into the boat-tail or nozzle behind it.
+  let x1 = Math.min(0.985 * L, aft.x1 + 0.5 * Math.max(0, L - aft.x1));
+  x1 = Math.max(x1, Math.min(0.985 * L, aft.x0 + 0.1 * L));
+  let x0 = Math.max(0.06 * L, x1 - chord);
+  if (x1 - x0 < 0.045 * L) return [];
+  const rUnder = (a: number, b: number) => {
+    let m = 0;
+    for (let i = 0; i <= 12; i++) m = Math.max(m, Math.max(0, radiusAt(a + ((b - a) * i) / 12)));
+    return m;
+  };
   const slot = (Math.PI / n) * 0.62;
-  thick = Math.min(thick, 2 * Rb * Math.sin(slot));
+  const thickFor = (rRef: number, height: number) => {
+    const r = Math.max(rRef, 0.02);
+    let thick = Math.max(3.5 * weld, 0.045 * r);
+    thick = Math.min(thick, 0.16 * r, Math.max(0.22 * height, 4 * weld));
+    return Math.min(thick, 2 * r * Math.sin(slot));
+  };
   const plates: Plate[] = [];
-  const push = (x0: number, x1: number, h: number) => {
-    if (!(x1 > x0 + 0.02 * L)) return;
-    const hinge = x0 + 0.62 * (x1 - x0);
+  const push = (xa: number, xb: number, height: number, rRef: number) => {
+    if (!(xb > xa + 0.02 * L) || !(height > 1e-4)) return;
+    const hinge = xa + 0.62 * (xb - xa);
+    const thick = thickFor(rRef, height);
     for (let k = 0; k < n; k++) {
       const th0 = (2 * Math.PI * k) / n;
       plates.push({
         th0,
-        height: h,
+        height,
         thick,
-        x0,
-        x1,
+        x0: xa,
+        x1: xb,
         sweep: 0.18,
         taper: 0.5,
         hinge,
         horizontal: Math.abs(Math.cos(th0)) > 0.65,
+        rTip: rUnder(xa, xb) + height,
       });
     }
   };
-  const chord = clamp(0.16 * L, 0.1 * L, 0.26 * L);
-  const x1 = 0.97 * L;
-  const x0 = Math.max(noseEnd + 0.03 * L, x1 - chord, 0.35 * L);
-  push(Math.min(x0, x1 - 0.06 * L), x1, height);
-  if ((p.nRamps || 1) >= 2) {
-    const c2 = chord * 0.55;
-    const xC0 = clamp(noseEnd + 0.04 * L, 0.08 * L, 0.42 * L);
-    const xC1 = xC0 + c2;
-    if (xC1 < x0 - 0.04 * L) push(xC0, xC1, height * 0.55);
+  const tailH = hFrac * Math.max(aft.r, 0.55 * Rb);
+  push(x0, x1, tailH, Math.max(aft.r, 0.5 * Rb));
+  const wantCanard = (p.family === "missile" || p.family === "multistage") && (p.nRamps || 1) >= 2;
+  if (wantCanard) {
+    const prev = runs.length >= 2 ? runs[runs.length - 2] : null;
+    const separate = prev && prev.r > 0.4 * Rb && prev.x1 < x0 - 0.04 * L;
+    const host = separate ? prev : aft;
+    const room = Math.max(0.04 * L, host.x1 - host.x0);
+    const c2 = Math.min(chord * 0.55, 0.72 * room);
+    let xC1: number;
+    let xC0: number;
+    if (separate) {
+      xC1 = host.x1 - 0.01 * L;
+      xC0 = Math.max(host.x0 + 0.01 * L, xC1 - c2);
+    } else {
+      xC0 = Math.max(host.x0 + 0.01 * L, x0 - 0.05 * L - c2);
+      xC1 = xC0 + c2;
+    }
+    if (xC1 <= x0 - 0.035 * L && xC1 > xC0 + 0.02 * L && xC0 > 0.04 * L) {
+      const hC = tailH * 0.55 * (host.r / Math.max(aft.r, 1e-6));
+      push(xC0, xC1, hC, host.r);
+    }
   }
   return plates;
 }
@@ -203,17 +269,23 @@ function spokesOf(plates: Plate[]): Spoke[] {
   return [...map.values()].sort((a, b) => a.th0 - b.th0);
 }
 
-function spokeAt(s: Spoke, x: number): { span: number; hinge: number } {
+function spokeAt(s: Spoke, x: number): { span: number; hinge: number; rTip: number; height: number; thick: number } {
   let span = 0;
   let hinge = x;
+  let rTip = 0;
+  let height = 1;
+  let thick = s.thick;
   for (const f of s.plates) {
     const h = plateSpan(f, x);
     if (h > span) {
       span = h;
       hinge = f.hinge;
+      rTip = f.rTip;
+      height = f.height;
+      thick = f.thick;
     }
   }
-  return { span, hinge };
+  return { span, hinge, rTip, height, thick };
 }
 function gapThetas(spokes: Spoke[], half: number[], nSlot: number[]): number[] {
   if (!spokes.length) return [];
@@ -231,17 +303,31 @@ function gapThetas(spokes: Spoke[], half: number[], nSlot: number[]): number[] {
   return ths;
 }
 
-function cornerYZ(rb: number, th0: number, span: number, thick: number, corner: number, defl: number, hinge: number, x: number, horizontal: boolean): [number, number] {
+function cornerYZ(
+  rb: number,
+  th0: number,
+  span: number,
+  height: number,
+  rTip: number,
+  thick: number,
+  corner: number,
+  defl: number,
+  hinge: number,
+  x: number,
+  horizontal: boolean,
+): [number, number] {
   const out = corner === 1 || corner === 2;
   const sign = corner === 0 || corner === 1 ? -1 : 1;
-  const rad = out ? rb + span : rb;
+  const frac = height > 1e-8 ? clamp(span / height, 0, 1) : 0;
+  const rad = out ? rb + Math.max(0, rTip - rb) * frac : rb;
   const cy = Math.cos(th0);
   const sy = Math.sin(th0);
   const sMax = 0.42 * Math.max(rad, 1e-8);
   const s = sign * Math.min(thick * 0.5, sMax);
   let y = rad * cy + s * -sy;
   let z = rad * sy + s * cy;
-  if (horizontal && out && span > 1e-8 && Math.abs(defl) > 1e-8) z -= Math.tan(defl) * (x - hinge);
+  // Flap only. The fin ahead of the hinge is fixed.
+  if (horizontal && out && span > 1e-8 && x > hinge + 1e-9 && Math.abs(defl) > 1e-8) z -= Math.tan(defl) * (x - hinge);
   return [y, z];
 }
 
@@ -301,8 +387,9 @@ function revolve(
     : Array.from({ length: nBody }, (_, j) => (2 * Math.PI * j) / nBody);
   const extra: number[] = [];
   for (const f of plates) {
-    const c = f.x1 - f.x0;
-    extra.push(f.x0, f.x0 + 0.22 * c, f.x0 + 0.55 * c, f.x1 - 0.08 * c, f.x1);
+    const c = Math.max(f.x1 - f.x0, 1e-6);
+    for (const u of [0, 0.1, 0.22, 0.4, 0.62, 0.78, 0.9, 1]) extra.push(f.x0 + u * c);
+    extra.push(f.hinge);
   }
   const xs = axisStations(L, niReq, extra);
   const rs = xs.map((x) => Math.max(0, radiusAt(x)));
@@ -324,14 +411,14 @@ function revolve(
       let bi = 0;
       for (let ii = 0; ii < spokes.length; ii++) {
         const s = spokes[ii];
-        const live = thin ? { span: 0, hinge: x } : spokeAt(s, x);
+        const live = thin ? { span: 0, hinge: x, rTip: rb, height: 1, thick: s.thick } : spokeAt(s, x);
         if (live.span <= 1e-8) {
           const y = rb * Math.cos(s.th0);
           const z = rb * Math.sin(s.th0);
           for (let c = 0; c < 4; c++) pushPt(y, z);
         } else {
           for (let c = 0; c < 4; c++) {
-            const [y, z] = cornerYZ(rb, s.th0, live.span, s.thick, c, defl, live.hinge, x, s.horizontal);
+            const [y, z] = cornerYZ(rb, s.th0, live.span, live.height, live.rTip, live.thick, c, defl, live.hinge, x, s.horizontal);
             pushPt(y, z);
           }
         }
@@ -379,7 +466,7 @@ function revolve(
     const nFin = new Set(plates.map((f) => f.th0.toFixed(4))).size;
     const sets = new Set(plates.map((f) => f.x0.toFixed(3))).size;
     notes.push(
-      `${sets} fin set${sets > 1 ? "s" : ""}, ${nFin} plates, thickness ${(plates[0].thick * 1000).toFixed(0)} mm, height ${(plates[0].height * 1000).toFixed(0)} mm on the aft set. Elevon ${p.elevonDeg.toFixed(1)}° drops the horizontal trailing edges. The shell is one watertight surface — not a cosine ridge.`,
+      `${sets} fin set${sets > 1 ? "s" : ""}, ${nFin} plates. Tail height ${(plates[0].height * 1000).toFixed(0)} mm, thickness ${(plates[0].thick * 1000).toFixed(0)} mm. Elevon ${p.elevonDeg.toFixed(1)}° moves only the flap aft of the hinge.`,
     );
   }
   if (p.halfModel) notes.push("Half-model is not applied to bodies of revolution — the full OML is meshed.");
@@ -435,7 +522,9 @@ function buildCapsule(p: DesignParams): ClassVehicle {
   ];
   if (Lgeom <= L + 1e-3) notes.push(`Cone reaches the base diameter at x/L = ${(Math.min(Lgeom, L) / L).toFixed(2)}${L > Lgeom + 0.02 * L ? "; the rest is a cylinder. No skirt flare." : "."}`);
   else notes.push(`Length ends before the cone reaches the requested diameter (would need ${(Lgeom).toFixed(2)} m). The base is the cone at this station — it is not flared out.`);
-  return revolve(p, rAt, Math.PI * rBase * rBase, notes, []);
+  const plates = makePlates(p, Math.max(rBase, 0.05), rAt);
+  if (plates.length) notes.push("Flaps are plates on the skirt. Fin height is in base radii. Two is a pitch pair; more are equally spaced.");
+  return revolve(p, rAt, Math.PI * rBase * rBase, notes, plates);
 }
 
 function missileRadius(p: DesignParams): { r: (x: number) => number; Ln: number; Rb: number; baseR: number } {
@@ -502,7 +591,7 @@ function buildMissile(p: DesignParams): ClassVehicle {
       ? "Nose is sharp. A nose radius blends a sphere into the ogive with a common tangent."
       : `Nose sphere Rn = ${(Math.min(p.leRadius, 0.4 * prof.Rb) * 1000).toFixed(1)} mm, tangent to the ogive.`,
   ];
-  const plates = makePlates(p, prof.Rb, prof.Ln);
+  const plates = makePlates(p, prof.Rb, prof.r);
   return revolve(p, prof.r, Math.PI * prof.Rb * prof.Rb, notes, plates);
 }
 
@@ -553,8 +642,7 @@ function buildStack(p: DesignParams): ClassVehicle {
     `${n}-stage stack. Conical nose, cylindrical stages (upper smaller), conical interstages, nozzle to ${(0.78 * 2 * Rb).toFixed(3)} m. No separation, no cavity. Sref = π Rbase².`,
     "Fins, when the height is above zero, are plates on the aft stage.",
   ];
-  // Nose ends where the first cylinder starts — fins stay on the aft body.
-  const plates = makePlates(p, Rb, L * 0.45);
+  const plates = makePlates(p, Rb, rAt);
   return revolve(p, rAt, Math.PI * Rb * Rb, notes, plates);
 }
 
