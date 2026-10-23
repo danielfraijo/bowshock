@@ -1,8 +1,17 @@
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { ReactNode } from "react";
 import { detraKempRiddell, fmt } from "@/lib/waverider/math";
 import type { StudyResult } from "@/lib/waverider/study";
 import { Formula, Stat } from "@/components/fields";
 import { Readout } from "@/components/ui/hud"; // [ui-redesign]
+
+function Lead({ children }: { children: ReactNode }) {
+  return <p className="mb-3 text-xs leading-relaxed text-muted">{children}</p>;
+}
+
+function withUnit(n: number, digits: number, unit: string) {
+  return Number.isFinite(n) ? `${fmt(n, digits)} ${unit}` : "—";
+}
 
 export function AeroBlock({ study }: { study: StudyResult }) {
   const a = study.aero;
@@ -10,6 +19,7 @@ export function AeroBlock({ study }: { study: StudyResult }) {
   const b = study.bench;
   return (
     <div>
+      <Lead>Forces at this Mach, alpha, and altitude. Wave, friction, and base are split so a finer CFD run has something to move.</Lead>
       <div className="hud-panel mb-3 grid grid-cols-3 gap-3 px-3 py-3">
         <Readout label="L/D" value={fmt(a.ld, 2)} tone="accent" />
         <Readout label="CL" value={fmt(a.cl, 4)} size="sm" />
@@ -19,12 +29,9 @@ export function AeroBlock({ study }: { study: StudyResult }) {
       <Stat k="q∞" v={`${fmt(atm.q / 1000, 2)} kPa`} />
       <Stat k="T∞" v={`${fmt(atm.T, 1)} K`} />
       <Stat k="Re/L" v={`${fmt(atm.ReL, 3)} /m`} />
-      <Stat k="CL" v={fmt(a.cl, 4)} />
-      <Stat k="CD" v={fmt(a.cd, 4)} />
       <Stat k="  wave" v={fmt(a.cdWave, 4)} />
       <Stat k="  friction" v={fmt(a.cdFric, 4)} />
       <Stat k="  base" v={fmt(a.cdBase, 4)} />
-      <Stat k="L/D" v={fmt(a.ld, 2)} />
       <Stat k="Cm (pitch)" v={fmt(a.cm, 4)} />
       <Stat k="Cn (yaw)" v={fmt(a.cn, 4)} />
       <Stat k="CoP x/L" v={fmt(a.xCp / Math.max(a.lRef, 1e-8), 3)} />
@@ -74,6 +81,7 @@ export function HeatBlock({ study }: { study: StudyResult }) {
   const qDkr = detraKempRiddell(atm.rho, atm.V, Rn);
   return (
     <div>
+      <Lead>Stagnation heating from three correlations. Size the TPS on Iterate from these, not from a flight measurement.</Lead>
       <Stat k="Stag. heat" v={`${fmt(a.qStag, 3)} W/cm²`} />
       <Stat k="Fay–Riddell" v={`${fmt(a.qFay, 3)} W/cm²`} />
       <Stat k="Sutton–Graves" v={`${fmt(a.qSG, 3)} W/cm²`} />
@@ -154,6 +162,7 @@ export function StabBlock({ study }: { study: StudyResult }) {
   const s = study.stab;
   return (
     <div>
+      <Lead>Static derivatives at this point. A positive margin means the center of pressure is behind the CG.</Lead>
       <div className="hud-panel mb-3 grid grid-cols-2 gap-3 px-3 py-3">
         <Readout label="Static margin" value={fmt(s.staticMarginPct, 1)} unit="% L" tone={s.staticMargin > 0 ? "data" : "warn"} />
         <Readout label="Trim α" value={fmt(s.trimAlpha, 2)} unit="deg" size="sm" />
@@ -162,8 +171,6 @@ export function StabBlock({ study }: { study: StudyResult }) {
       <Stat k="Cmα ( /rad )" v={fmt(s.cma, 3)} ok={s.cma < 0} />
       <Stat k="Cnβ ( /rad )" v={fmt(s.cnb, 3)} ok={s.cnb > 0} />
       <Stat k="Clβ ( /rad )" v={fmt(s.clb, 3)} />
-      <Stat k="Static margin" v={`${fmt(s.staticMarginPct, 1)} % L`} ok={s.staticMargin > 0} />
-      <Stat k="Trim α" v={`${fmt(s.trimAlpha, 2)}°`} />
       <Stat k="Long. stable" v={s.longitudinallyStable ? "yes" : "no"} ok={s.longitudinallyStable} />
       <Stat k="Dir. stable" v={s.directionallyStable ? "yes" : "no"} ok={s.directionallyStable} />
       <div className="mt-4 h-36">
@@ -196,6 +203,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
   }
   return (
     <div>
+      <Lead>Short-period motion at this condition. The trajectory tab is the long glide; this is whether the vehicle stays pointed.</Lead>
       <p className="mb-3 text-xs leading-relaxed text-muted">
         Flight at M {fmt(study.flightMach, 2)}, {fmt(atm.h / 1000, 1)} km, {fmt(atm.V, 0)} m/s, q∞{" "}
         {fmt(atm.q / 1000, 2)} kPa. Linear 6DOF from shock-expansion derivatives; RK4 from a +2° α pulse.
@@ -247,7 +255,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,23,68,0.16)" />
-            <XAxis dataKey="t" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <XAxis dataKey="t" type="number" domain={["auto", "auto"]} tickFormatter={(v) => `${Number(v).toFixed(1)}`} minTickGap={28} tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <Tooltip
               contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
@@ -264,7 +272,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,23,68,0.16)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <XAxis dataKey="xKm" type="number" domain={["auto", "auto"]} tickFormatter={(v) => `${Math.round(Number(v))}`} minTickGap={28} tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <YAxis yAxisId="h" tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <YAxis yAxisId="g" orientation="right" tick={{ fill: "#ff8fa0", fontSize: 10 }} />
             <Tooltip
@@ -281,7 +289,7 @@ export function SixDofBlock({ study }: { study: StudyResult }) {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={study.traj.samples.filter((_, i) => i % 2 === 0)} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,23,68,0.16)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <XAxis dataKey="xKm" type="number" domain={["auto", "auto"]} tickFormatter={(v) => `${Math.round(Number(v))}`} minTickGap={28} tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <YAxis yAxisId="h" tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <YAxis yAxisId="g" orientation="right" tick={{ fill: "#ff8fa0", fontSize: 10 }} />
             <Tooltip
@@ -397,6 +405,9 @@ export function ChecksBlock({ study }: { study: StudyResult }) {
   const shown = checks.filter((c) => c.domain === "gas" || c.domain === domain || c.domain === "external");
   return (
     <div>
+      <Lead>
+        Published gas identities, independent of this shape. Whether the solid is closed is on the path above and on Output → CAD.
+      </Lead>
       <Stat k="Kernel" v={`${pass}/${n} pass`} ok={pass === n} />
       <p className="mt-2 mb-3 text-xs leading-relaxed text-muted">
         Gas identities (Anderson, NACA 1135, US76, Kantrowitz), Taylor–Maccoll against an independent RK4, Prandtl–Meyer,
@@ -444,36 +455,15 @@ export function TrajBlock({ study }: { study: StudyResult }) {
   const data = t.samples.filter((_, i) => i % 2 === 0);
   return (
     <div>
-      <Stat k="Range" v={`${fmt(t.rangeKm, 1)} km`} />
-      <Stat k="Eq-glide range" v={`${fmt(t.rangeEqKm, 1)} km`} />
-      <Stat k="Flat glide" v={`${fmt(t.flatGlideKm, 1)} km`} />
-      <Stat k="Vacuum arc" v={t.vacuumRangeKm > 0 ? `${fmt(t.vacuumRangeKm, 1)} km` : "—"} />
-      <Stat k="Time" v={`${fmt(t.timeS, 0)} s`} />
-      <Stat k="Max q" v={`${fmt(t.maxQ / 1000, 2)} kPa`} />
-      <Stat k="Max-q alt" v={`${fmt(t.maxQAltKm, 1)} km`} />
-      <Stat k="Peak heat" v={`${fmt(t.maxHeat, 2)} W/cm²`} />
-      <Stat k="Peak-heat alt" v={`${fmt(t.maxHeatAltKm, 1)} km`} />
-      <Stat k="Peak n (3DOF)" v={`${fmt(t.maxN, 2)} g`} />
-      <Stat k="Allen–Eggers" v={t.allenG > 0 ? `${fmt(t.allenG, 2)} g` : "—"} />
-      <Stat
-        k="Allen alt"
-        v={t.allenG <= 0 ? "—" : t.allenUnderground ? "surface" : `${fmt(t.allenAltKm, 1)} km`}
-      />
-      <Stat k="AE speed" v={t.allenV > 0 ? `${fmt(t.allenV, 0)} m/s` : "—"} />
-      <Stat k="AE heat" v={t.allenQ > 0 ? `${fmt(t.allenQ, 2)} W/cm²` : "—"} />
-      <Stat
-        k="AE heat alt"
-        v={t.allenQ <= 0 ? "—" : t.allenHeatAltKm <= 0 ? "surface" : `${fmt(t.allenHeatAltKm, 1)} km`}
-      />
-      <Stat k="Heat load" v={`${fmt(t.heatLoad, 1)} J/cm²`} />
-      <Stat k="Tw lump" v={`${fmt(t.twPeak, 0)} K`} />
-      <Stat k="Final V" v={`${fmt(t.finalV, 0)} m/s`} />
-      <Stat k="Final h" v={`${fmt(t.finalH, 1)} km`} />
-      <div className="mt-4 h-36">
+      <Lead>3DOF glide from this energy. The plot under it is the same vehicle in 6DOF, not a second mission.</Lead>
+      <Stat k="Range" v={withUnit(t.rangeKm, 1, "km")} />
+      <Stat k="Eq-glide range" v={withUnit(t.rangeEqKm, 1, "km")} />
+      <Stat k="Flat glide" v={withUnit(t.flatGlideKm, 1, "km")} />
+      <div className="mt-3 h-36">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,23,68,0.16)" />
-            <XAxis dataKey="xKm" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+            <XAxis dataKey="xKm" type="number" domain={["auto", "auto"]} tickFormatter={(v) => `${Math.round(Number(v))}`} minTickGap={28} tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <YAxis yAxisId="h" tick={{ fill: "#ffd4da", fontSize: 10 }} />
             <YAxis yAxisId="g" orientation="right" tick={{ fill: "#ff8fa0", fontSize: 10 }} />
             <Tooltip
@@ -492,7 +482,7 @@ export function TrajBlock({ study }: { study: StudyResult }) {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={study.six.samples.filter((_, i) => i % 2 === 0)} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="rgba(255,23,68,0.16)" />
-                <XAxis dataKey="t" tick={{ fill: "#ffd4da", fontSize: 10 }} />
+                <XAxis dataKey="t" type="number" domain={["auto", "auto"]} tickFormatter={(v) => `${Number(v).toFixed(1)}`} minTickGap={28} tick={{ fill: "#ffd4da", fontSize: 10 }} />
                 <YAxis tick={{ fill: "#ffd4da", fontSize: 10 }} />
                 <Tooltip
                   contentStyle={{ background: "#080003", border: "1px solid #ff1744", fontSize: 11, color: "#ffffff" }}
@@ -506,6 +496,30 @@ export function TrajBlock({ study }: { study: StudyResult }) {
           </div>
         </>
       ) : null}
+      <div className="mt-3">
+      <Stat k="Vacuum arc" v={t.vacuumRangeKm > 0 ? withUnit(t.vacuumRangeKm, 1, "km") : "—"} />
+      <Stat k="Time" v={withUnit(t.timeS, 0, "s")} />
+      <Stat k="Max q" v={withUnit(t.maxQ / 1000, 2, "kPa")} />
+      <Stat k="Max-q alt" v={withUnit(t.maxQAltKm, 1, "km")} />
+      <Stat k="Peak heat" v={withUnit(t.maxHeat, 2, "W/cm²")} />
+      <Stat k="Peak-heat alt" v={withUnit(t.maxHeatAltKm, 1, "km")} />
+      <Stat k="Peak n (3DOF)" v={withUnit(t.maxN, 2, "g")} />
+      <Stat k="Allen–Eggers" v={t.allenG > 0 ? withUnit(t.allenG, 2, "g") : "—"} />
+      <Stat
+        k="Allen alt"
+        v={t.allenG <= 0 ? "—" : t.allenUnderground ? "surface" : withUnit(t.allenAltKm, 1, "km")}
+      />
+      <Stat k="AE speed" v={t.allenV > 0 ? withUnit(t.allenV, 0, "m/s") : "—"} />
+      <Stat k="AE heat" v={t.allenQ > 0 ? withUnit(t.allenQ, 2, "W/cm²") : "—"} />
+      <Stat
+        k="AE heat alt"
+        v={t.allenQ <= 0 ? "—" : t.allenHeatAltKm <= 0 ? "surface" : withUnit(t.allenHeatAltKm, 1, "km")}
+      />
+      <Stat k="Heat load" v={withUnit(t.heatLoad, 1, "J/cm²")} />
+      <Stat k="Tw lump" v={withUnit(t.twPeak, 0, "K")} />
+      <Stat k="Final V" v={withUnit(t.finalV, 0, "m/s")} />
+      <Stat k="Final h" v={withUnit(t.finalH, 1, "km")} />
+      </div>
       {t.notes.map((n) => (
         <p key={n.slice(0, 24)} className="mt-2 text-xs leading-relaxed text-subtle">
           {n}

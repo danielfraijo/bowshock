@@ -68,7 +68,7 @@ const LIT: Record<string, LitBand> = {
   },
   missile: {
     ld: [0.4, 2.5],
-    note: "Axisymmetric missiles live on normal force, not L/D. Fins are faired ridges.",
+    note: "Axisymmetric missiles live on normal force, not L/D. Fins are flat plates; elevon is the flap aft of the hinge.",
   },
   multistage: {
     ld: [0.3, 1.5],

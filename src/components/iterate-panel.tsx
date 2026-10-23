@@ -357,6 +357,9 @@ export function IteratePanel({
 
   return (
     <div className="space-y-4">
+      <p className="text-xs leading-relaxed text-muted">
+        The loop before a high-fidelity mesh: an aero table, a search, a closed-loop flight, then TPS mass. Nothing here replaces Cart3D.
+      </p>
       <Seg
         value={sub}
         onChange={setSub}

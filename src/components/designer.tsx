@@ -32,6 +32,7 @@ import { useStudy } from "@/components/use-study"; // [mesh-refinement]
 import { cfdZip, fileBlobs } from "@/lib/waverider/export-kit";
 import kernelSource from "../../native/bowshock_kernel.c?raw";
 import { fmt } from "@/lib/waverider/math";
+import { topoMetrics } from "@/lib/waverider/geom-quality";
 import { studyJson, studyVehicle, type StudyResult } from "@/lib/waverider/study";
 import { loadSavedParams, PRESETS, saveParams } from "@/lib/waverider/presets";
 import {
@@ -213,6 +214,64 @@ function geomKey(p: DesignParams) {
   ].join("|");
 }
 
+function ScreenPath({
+  domain,
+  tab,
+  onTab,
+  meshOk,
+  duct,
+  openEdges,
+  shockDeg,
+  study,
+}: {
+  domain: FlowDomain;
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  meshOk: boolean;
+  duct: boolean;
+  openEdges: number;
+  shockDeg: number;
+  study: StudyResult;
+}) {
+  const checks = study.checks ?? [];
+  const pass = checks.filter((c) => c.pass).length;
+  const isp = study.prop?.isp ?? 0;
+  const shown = (n: number, digits: number, unit: string) => (Number.isFinite(n) ? `${n.toFixed(digits)}${unit}` : "—");
+  const gates: { tab: Tab; k: string; v: string; ok: boolean }[] =
+    domain === "internal"
+      ? [
+          { tab: "cad", k: "Mesh", v: meshOk ? (duct ? "Duct" : "Closed") : `${openEdges} open`, ok: meshOk },
+          { tab: "cycle", k: "Isp", v: isp > 1 ? `${fmt(isp, 0)} s` : "—", ok: study.prop?.kind === "none" || isp > 1 },
+          { tab: "heat", k: "Heat", v: shown(study.aero.qStag, 1, ""), ok: Number.isFinite(study.aero.qStag) },
+          { tab: "sixdof", k: "6DOF", v: study.six.skipped ? "—" : shown(study.stab.staticMarginPct, 0, "%"), ok: study.six.skipped || study.stab.staticMargin > 0 },
+          { tab: "shocks", k: "Shock", v: shown(shockDeg, 1, "°"), ok: Number.isFinite(shockDeg) },
+          { tab: "checks", k: "Checks", v: checks.length ? `${pass}/${checks.length}` : "—", ok: checks.length > 0 && pass === checks.length },
+        ]
+      : [
+          { tab: "cad", k: "Mesh", v: meshOk ? "Closed" : `${openEdges} open`, ok: meshOk },
+          { tab: "aero", k: "L/D", v: shown(study.aero.ld, 2, ""), ok: Number.isFinite(study.aero.ld) },
+          { tab: "heat", k: "Heat", v: shown(study.aero.qStag, 1, ""), ok: Number.isFinite(study.aero.qStag) },
+          { tab: "stab", k: "Margin", v: shown(study.stab.staticMarginPct, 0, "%"), ok: Number.isFinite(study.stab.staticMargin) && study.stab.staticMargin > 0 },
+          {
+            tab: "traj",
+            k: "Range",
+            v: study.traj.skipped ? "—" : shown(study.traj.rangeKm, 0, " km"),
+            ok: study.traj.skipped || (Number.isFinite(study.traj.rangeKm) && study.traj.rangeKm > 0),
+          },
+          { tab: "checks", k: "Checks", v: checks.length ? `${pass}/${checks.length}` : "—", ok: checks.length > 0 && pass === checks.length },
+        ];
+  return (
+    <div className="screen-path" role="navigation" aria-label="Screening path">
+      {gates.map((g) => (
+        <button key={g.k} type="button" className="screen-gate" aria-pressed={tab === g.tab} data-ok={g.ok ? "true" : "false"} onClick={() => onTab(g.tab)}>
+          <span className="hud-label !text-subtle">{g.k}</span>
+          <span>{g.v}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function Designer() {
   const [params, setParams] = useState<DesignParams>(DEFAULT_PARAMS);
   const [hydrated, setHydrated] = useState(false);
@@ -228,6 +287,7 @@ export function Designer() {
   const [cadAxis, setCadAxis] = useState<CadAxis>("cuspis");
   const [cadMsg, setCadMsg] = useState<string | null>(null);
   const cadFile = useRef<HTMLInputElement>(null);
+  const panelScroll = useRef<HTMLDivElement>(null);
   const pending = useRef<Partial<DesignParams> | null>(null);
   const raf = useRef(0);
   // A saved project is a parametric design. Loading or resetting one drops the imported shell.
@@ -264,6 +324,10 @@ export function Designer() {
     const ids = tabsFor(domainOf(params.family)).map((t) => t.id);
     if (!ids.includes(tab)) setTab("geom");
   }, [params.family, tab]);
+
+  useEffect(() => {
+    panelScroll.current?.scrollTo(0, 0);
+  }, [tab]);
 
   const patch = (p: Partial<DesignParams>) => {
     pending.current = { ...pending.current, ...p };
@@ -344,6 +408,7 @@ export function Designer() {
     hydrated,
   );
   const q = built.quality;
+  const minAng = useMemo(() => topoMetrics(built.mesh).minAngleDeg, [built]);
   const a = built.aero;
   const fam = FAMILY_META[params.family];
   const domain = domainOf(params.family);
@@ -488,7 +553,7 @@ export function Designer() {
         </div>
       </header>
 
-      <div className="grid min-h-0 w-full flex-1 grid-cols-1 grid-rows-[minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,1fr)] overflow-hidden lg:grid-cols-[272px_minmax(0,1fr)_360px] lg:grid-rows-1">
+      <div className="grid min-h-0 w-full flex-1 grid-cols-1 grid-rows-[minmax(0,1.15fr)_minmax(0,0.85fr)_minmax(0,1fr)] overflow-hidden lg:grid-cols-[260px_minmax(0,1fr)_400px] lg:grid-rows-1">
         <aside className="hud-rail order-2 min-h-0 overflow-y-auto overscroll-contain border-t border-line lg:order-1 lg:border-t-0 lg:border-r">
           <div className="p-4 sm:p-5">
             <p className="hud-label hud-label-tick mb-2">Toolkit</p>
@@ -650,7 +715,17 @@ export function Designer() {
 
         <aside className="hud-rail order-3 flex min-h-0 flex-col overflow-hidden border-t border-line lg:border-t-0 lg:border-l">
           <HudTabs tabs={TABS} value={tab} onChange={setTab} />
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5">
+          <ScreenPath
+            domain={domain}
+            tab={tab}
+            onTab={setTab}
+            meshOk={(q.watertight || ((params.family === "ramjet" || params.family === "scramjet") && params.flowThrough)) && q.nonManifoldEdges === 0}
+            duct={(params.family === "ramjet" || params.family === "scramjet") && params.flowThrough}
+            openEdges={q.openEdges}
+            shockDeg={a.betaDeg}
+            study={study}
+          />
+          <div ref={panelScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5">
             {!hydrated ? (
               <p className="text-sm leading-relaxed text-muted">{fam.blurb}</p>
             ) : (
@@ -1029,8 +1104,8 @@ export function Designer() {
 
             {tab === "traj" ? (
               <div className="space-y-4">
-                <MassBlock study={study} />
                 <TrajBlock study={study} />
+                <MassBlock study={study} />
               </div>
             ) : null}
 
@@ -1093,6 +1168,7 @@ export function Designer() {
                 />
                 <Stat k="Manifold" v={q.manifold ? "yes" : "check"} ok={q.manifold} />
                 <Stat k="Non-manifold edges" v={String(q.nonManifoldEdges)} ok={q.nonManifoldEdges === 0} />
+                <Stat k="Min angle" v={`${fmt(minAng, 2)}°`} ok={minAng > 0.05} />
                 <Stat k="Degenerate" v={String(q.skippedDegenerate)} ok={q.skippedDegenerate === 0} />
                 {a.notes.length ? <p className="mt-3 text-xs leading-relaxed text-warn">{a.notes.join(" ")}</p> : null}
                 <div className="mt-4 grid grid-cols-2 gap-2">
@@ -1163,6 +1239,8 @@ export function Designer() {
             : (params.family === "ramjet" || params.family === "scramjet") && params.flowThrough
               ? "Flow-through duct — inlet & nozzle open"
               : "Open mesh — raise resolution"}
+          <span className="mx-2 text-subtle" aria-hidden>·</span>
+          min ∠ {fmt(minAng, 2)}°
           <span className="mx-2 text-subtle" aria-hidden>·</span>
           CL {fmt(study.aero.cl, 3)} · L/D <span className="text-accent">{fmt(study.aero.ld, 2)}</span> · q̇s {fmt(study.aero.qStag, 2)} W/cm²
           <span className="mx-2 text-subtle" aria-hidden>·</span>
